@@ -21,6 +21,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -107,7 +108,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "kick-live-app/0.1"
 
     def log_message(self, fmt, *args):
-        log("%s %s" % (self.address_string(), fmt % args))
+        # Never write OAuth authorization codes to the log.
+        line = re.sub(r"(code=)[^&\s]+", r"\1<redacted>", fmt % args)
+        log("%s %s" % (self.address_string(), line))
 
     # --- helpers ---------------------------------------------------------
     def send(self, code, body, ctype="application/json", extra=None):
