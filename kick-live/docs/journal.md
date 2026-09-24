@@ -89,7 +89,19 @@ ngrok authtoken and the Kick app credentials.
 **Decision.** Reserved ngrok domain is effectively mandatory (ADR-003). Ephemeral URLs would break
 the registered redirect on every restart.
 
-**Next.** Owner supplies `NGROK_AUTHTOKEN` and `NGROK_DOMAIN`, runs `scripts/kick-app.sh up`,
-registers the printed URLs on kick.com/settings/developer, fills `KICK_CLIENT_ID/SECRET`, runs
-`scripts/kick-app.sh login`. Then subscribe to `chat.message.sent` and `livestream.status.updated`
-and let `monitor/` prefer webhook events over Pusher when both are present.
+**Outcome, same evening (20:19–20:36).** Owner started ngrok by hand on the reserved domain
+`multilobular-hastier-paloma.ngrok-free.dev` -> :8080. Set `KICK_APP_PORT=8080` and `NGROK_DOMAIN`
+in the env file, taught `tunnel.sh` to adopt a running agent, moved the receiver to 8080, verified
+`/health` and a 401 on an unsigned POST through the public URL. Owner created the Kick app with the
+two URLs and filled `KICK_CLIENT_ID/SECRET` (a parallel build session confirmed client_credentials
+works). Receiver restarted; by then the manual ngrok had exited and `NGROK_AUTHTOKEN` was set, so
+`tunnel.sh` launched its own agent on the same domain. Owner clicked `/oauth/start`; callback
+succeeded, logged in as `atleastonce` (user id 42750175), scopes
+`user:read channel:read channel:write chat:write events:subscribe`, refresh token present.
+Subscribed via the official API: `chat.message.sent` (01M39FT0J2QB5H6MANVB5YR7YN) and
+`livestream.status.updated` (01M39FT0JBS01QSQ6AVMM5ETKD), app id 01M39F0Q48227VJXBM31M71JMD.
+No test chat message was posted (ADR-000).
+
+**Next.** Keep `scripts/kick-app.sh up` under the supervisor (Kick drops subscriptions after a day of
+failed deliveries). Let `monitor/` prefer webhook events over Pusher when both are present. Add a
+`channel:write` helper for title/category updates.

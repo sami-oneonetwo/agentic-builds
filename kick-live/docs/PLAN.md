@@ -92,8 +92,8 @@ Status key: [ ] todo, [~] in progress, [x] done.
 - [x] ngrok static binary per-user, `scripts/tunnel.sh`, `scripts/kick-app.sh`
 - [x] `kickapp/server.py` receiver: OAuth PKCE callback + signature-verified webhooks, tested locally
 - [x] `kickapp/kick_oauth.py` token store and API client for agents
-- [ ] Owner: ngrok authtoken + reserved domain in `~/.config/kick-live/env`, create app at kick.com/settings/developer
-- [ ] `scripts/kick-app.sh login`, then subscribe to `chat.message.sent`, `livestream.status.updated`
+- [x] Owner: ngrok authtoken + reserved domain in `~/.config/kick-live/env`, app created at kick.com/settings/developer
+- [x] `scripts/kick-app.sh login` done as `atleastonce`; subscribed to `chat.message.sent`, `livestream.status.updated`
 
 ### Phase 1 — Get live and prove it
 - [ ] `stream/run.sh`: ffmpeg test source (colour bars + clock + channel name) to RTMPS
