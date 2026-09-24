@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Refuse commits that contain stream keys, SRT passphrases, or tokens.
+# Installed by scripts/install-hooks.sh into .git/hooks/pre-commit
+set -euo pipefail
+patterns=(
+  'sk_us-west-2_[A-Za-z0-9_-]{8,}'
+  'sk_[a-z0-9-]+_[A-Za-z0-9]{16,}'
+  'STREAM_KEY=[^[:space:]]{8,}'
+  'SRT_PASSPHRASE=[^[:space:]]{8,}'
+  'passphrase=[^[:space:]&]{10,}'
+  'KICK_TOKEN=[^[:space:]]{8,}'
+  'Bearer [A-Za-z0-9._-]{20,}'
+  'ghp_[A-Za-z0-9]{30,}'
+  '-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----'
+)
+fail=0
+while IFS= read -r -d '' f; do
+  [ -f "$f" ] || continue
+  case "$f" in *.png|*.jpg|*.ts|*.mp4|*.flv|*/scripts/pre-commit) continue;; esac
+  for p in "${patterns[@]}"; do
+    if git show ":$f" | grep -E -n "$p" >/dev/null 2>&1; then
+      echo "pre-commit: possible secret in $f (pattern: $p)" >&2
+      fail=1
+    fi
+  done
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: refusing to commit. Move secrets to ~/.config/kick-live/env" >&2
+  exit 1
+fi

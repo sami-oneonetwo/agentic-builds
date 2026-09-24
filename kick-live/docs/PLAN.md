@@ -82,11 +82,11 @@ sample. The compositor reads the same chat feed so on-screen content reacts to r
 Status key: [ ] todo, [~] in progress, [x] done.
 
 ### Phase 0 — Skeleton and secrets
-- [ ] Folder layout above, root `.gitignore` (`.env`, logs, pycache, tmp)
-- [ ] Secrets file outside the repo, `.env.example` inside it
-- [ ] Pre-commit hook blocking `sk_us-west-2_...` and long `passphrase=` values
-- [ ] `docs/journal.md` entry 001: scouting results and scope decision
-- [ ] Commit and push
+- [x] Folder layout above, root `.gitignore` (`.env`, logs, pycache, tmp)
+- [x] Secrets file outside the repo, `.env.example` inside it
+- [x] Pre-commit hook blocking `sk_us-west-2_...` and long `passphrase=` values
+- [x] `docs/journal.md` entry 001: scouting results and scope decision
+- [x] Commit and push
 
 ### Phase 1 — Get live and prove it
 - [ ] `stream/run.sh`: ffmpeg test source (colour bars + clock + channel name) to RTMPS

@@ -1,0 +1,23 @@
+# secrets
+.env
+*.key
+# runtime
+run/*
+!run/.gitkeep
+*.log
+*.pid
+metrics.jsonl
+chat.jsonl
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# tmp / media
+tmp/
+*.ts
+*.m3u8
+*.mp4
+*.flv
+!docs/**/*.png
+iterations/*/frames/*.png
