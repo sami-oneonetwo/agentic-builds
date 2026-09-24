@@ -283,3 +283,52 @@ The one remaining restart that is genuinely needed, swapping to the enriched com
 the relay + hot reload so it is the last visible one, and it happens only when the owner says so.
 Until then the pixel-art idea (i-0003) stays queued: it needs new panel code, which the spine cannot
 hot-load.
+
+---
+
+## 012 — 2026-09-24 21:47 — Session end: show stopped on owner request, resume notes
+
+Owner had to leave. `stop.sh` from the live snapshot stopped supervisor → run.sh → compositor + ffmpeg,
+plus kick_api and chat_listener; duty agent taken off duty. Peer's webhook receiver (pid 25684) and
+ngrok (25728) were left running; they are harmless and Kick only drops the subscriptions after ~1 day
+of failed deliveries.
+
+**Session totals (real):** on air ~28 min in two segments; peak 3 concurrent viewers; 8 ships
+(6 micro incl. agent picks, 1 human-triggered macro "chaos mode", 1 micro after); founders: atleastonce;
+24 chat lines (all the owner); 2 `!idea`s (one shipped, pixel-art bot queued as i-0003).
+
+**Open findings to fix before the next live run**
+1. **Live-state contamination.** At ~21:42 the LAST SHIP card showed "v0.3.16 · canvas rule: worms",
+   which the live engine cannot produce; a module agent's round-engine test wrote to the shared
+   `$RUN_DIR/state.json` (the rounds engine re-reads on-disk state before every write, so the foreign
+   version counters were adopted; that is also why the macro bumped to v0.4.0 not v0.2.0). Fixes:
+   give the compositor/rounds a `--run-dir` REQUIRED in test mode, make test hooks refuse the canonical
+   dir, and have the live engine write only its own fields (not adopt version.* from disk).
+2. **No-restart deploys.** Owner rule (011). The enriched build must ship with a frame relay (owns the
+   ffmpeg pipes, repeats last frame) and/or module hot-reload before it replaces the snapshot.
+3. **Snapshot ≠ working tree.** Hotfixes live only in `~/.local/share/kick-live/live-snapshot`
+   (stage typewriter key, `truncate` memo, PANEL_BUDGET_MS 28, chaos option, idea-id generator).
+   `stream/patches/0001-chaos-option.patch` captures one; diff the snapshot against `stream/` and
+   port the rest when the enrichment workflow finishes.
+4. Branch reconciliation with `worktree-kick-ngrok-tunnel` (peer's kickapp/) still owed; ping the peer first.
+5. Cosmetic: stage title / pinned strip truncation; ticker clipping; version scheme vs CONCEPT §8.
+
+**Background at time of stop:** enrichment workflow `wf_520393aa-e83` (Fable) still finishing
+`mod:panels-stage`, then Integrate → QA → Fix; promo-pack workflow `wf_7c8c4d33-864` writing
+`docs/promo/`. Both write only to the working tree and /tmp. Their results land uncommitted.
+
+**Resume (cold):**
+```bash
+cd ~/Workspace/agentic-builds && git pull
+tail -120 kick-live/docs/journal.md                 # this entry and 011
+ls kick-live/docs/promo/ kick-live/stream/           # what the workflows produced
+git status --short                                   # uncommitted agent output to review
+grep -c . ~/.config/kick-live/env                    # secrets still there (STREAM_KEY unrotated)
+curl -s http://127.0.0.1:8080/health                 # peer receiver up?
+# Go live again (spine snapshot, known-good):
+MODE=live SOURCE=compositor AUDIO_SOURCE=pipe:$HOME/.local/share/kick-live/run/a.pcm \
+  bash ~/.local/share/kick-live/live-snapshot/scripts/start.sh
+~/.local/share/kick-live/venv/bin/python kick-live/agents/duty.py heartbeat &   # agent on duty
+```
+Before any new live run: recreate the FIFO if missing (`mkfifo ~/.local/share/kick-live/run/a.pcm`),
+re-apply title/category via OAuth (tokens refresh themselves), and do NOT restart the pipeline while live.
