@@ -267,3 +267,19 @@ with `--match TEXT` to disambiguate. State repaired by hand (i-0002 chaos, i-000
 Second idea queued: `!idea build a pixel art bot that responds` (i-0003, macro). Note: the version
 counter read v0.4.0 after the macro bump (engine had macro=3); monotonic and tied to real ship events,
 but the scheme differs from CONCEPT §8; align during reconciliation.
+
+---
+
+## 011 — 2026-09-24 21:43 — Owner rule: never restart the live pipeline
+
+Owner: "You shouldn't kill the stream, that's not a good look." Correct. Both deploys today (the
+stage-thrash hotfix and the chaos macro-ship) restarted the compositor, which closes ffmpeg's stdin;
+ingest dropped 2-4 s each time. Kick kept `is_live` true but every viewer saw a stall.
+
+**Rule from now on:** no compositor/ffmpeg restarts on a live show without the owner's go-ahead.
+Deploys must be invisible: state.json-driven changes only (read live), or hot-reloaded modules, or a
+frame-relay that owns the ffmpeg pipes and repeats the last good frame while the renderer restarts.
+The one remaining restart that is genuinely needed, swapping to the enriched compositor, will carry
+the relay + hot reload so it is the last visible one, and it happens only when the owner says so.
+Until then the pixel-art idea (i-0003) stays queued: it needs new panel code, which the spine cannot
+hot-load.
