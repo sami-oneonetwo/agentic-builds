@@ -31,6 +31,13 @@ _print_urls() {
 }
 
 cmd_start() {
+  # Adopt an ngrok agent that is already running (e.g. started by hand) instead of launching a second one.
+  local existing; existing="$(_public_url)"
+  if [ -n "$existing" ] && ! _running; then
+    echo "$existing" > "$URL_FILE"
+    echo "adopting already-running ngrok (not managed by this script): $existing"
+    _print_urls "$existing"; return 0
+  fi
   [ -n "$NGROK" ] && [ -x "$NGROK" ] || { echo "ngrok not found. Expected $HOME/.local/bin/ngrok" >&2; exit 1; }
   if [ -z "${NGROK_AUTHTOKEN:-}" ]; then
     echo "NGROK_AUTHTOKEN is empty. Get it from https://dashboard.ngrok.com/get-started/your-authtoken" >&2
