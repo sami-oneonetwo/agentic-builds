@@ -212,3 +212,30 @@ minutes with an agent-pick if nobody votes.
 
 Gotcha: `source scripts/env.sh` via a *relative* path from the snapshot resolved `KICK_LIVE_ROOT` one
 level too high; absolute paths resolve correctly. Always launch with absolute paths.
+
+---
+
+## 009 — 2026-09-24 21:28 — Live hotfix: stage panel thrash ("stage_body over budget")
+
+**Symptom (owner saw it on screen):** the frame-time guard disabled `stage_body` every ~16 s
+(30 renders > 20 ms → placeholder for 300 frames → re-enable → trip again), and `activity_feed`
+too at up to 70 ms. Encoder was unaffected (30 fps, 0 drops) but the stage flickered to a placeholder
+for most of each cycle, and each disable wrote to the activity feed, forcing that panel to re-render.
+
+**Root cause (spine build):**
+1. `StageBody.inputs()` restarted the typewriter whenever the STATUS lines changed, and those lines
+   contain an `hh:mm:ss` clock, so the panel re-typed forever at 40 full re-renders per second
+   (each 20-40 ms over an 840x236 text panel).
+2. `layout.truncate()` shaves one character per loop with a font measurement each time; O(n) text
+   measurements per call, several calls per feed render.
+
+**Hotfix applied to the live snapshot only** (working tree `stage.py` is being rewritten by the
+enrichment workflow; carry these into reconciliation):
+- `stage.py`: typewriter restarts only when the clock-stripped content changes; reveal quantised to
+  8-char steps (~5 renders/s instead of 40).
+- `layout.py`: `truncate` memoised with `lru_cache(8192)`.
+- `compositor.py`: `PANEL_BUDGET_MS` 20 → 28 (frame budget is 33 ms; total avg is ~4 ms).
+Restart: TERM to the compositor → supervisor relaunched in 2 s (exit rc=0, attempt 2). Kick stayed live.
+
+**Result:** 0 disables; stage_body max 17.5 ms and ~2.6 renders/s (was 40.9 ms, ~30/s);
+activity_feed max 15.9 ms (was 70); frame p95 14 ms (was 37); 2 real viewers watching.
