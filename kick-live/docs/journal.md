@@ -49,3 +49,47 @@ against a local HLS output written by the same ffmpeg command.
 
 **Next.** Workflow 1: concept judge panel (5 personas, 3 judges, synthesizer) in parallel with
 building the measurement and validation tools, which do not depend on the concept.
+
+---
+
+## 002 — 2026-09-24 20:10 — ngrok tunnel and Kick developer-app plumbing
+
+**Owner instruction.** Set up an ngrok tunnel so a Kick developer app can be created; a redirect
+URL and a webhook URL are needed. Purpose: give the agents the official Kick API.
+
+**What the official API needs (docs.kick.com, read this session).** OAuth 2.1 authorization-code
+with PKCE at `id.kick.com/oauth/authorize` and `/oauth/token`; client-credentials app tokens;
+13 scopes; webhooks signed RSA-SHA256 PKCS#1 v1.5 over `messageId.timestamp.body` with a public
+key served at `/public/v1/public-key`; 10 event types, all v1; event subscriptions via
+`POST /public/v1/events/subscriptions`. Developer tab requires 2FA on the Kick account.
+
+**Environment.** No ngrok for this user; `/opt/homebrew/bin/ngrok` exists but Homebrew belongs to
+`s.alakus`. Installed the ngrok 3.39.11 static arm64 binary at `~/.local/bin/ngrok`, matching the
+ffmpeg approach. No ngrok authtoken anywhere in this account (no config file, no keychain entry,
+no env var). `cryptography` 50.0.1 added to the project venv for RSA verification.
+
+**Built.**
+- `kickapp/server.py`: loopback receiver with `/health`, `/oauth/start`, `/oauth/callback`,
+  `/webhooks/kick`. Verifies signatures before storing, de-duplicates by message id, writes
+  `run/webhooks.jsonl`, mirrors `chat.message.sent` into `run/chat.jsonl` so the compositor gets
+  official chat events alongside Pusher.
+- `kickapp/kick_oauth.py`: token store at `~/.config/kick-live/tokens.json` (600), auto-refresh,
+  app tokens, tiny API client, CLI (`status`, `urls`, `login-url`, `whoami`, `subscribe`, ...).
+  This is the module agents import.
+- `scripts/tunnel.sh`, `scripts/kick-app.sh`: lifecycle, URL discovery via ngrok's local API,
+  loud warning when `NGROK_DOMAIN` is unset.
+- `.env.example`, `env.sh`, pre-commit guard extended for `KICK_CLIENT_SECRET`, `NGROK_AUTHTOKEN`,
+  token JSON. Blank keys appended to the secrets file. ADR-003, `docs/KICK-APP.md`.
+
+**Verified.** Full local run with a throwaway RSA key: health, PKCE redirect, bad state 400,
+signed 200, duplicate flagged, tampered 401, unsigned 401. Tunnel start refuses cleanly without
+a token. **Not verified:** the tunnel itself and the real Kick round-trip, blocked on the owner's
+ngrok authtoken and the Kick app credentials.
+
+**Decision.** Reserved ngrok domain is effectively mandatory (ADR-003). Ephemeral URLs would break
+the registered redirect on every restart.
+
+**Next.** Owner supplies `NGROK_AUTHTOKEN` and `NGROK_DOMAIN`, runs `scripts/kick-app.sh up`,
+registers the printed URLs on kick.com/settings/developer, fills `KICK_CLIENT_ID/SECRET`, runs
+`scripts/kick-app.sh login`. Then subscribe to `chat.message.sent` and `livestream.status.updated`
+and let `monitor/` prefer webhook events over Pusher when both are present.

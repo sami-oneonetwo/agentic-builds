@@ -36,7 +36,7 @@ explicitly** and the loop can be re-scoped as a load test with synthetic viewers
 | Raw TCP to `fa723fc1b171.global-contribute.live-video.net` on 443 and 1935 | **Works** (direct, IPv6). RTMPS from the sandbox is viable. |
 | UDP to `fa723fc1b171.srt.live-video.net:9000` | Inconclusive (send OK, no reply without a real SRT handshake). Not needed. |
 | `https://kick.com/api/v2/channels/atleastonce` | **200** with full JSON. No Cloudflare block with a browser User-Agent. |
-| Official `api.kick.com/public/v1` | 401 without an OAuth app. Not needed. |
+| Official `api.kick.com/public/v1` | 401 without an OAuth app. **Now planned**: developer app behind an ngrok tunnel, see `docs/KICK-APP.md` and ADR-003. |
 | Pusher `ws-us2.pusher.com` app `32cbd69e4b950bf97679` | Reachable (HTTP 426 = wants websocket upgrade). |
 | ffmpeg | **Installed** 8.0.1 via apt, with rtmps, srt, libx264, aac, drawtext. |
 | Python 3.14 libs | **Installed** pillow, numpy, websockets, requests. |
@@ -87,6 +87,13 @@ Status key: [ ] todo, [~] in progress, [x] done.
 - [x] Pre-commit hook blocking `sk_us-west-2_...` and long `passphrase=` values
 - [x] `docs/journal.md` entry 001: scouting results and scope decision
 - [x] Commit and push
+
+### Phase 0b — Kick developer app (official API for the agents)
+- [x] ngrok static binary per-user, `scripts/tunnel.sh`, `scripts/kick-app.sh`
+- [x] `kickapp/server.py` receiver: OAuth PKCE callback + signature-verified webhooks, tested locally
+- [x] `kickapp/kick_oauth.py` token store and API client for agents
+- [ ] Owner: ngrok authtoken + reserved domain in `~/.config/kick-live/env`, create app at kick.com/settings/developer
+- [ ] `scripts/kick-app.sh login`, then subscribe to `chat.message.sent`, `livestream.status.updated`
 
 ### Phase 1 — Get live and prove it
 - [ ] `stream/run.sh`: ffmpeg test source (colour bars + clock + channel name) to RTMPS

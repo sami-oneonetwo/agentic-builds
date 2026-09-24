@@ -21,6 +21,11 @@ export FFMPEG="${FFMPEG:-$(_pick "$HOME/.local/bin/ffmpeg-static" /opt/homebrew/
 export FFPROBE="${FFPROBE:-$(_pick "$HOME/.local/bin/ffprobe-static" /opt/homebrew/bin/ffprobe "$(command -v ffprobe)")}"
 export PYTHON="${PYTHON:-$(_pick "$HOME/.local/share/kick-live/venv/bin/python" "$(command -v python3)")}"
 export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore}"
+export NGROK="${NGROK:-$(_pick "$HOME/.local/bin/ngrok" /opt/homebrew/bin/ngrok "$(command -v ngrok)")}"
+
+# --- kick developer app + tunnel (kickapp/, scripts/kick-app.sh, scripts/tunnel.sh) ----
+export KICK_APP_PORT="${KICK_APP_PORT:-8787}"                                        # local receiver port
+export KICK_TOKENS_FILE="${KICK_TOKENS_FILE:-$HOME/.config/kick-live/tokens.json}"   # OAuth tokens, mode 600, outside repo
 
 # --- runtime paths (gitignored) -------------------------------------------
 export RUN_DIR="${RUN_DIR:-$KICK_LIVE_ROOT/run}"
