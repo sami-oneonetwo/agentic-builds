@@ -332,3 +332,9 @@ MODE=live SOURCE=compositor AUDIO_SOURCE=pipe:$HOME/.local/share/kick-live/run/a
 ```
 Before any new live run: recreate the FIFO if missing (`mkfifo ~/.local/share/kick-live/run/a.pcm`),
 re-apply title/category via OAuth (tokens refresh themselves), and do NOT restart the pipeline while live.
+
+Addendum to 012 (from the tunnel session): receiver and ngrok stay up so the three webhook
+subscriptions keep receiving. If the Mac sleeps they die; bring them back with
+`scripts/kick-app.sh up` from `.claude/worktrees/kick-ngrok-tunnel/kick-live` (or from main after the
+merge), then `scripts/kick-app.sh kick subscriptions` to confirm chat.message.sent,
+livestream.status.updated and livestream.metadata.updated are still listed.
