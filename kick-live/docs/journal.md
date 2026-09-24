@@ -151,3 +151,64 @@ second, push-based chat path alongside the Pusher listener; the compositor can r
 
 Category note: the concept called it "Software & Game Development"; the real Kick category is
 "Software Development" id 34 (same directory, that is its current name).
+
+---
+
+## 006 — 2026-09-24 20:47 — Webhook path proven; compositor build started
+
+The test stream ended (went offline 10:46:12Z, ~16 min after 10:29:39Z start). Kick delivered a
+signature-verified `livestream.status.updated` webhook to the receiver, stored at
+`$RUN_DIR/webhooks.jsonl`. So the push-based liveness path works end to end; the supervisor will tail
+that file and treat `is_live:false` as a fast restart trigger (faster than the 15 s API poll).
+
+**Compositor build launched** (workflow, MODE=test / local HLS only, never live): a spine agent
+builds a complete-but-simple working show plus the Panel / StateStore / AudioEngine / RoundEngine /
+ChatBridge interfaces (`stream/COMPOSITOR_API.md`); then 8 parallel specialists replace each part
+with the rich version from CONCEPT.md (header/stage/chat/ballot panels, numpy audio, the 180 s round
+engine, the moderation+command chat bridge, the generative canvas); then an integration agent runs
+the whole thing to local HLS and captures a frame grid; then viewer-QA + legibility + retention-critic
+agents inspect the real frames; then a fix pass. Panels are separate files so agents don't collide;
+a panel that raises is caught and shows a placeholder so the loop never dies.
+
+---
+
+## 007 — 2026-09-24 21:20 — Owner housekeeping; key unchanged by choice
+
+Owner rotated the browser session (the pasted cookie is dead) and confirmed the **stream key was not
+rotated**, deliberately, for now. OAuth user token, webhook receiver and tunnel all survived the
+logout (OAuth is independent of the browser session). Post-project key rotation stays on the list.
+
+Compositor workflow restarted on Fable 5.1 (all agent calls pinned with `model: 'fable'`; the first
+run had inherited Opus 4.8 from the session). Spine phase in progress; 90 self-test frames rendered
+and inspected: layout, hook header, ballot, honest empty states all present; a few truncation issues
+noted for the module/integration passes.
+
+---
+
+## 008 — 2026-09-24 21:22 — SHIP IT LIVE is on air (spine build), verified from Kick playback
+
+Owner asked to speed up (under ten minutes). Decision: go live with the **spine compositor** now
+rather than wait for the module/QA phases; it already renders the full legible layout at 3-10 ms per
+frame and survived its fault tests. The enrichment workflow keeps running in the background against
+the working tree; the live show runs from a **frozen snapshot** at `~/.local/share/kick-live/live-snapshot`
+so agent edits cannot disturb it. All runtime state is in the shared `$RUN_DIR`.
+
+Launch: `MODE=live SOURCE=compositor AUDIO_SOURCE=pipe:$RUN_DIR/a.pcm scripts/start.sh` from the
+snapshot → supervisor → run.sh → compositor | ffmpeg (RTMPS, CA file, verify on); plus
+`monitor/kick_api.py --json-state` and `monitor/chat_listener.py`. Webhook receiver + tunnel (peer
+session) already up. Title/category re-applied via OAuth just before launch.
+
+| Check | Result |
+|---|---|
+| Processes | supervisor, run, compositor, ffmpeg, kick_api, chat_listener, kickapp, ngrok all alive |
+| Encoder | 3.1 Mbps, 0 drops; compositor render avg 3.2 ms, p95 9.6 ms, in-process numpy audio via FIFO |
+| Kick API | `is_live true`, title and category correct |
+| HLS probe (real playback) | **PASS** 1280x720@30, aac 48k stereo, latency 3.9 s, no black/frozen/silent |
+| Decoded frame | full layout: hook header, LIVE dot, countdown 02:30, ballot, activity feed with real events, honest empty chat |
+
+Known cosmetic issues carried into the enrichment pass: stage title and pinned strip truncate; ticker
+and activity lines can clip. Micro rounds run compositor-owned; the first ship will land in under 3
+minutes with an agent-pick if nobody votes.
+
+Gotcha: `source scripts/env.sh` via a *relative* path from the snapshot resolved `KICK_LIVE_ROOT` one
+level too high; absolute paths resolve correctly. Always launch with absolute paths.
