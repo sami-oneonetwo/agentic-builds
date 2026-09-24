@@ -5,13 +5,17 @@ set -euo pipefail
 patterns=(
   'sk_us-west-2_[A-Za-z0-9_-]{8,}'
   'sk_[a-z0-9-]+_[A-Za-z0-9]{16,}'
-  'STREAM_KEY=[^[:space:]]{8,}'
-  'SRT_PASSPHRASE=[^[:space:]]{8,}'
+  'STREAM_KEY=["'\''`]?[A-Za-z0-9][^[:space:]]{7,}'
+  'SRT_PASSPHRASE=["'\''`]?[A-Za-z0-9][^[:space:]]{7,}'
   'passphrase=[^[:space:]&]{10,}'
-  'KICK_TOKEN=[^[:space:]]{8,}'
+  'KICK_TOKEN=["'\''`]?[A-Za-z0-9][^[:space:]]{7,}'
   'Bearer [A-Za-z0-9._-]{20,}'
   'ghp_[A-Za-z0-9]{30,}'
   '-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----'
+  'NGROK_AUTHTOKEN=["'\''`]?[A-Za-z0-9][^[:space:]]{7,}'
+  '[0-9A-Za-z]{27}_[0-9A-Za-z]{21}'
+  'KICK_CLIENT_SECRET=["'\''`]?[A-Za-z0-9][^[:space:]]{7,}'
+  'client_secret=[^[:space:]&]{16,}'
 )
 fail=0
 while IFS= read -r -d '' f; do

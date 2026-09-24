@@ -7,9 +7,15 @@ KICK_LIVE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KICK_LIVE_ROOT
 
 # --- secrets (outside the repo) -------------------------------------------
+# The secrets file provides DEFAULTS. Anything already set in the environment
+# (e.g. `RUN_DIR=/tmp/x scripts/foo.sh` on the command line) must win, so we
+# snapshot the pre-existing exported vars, source the file, then restore them.
 KICK_LIVE_ENV="${KICK_LIVE_ENV:-$HOME/.config/kick-live/env}"
 if [ -f "$KICK_LIVE_ENV" ]; then
+  __kl_pre="$(export -p)"
   set -a; . "$KICK_LIVE_ENV"; set +a
+  eval "$__kl_pre"          # pre-set (CLI/parent) values override the file
+  unset __kl_pre
 fi
 export KICK_CHANNEL="${KICK_CHANNEL:-atleastonce}"
 export KICK_CHATROOM_ID="${KICK_CHATROOM_ID:-41370704}"
@@ -21,6 +27,7 @@ export FFMPEG="${FFMPEG:-$(_pick "$HOME/.local/bin/ffmpeg-static" /opt/homebrew/
 export FFPROBE="${FFPROBE:-$(_pick "$HOME/.local/bin/ffprobe-static" /opt/homebrew/bin/ffprobe "$(command -v ffprobe)")}"
 export PYTHON="${PYTHON:-$(_pick "$HOME/.local/share/kick-live/venv/bin/python" "$(command -v python3)")}"
 export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore}"
+export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/cert.pem}"   # static ffmpeg (OpenSSL) needs a CA bundle for rtmps
 
 # --- runtime paths (gitignored) -------------------------------------------
 export RUN_DIR="${RUN_DIR:-$KICK_LIVE_ROOT/run}"

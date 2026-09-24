@@ -89,17 +89,17 @@ Status key: [ ] todo, [~] in progress, [x] done.
 - [x] Commit and push
 
 ### Phase 1 — Get live and prove it
-- [ ] `stream/run.sh`: ffmpeg test source (colour bars + clock + channel name) to RTMPS
-- [ ] Verify within 60 s that `livestream.is_live` flips true and `viewer_count` is present
-- [ ] Fetch `playback_url` HLS manifest and one segment, decode a frame with ffmpeg, confirm it is not black
-- [ ] Record ingest bitrate, dropped frames, reconnect behaviour
-- [ ] ADR-001: RTMPS over SRT
+- [x] `stream/run.sh`: ffmpeg test source (colour bars + clock + channel name) to RTMPS
+- [x] Verify within 60 s that `livestream.is_live` flips true and `viewer_count` is present
+- [x] Fetch `playback_url` HLS manifest and one segment, decode a frame with ffmpeg, confirm it is not black
+- [~] Record ingest bitrate, dropped frames, reconnect behaviour
+- [x] ADR-001: RTMPS over SRT
 
 ### Phase 2 — Measurement
-- [ ] `monitor/kick_api.py`: poll every 15 s -> `metrics.jsonl` (`ts, is_live, viewer_count, title, category`)
-- [ ] `monitor/chat_listener.py`: Pusher subscribe to `chatrooms.41370704.v2`, log each message,
+- [x] `monitor/kick_api.py`: poll every 15 s -> `metrics.jsonl` (`ts, is_live, viewer_count, title, category`)
+- [x] `monitor/chat_listener.py`: Pusher subscribe to `chatrooms.41370704.v2`, log each message,
       compute messages per minute and unique chatters per 5 min
-- [ ] `monitor/report.py`: one-screen status (live?, viewers now/peak, chat rate, uptime)
+- [x] `monitor/report.py`: one-screen status (live?, viewers now/peak, chat rate, uptime)
 - [ ] Alerting hook: if not live for >60 s, supervisor restarts ffmpeg
 
 ### Phase 3 — Content v1 (this is where the agents come in)

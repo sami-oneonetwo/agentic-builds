@@ -1,0 +1,25 @@
+ffmpeg exit 0
+gen exit 0
+--- gen.log
+generator: 150 frames, 0 over budget, wall 5.57s
+--- ff.log (tail)
+  Stream #1:0 -> #0:1 (pcm_s16le (native) -> aac (native))
+Press [q] to stop, [?] for help
+Output #0, flv, to '/tmp/kl-avtest/test.flv':
+  Metadata:
+    encoder         : Lavf63.1.102
+  Stream #0:0: Video: h264 ([7][0][0][0] / 0x0007), yuv420p(progressive), 1280x720, q=2-31, 3000 kb/s, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.1.102 h264_videotoolbox
+  Stream #0:1: Audio: aac (LC) ([10][0][0][0] / 0x000A), 48000 Hz, stereo, fltp, 128 kb/s
+    Metadata:
+      encoder         : Lavc63.1.102 aac
+[h264_videotoolbox @ 0x15b7063a0] Color range not set for yuv420p. Using MPEG range.
+[out#0/flv @ 0x600000f50300] video:24KiB audio:78KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 7.058164%
+frame=  150 fps= 30 q=-0.0 Lsize=     110KiB time=00:00:05.00 bitrate= 180.1kbits/s speed=0.999x elapsed=0:00:05.00    
+[aac @ 0x15b708590] Qavg: 633.687
+--- probe
+stream|codec_name=h264|codec_type=video
+stream|codec_name=aac|codec_type=audio
+format|duration=5.021000|size=112592|bit_rate=179393
+stream|nb_read_frames=150
