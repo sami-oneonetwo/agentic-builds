@@ -239,3 +239,31 @@ Restart: TERM to the compositor → supervisor relaunched in 2 s (exit rc=0, att
 
 **Result:** 0 disables; stage_body max 17.5 ms and ~2.6 renders/s (was 40.9 ms, ~30/s);
 activity_feed max 15.9 ms (was 70); frame p95 14 ms (was 37); 2 real viewers watching.
+
+---
+
+## 010 — 2026-09-24 21:41 — Agent on duty; first human-requested macro-ship (chaos mode)
+
+Owner asked whether chat reaches the agent. It did not: chat reached only the compositor (votes,
+!idea, !theme parsed in-process); no model was in the loop and the screen said "no agent on duty".
+
+**Went on duty.** `agents/duty.py` (new): heartbeat loop (agent.on_duty + heartbeat_ts every 30 s),
+`classify` for !idea, `macro-start/step/done` for the on-screen macro clock and stage steps, `say`.
+It writes only the fields the concept reserves for an external agent and uses the same re-read +
+atomic-replace protocol as rounds.py. A chat Monitor now notifies this session of every non-vote
+message. The NEXT UP panel flipped from "no agent on duty" to the queue.
+
+**Macro-ship v0.4.0 (commit 6781fce), requested by @atleastonce via `!idea change everything. Make it
+all random`.** Built live in ~12 min: a `chaos: randomise one parameter` ballot option in the round
+menu; when it ships it rolls one other parameter to a new random value and rewrites the ship title to
+what actually changed (`chaos → palette: gold`), so patch notes stay honest. Unit-tested 4 rolls;
+deployed by restarting the compositor (2 s, supervisor attempt 3); patch saved at
+`stream/patches/0001-chaos-option.patch` for reconciliation into the working tree.
+
+**Bugs found live and fixed in the snapshot:** idea ids collided (`len(ideas)+1` → two `i-0002`);
+generator now uses max(existing)+1. `duty.py classify` also updated every id match; now exactly one,
+with `--match TEXT` to disambiguate. State repaired by hand (i-0002 chaos, i-0003 pixel-art).
+
+Second idea queued: `!idea build a pixel art bot that responds` (i-0003, macro). Note: the version
+counter read v0.4.0 after the macro bump (engine had macro=3); monotonic and tied to real ship events,
+but the scheme differs from CONCEPT §8; align during reconciliation.
