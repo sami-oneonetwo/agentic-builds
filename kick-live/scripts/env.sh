@@ -8,8 +8,18 @@ export KICK_LIVE_ROOT
 
 # --- secrets (outside the repo) -------------------------------------------
 KICK_LIVE_ENV="${KICK_LIVE_ENV:-$HOME/.config/kick-live/env}"
+# Variables already set in the environment win over the file (same as kick_oauth.py's setdefault),
+# so `RUN_DIR=/x scripts/kick-app.sh status` works as expected.
 if [ -f "$KICK_LIVE_ENV" ]; then
-  set -a; . "$KICK_LIVE_ENV"; set +a
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _line="${_line#"${_line%%[![:space:]]*}"}"                 # ltrim
+    case "$_line" in ''|'#'*) continue ;; esac
+    _line="${_line#export }"
+    _k="${_line%%=*}"
+    case "$_k" in *[!A-Za-z0-9_]*|'') continue ;; esac        # skip malformed keys
+    if [ -z "${!_k+x}" ]; then export "$_line"; fi
+  done < "$KICK_LIVE_ENV"
+  unset _line _k
 fi
 export KICK_CHANNEL="${KICK_CHANNEL:-atleastonce}"
 export KICK_CHATROOM_ID="${KICK_CHATROOM_ID:-41370704}"

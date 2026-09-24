@@ -53,6 +53,15 @@ agents ──> kickapp/kick_oauth.py  (user_token(), app_token(), api_get/post, 
    Events arrive as one JSON line each in `kick-live/run/webhooks.jsonl`; chat messages are also
    normalised into `run/chat.jsonl` for the compositor.
 
+## Runtime directory
+
+Runtime files (`webhooks.jsonl`, `chat.jsonl`, `public_url`, `pids/`, `logs/`) go to `$RUN_DIR`.
+Default is `kick-live/run/` inside the checkout; since 2026-09-24 the env file sets a shared
+`RUN_DIR=/Users/sandy/.local/share/kick-live/run` so the receiver (this branch) and the compositor
+(main) exchange files without a merge. A variable already set in the shell wins over the env file,
+so `RUN_DIR=/x scripts/kick-app.sh status` inspects a different run directory. `down` only finds
+processes whose pid files are in the current `RUN_DIR`; if you change it, stop first, then change.
+
 ## Day-to-day
 
 | Command | Does |
