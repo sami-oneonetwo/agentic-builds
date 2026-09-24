@@ -1,0 +1,38 @@
+--- /tmp/rounds.py.before	2026-09-24 21:39:49
++++ /Users/sandy/.local/share/kick-live/live-snapshot/stream/rounds.py	2026-09-24 21:40:19
+@@ -42,6 +42,9 @@
+     {"param": "audio_tempo",    "values": [72, 85, 100],                          "title": "tempo: {v} bpm"},
+     {"param": "ticker_speed",   "values": [90, 120, 160],                         "title": "ticker: {v} px/s"},
+     {"param": "header_tagline", "values": ["SHIP IT LIVE", "CHAT BUILDS THIS", "YOU PICK WHAT CHANGES"], "title": "tagline: {v}"},
++    # macro-ship v0.2.0, requested by @atleastonce (!idea "change everything. Make it all random"):
++    # chaos rolls ONE other parameter to a random new value when it ships; the ship title records what changed.
++    {"param": "chaos",          "values": ["roll"],                                "title": "chaos: randomise one parameter"},
+ ]
+ LETTERS = ("A", "B", "C")
+ 
+@@ -141,6 +144,16 @@
+             value = opt.get("value")
+             if value is None:
+                 value = ".".join(oid.split(".")[2:])
++            if param == "chaos":
++                pool = [e for e in MENU if e["param"] != "chaos"]
++                entry = self._rng.choice(pool)
++                cur = (s.get("micro") or {}).get(entry["param"])
++                vals = [v for v in entry["values"] if str(v) != str(cur)] or list(entry["values"])
++                value = self._rng.choice(vals)
++                param = entry["param"]
++                opt["title"] = "chaos \u2192 " + entry["title"].format(v=value)
++                opt["id"] = "micro.%s.%s" % (param, value)
++                opt["param"], opt["value"] = param, value
+             s.setdefault("micro", {})[param] = value
+             if param == "palette":
+                 s.setdefault("theme", {}).update({"preset": value, "set_by": picked_by or "agent", "set_ts": s.get("updated_ts")})
+@@ -232,7 +245,7 @@
+                 if dup:
+                     dup["plus"] = int(dup.get("plus") or 0) + 1
+                 else:
+-                    ideas.append({"id": "i-%04d" % (len(ideas) + 1), "text": m["arg"], "by": by, "ts": epoch_to_iso(now),
++                    ideas.append({"id": "i-%04d" % (max([int(str(x.get("id","i-0")).split("-")[-1] or 0) for x in ideas if str(x.get("id","")).startswith("i-")] + [0]) + 1), "text": m["arg"], "by": by, "ts": epoch_to_iso(now),
+                                   "plus": 0, "class": "pending", "status": "open", "reason": None})
+                     self._activity("chat", "@%s nominated: %s" % (by, m["arg"]), now)
+                 if len(ideas) > 50:
