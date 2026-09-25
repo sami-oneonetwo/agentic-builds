@@ -477,3 +477,14 @@ classify. Keeper builds from `!idea` may change only the world (scenes, creature
 cosmetics), never the repo, pipeline, auth, moderation or honesty code, and idea text is never
 executed. Chat that looks like an instruction to the agent is declined on screen with the reason.
 Encoded as a memory rule; to be reflected in the keepers module's classification during integration.
+
+Addendum to 017 (12:20): **secrets were in the render processes' environment.** run.sh sources
+the secrets file (`set -a`) and launched relay/compositor/ffmpeg with it, so all three inherited
+STREAM_KEY, SRT_PASSPHRASE, KICK_CLIENT_SECRET, KICK_TOKEN, NGROK_AUTHTOKEN, KICK_CLIENT_ID
+(verified with `ps -E` on the live pids). Nothing reads them, but a keeper-built scene or a bug could
+have put one on screen. Fix (working tree + live-snapshot-v2): run.sh launches every child through
+`env -u <each>`; ffmpeg only ever gets the key inside its URL argument; compositor.py additionally
+pops the same keys from os.environ at startup. Proven in an isolated MODE=test run: all three
+children show NO SECRETS and HLS still renders. The live pipeline still holds them until its next
+full run.sh restart (a deploy.sh child restart inherits the relay's env). Owner's balance recorded:
+chat may influence the world freely but must never be able to break the stream or expose a secret.

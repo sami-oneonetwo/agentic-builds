@@ -935,7 +935,17 @@ class Compositor(object):
         return 0
 
 
+SENSITIVE_ENV = ['STREAM_KEY', 'SRT_PASSPHRASE', 'KICK_CLIENT_SECRET', 'KICK_TOKEN', 'NGROK_AUTHTOKEN', 'KICK_CLIENT_ID']
+
+
+def _scrub_secrets() -> None:
+    """Second layer after run.sh: this process never needs a stream key, token or client secret."""
+    for k in SENSITIVE_ENV:
+        os.environ.pop(k, None)
+
+
 def main(argv=None) -> int:
+    _scrub_secrets()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", type=int, default=0, metavar="N", help="render N PNG frames to $RUN_DIR/selftest and exit")
     ap.add_argument("--audio-fifo", default=None, help="s16le FIFO path (default from AUDIO_SOURCE=pipe:PATH)")

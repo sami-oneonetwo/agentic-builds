@@ -56,6 +56,8 @@ if [ "$MODE" = live ] && [ -z "$STREAM_KEY" ]; then
 fi
 COMPOSITOR="$KICK_LIVE_ROOT/stream/compositor.py"
 RELAY_PY="$KICK_LIVE_ROOT/stream/relay.py"
+# Children never inherit secrets: ffmpeg receives the key inside its URL argument, nothing else needs them.
+SCRUB=(env -u STREAM_KEY -u SRT_PASSPHRASE -u KICK_CLIENT_SECRET -u KICK_TOKEN -u NGROK_AUTHTOKEN -u KICK_CLIENT_ID)
 RELAY="${RELAY:-1}"          # SOURCE=compositor only: 1 -> relay.py owns ffmpeg's pipes and supervises the compositor
                              # (restartable without dropping ingest); 0 -> legacy direct pipe compositor | ffmpeg
 if [ "$SOURCE" = compositor ] && [ ! -f "$COMPOSITOR" ]; then
@@ -192,15 +194,15 @@ if [ "$SOURCE" = compositor ] && [ "$RELAY" = 1 ]; then
               --pid-file "$PID_DIR/compositor.pid" --child-log "$LOG_DIR/compositor.log"
               --status "$RUN_DIR/relay_status.json" --activity-file "$ACTIVITY_FILE")
   [ -n "$FIFO" ] && RELAY_ARGS+=(--audio-fifo "$FIFO")
-  "$PYTHON" "$RELAY_PY" "${RELAY_ARGS[@]}" -- "$PYTHON" "$COMPOSITOR" --run-dir "$RUN_DIR" \
-      2>> "$LOG_DIR/relay.log" | "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
+  "${SCRUB[@]}" "$PYTHON" "$RELAY_PY" "${RELAY_ARGS[@]}" -- "$PYTHON" "$COMPOSITOR" --run-dir "$RUN_DIR" \
+      2>> "$LOG_DIR/relay.log" | "${SCRUB[@]}" "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
   FF_PID=$!
   set +o pipefail                              # see the RELAY=0 branch: we want ffmpeg's own rc, not the pipeline's
   sleep 0.2; COMP_PID="$(jobs -p | head -1 || true)"   # first pipeline member = the relay
   [ -n "$COMP_PID" ] && echo "$COMP_PID" > "$PID_DIR/relay.pid"
   SRC_PROC=relay
 elif [ "$SOURCE" = compositor ]; then
-  "$PYTHON" "$COMPOSITOR" 2>> "$LOG_DIR/compositor.log" | "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
+  "${SCRUB[@]}" "$PYTHON" "$COMPOSITOR" 2>> "$LOG_DIR/compositor.log" | "${SCRUB[@]}" "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
   FF_PID=$!
   # `wait $FF_PID` reports the PIPELINE status and bash applies pipefail when the job is reaped: the compositor
   # always dies of SIGPIPE/BrokenPipe when ffmpeg stops first, which would turn ffmpeg's rc=0 into 1. We want
@@ -211,7 +213,7 @@ elif [ "$SOURCE" = compositor ]; then
   [ -n "$COMP_PID" ] && echo "$COMP_PID" > "$PID_DIR/compositor.pid"
   SRC_PROC=compositor
 else
-  "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
+  "${SCRUB[@]}" "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
   FF_PID=$!
 fi
 echo "$FF_PID" > "$PID_DIR/ffmpeg.pid"
