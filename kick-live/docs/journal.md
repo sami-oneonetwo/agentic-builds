@@ -565,3 +565,12 @@ tours neighbourhoods; a rate-limited `home` verb pans to your plot; labels go sh
 crowds. Mockup workflow launched: three camera styles (top-down AoE-like, isometric, side-scroll
 parallax), each at empty dawn and busy evening, into docs/mockups/. Design pass (open-world spec)
 still running; if its winner is not a settlement, the spec step re-runs with the owner's choice.
+
+Addendum to 020 (18:40): mockups reviewed by the owner (docs/mockups/): **top-down chosen**. Owner:
+"the actual design of the individual parts needs to be massively improved. Align yourself with the
+thronglets. Don't make the characters exactly like that though. Make them our own. Go."
+Read as: keep the top-down settlement camera; raise the art bar to the appeal of Plaything's
+Thronglets (small, expressive, alive, warm, instantly lovable creatures with personality and fluid
+idle/emote animation) while the designs stay ours (no yellow round Thronglet look-alikes; our own
+silhouette language, name-derived colour, procedural but characterful). Tiles, buildings and HUD get
+the same treatment. Art-direction workflow launched; the open-world spec is redirected to top-down.
