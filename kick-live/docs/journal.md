@@ -537,3 +537,21 @@ Addendum to 019 (18:05): owner's first live minutes in the Hollow: `hello` woke 
 Observations for the next carving: natural phrasings ("plant a flower") fall through to plain chat
 by design (exact-token rule); consider a leading-verb rule for ≤3-word messages without `@`. `plant`
 is 1/user/session, so the repeat is refused on the plank; refusal copy must be unmissable.
+
+---
+
+## 020 — 2026-09-25 18:15 — Owner: the cave "feels like a prison". Open-world redesign
+
+Owner, minutes into PIP HOLLOW live: "this feels less like a world and more like a prison. Can't we
+make this more open? Outside and with space. Age of Empires style maybe? Big open areas that the
+living things chat creates can move around. I need some fresher ideas, this is cold and stagnant."
+
+**Diagnosis.** The art rule "darkness means nobody" turned honesty about people into emptiness on
+screen; a sealed cave with sleepers in burrows reads as a cell. Correction: honesty applies to WHO
+is there (every named creature / mark = a real chatter), not to whether the world is alive. Nature
+may live: wind, water, sun, seasons, growth. No animate non-person creatures still.
+
+**Directions proposed:** Settlement (top-down open map, camera follows life, gather/build/farm, a
+village chat raises over days), Migration (side-scrolling herd journey, votes pick the route),
+Island (one living island, tides, explore/mark). Lean: Settlement + Migration's moving camera.
+Design workflow launched with this brief. Cave stays live until the redesign is ready.
