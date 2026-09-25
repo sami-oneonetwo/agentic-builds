@@ -531,3 +531,9 @@ Known remaining (from the fix pass): the 320x180 tile is under the 10% lit-pixel
 (3.9%); `sing` is refused pending the audio chorus (v1.1); carving edge marquee; metrics fields for
 verbs/votes not yet emitted; world.json from this run gets the stepped terrain (fresh). Round-2 QA
 (`agents/workflows/world-qa-round.js`) runs against the live build next and lands as keeper carvings.
+
+Addendum to 019 (18:05): owner's first live minutes in the Hollow: `hello` woke their pip (header
+0→1 AWAKE, verified from Kick playback), then `feed`, `plant`, `plant a flower`, `plant @atleastonce`.
+Observations for the next carving: natural phrasings ("plant a flower") fall through to plain chat
+by design (exact-token rule); consider a leading-verb rule for ≤3-word messages without `@`. `plant`
+is 1/user/session, so the repeat is refused on the plank; refusal copy must be unmissable.
