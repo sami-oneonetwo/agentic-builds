@@ -645,3 +645,23 @@ creatures as small people-shaped settlers (head, torso, arms, legs, ~2.5 heads t
 heads and eyes, hair/hat/clothes from the name hash, real walk cycle, carry poses) — ours, warm,
 Thronglet-level appeal, not abstract blobs. Grafts: A's dusk lighting, B's ground richness. The
 running art workflow was stopped before its judge/bible steps; a focused settlers pass replaces it.
+
+---
+
+## 022 — 2026-09-25 20:05 — Settlement art canonical; LONGGRASS v0 build launched
+
+Settlers art pass done (docs/art/settlers-round, settlers-tall → judges 91 vs 90 → bible):
+`stream/world/art/` (creatures, tiles, buildings, props, hud) + `docs/ART.md`, final renders in
+docs/art/final (busy 18:07, dawn, night 23:04 with the 0.55 floor, sheet, tile). Owner's direction
+honoured: Studio C's clean outlines, people-shaped settlers with real limbs and walk cycles, name
+colour dominant, tier gear (staff/lantern/satchel), one toy-cream face for all (no skin-tone gene),
+explicit caricature-avoidance rule, explicit "ours vs Thronglets" section. Measured: settler sheet
+0.75 s (must render off the frame loop; the 3 s hold covers it), ground paint 50 ms (background
+bake), world compose 2.2 ms at 20 settlers. Committed c249d8b.
+
+`agents/workflows/settlement-build.js` launched in **v0 preview mode**: Gate (terrain + nature +
+bake with six real frames and timing; camera + land/state schema 2) → Modules (scene, behaviour,
+world panel, verbs with the leading-verb rule, rounds/keepers/audio, copy) → Integrate (migration
+on a copy of the live world.json, pre-bake, hot-reload swap test under the relay, probe) → QA
+(stranger, honesty, art) → Fix. Deploy plan: hot-reload scene swap while the cave is on air
+(OPENWORLD §14), swap-build.sh as fallback; owner told first either way.
