@@ -261,9 +261,10 @@ class HeaderRight(Panel):
         d.text((right - vw, 8), ver, font=f, fill=L.COLORS["text2"] if ctx.stale else L.COLORS["text"])
         # line 2 (y 36): LIVE dot + real viewers, right-aligned
         live, n = self._viewers(ctx)
-        word = "LIVE" if live else "OFFLINE"
-        segs = [(word, L.COLORS["text"] if live else L.COLORS["text2"]),
-                ("  %s watching" % n, L.COLORS["text"] if (live and n != "--") else L.COLORS["text2"])]
+        # `LIVE` only when the real poll says so; otherwise a dim dot and `-- watching` (never the word OFFLINE on a frame
+        # that is, by definition, being watched)
+        segs = ([("LIVE", L.COLORS["text"])] if live else []) + \
+               [("  %s watching" % n, L.COLORS["text"] if (live and n != "--") else L.COLORS["text2"])]
         total = sum(L.text_width("Menlo", 22, s) for s, _ in segs)
         x = right - total
         dot = L.COLORS["danger"] if live else L.COLORS["hairline"]

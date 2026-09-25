@@ -33,6 +33,12 @@ STATS_S = 10.0
 BAR_H = 8
 
 
+def _ordinal(n: int) -> str:
+    n = int(n)
+    suf = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return "%d%s" % (n, suf)
+
+
 def _world():
     m = sys.modules.get("stream.panels.world")
     sc = m.scene() if (m is not None and hasattr(m, "scene")) else None
@@ -92,8 +98,8 @@ class ColonyPanel(Panel):
             if carving:
                 return (head, "the keepers are carving %s" % (carving.get("name") or name), 1.0, accent)
             if self._keeper_fresh(ctx):
-                return (head, "milestone %d reached · the keepers are carving" % nxt, 1.0, accent)
-            return (head, "milestone %d reached · %s carved next session" % (nxt, name), 1.0, L.COLORS["warn"])
+                return (head, "the keepers are carving %s" % name, 1.0, accent)
+            return (head, "%s opens when a keeper is back" % name, 1.0, L.COLORS["warn"])
         more = nxt - hatched
         frac = (hatched - prev) / float(max(1, nxt - prev))
         return (head, "%d more until %s opens" % (more, name), max(0.0, min(1.0, frac)), L.COLORS["text"])
@@ -115,7 +121,8 @@ class ColonyPanel(Panel):
                 p = sc.world.pip(key) or {}
                 nm = _shown(m, key)
                 if nm:
-                    night = "night %d for @%s" % (max(1, int(p.get("sessions_seen") or 1)), nm)
+                    n_night = max(1, int(p.get("sessions_seen") or 1))
+                    night = ("@%s's first night" % nm) if n_night == 1 else ("@%s's %s night" % (nm, _ordinal(n_night)))
         if night and L.text_width("Menlo", 22, s + " · " + night) <= maxw:
             return s + " · " + night, None
         return s, night

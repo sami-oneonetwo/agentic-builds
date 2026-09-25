@@ -577,7 +577,7 @@ the same treatment. Art-direction workflow launched; the open-world spec is redi
 
 ---
 
-## 020 — 2026-09-25 18:40 — Fix round 1: the alone screen has to breathe
+## 021 — 2026-09-25 18:40 — Fix round 1: the alone screen has to breathe (written alongside 020, another agent's open-world note)
 
 Round-2 QA (journal 019 follow-up) judged the 1-awake and 0-awake frames against the owner's bar (015: "very boring")
 and failed them: a motionless pip in a black box, verbs answered by a plank sentence, dev copy on every strip, label

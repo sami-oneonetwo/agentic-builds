@@ -52,17 +52,23 @@ from stream.world import SIM_W, SIM_H, UPSCALE, HOLD_S, SLEEP_AFTER_S, test_pips
 from stream.world import pips as P  # noqa: E402
 from stream.world.behaviour import Behaviour, AWAKE_STATES  # noqa: E402
 from stream.world.state import (WorldState, MOUTH_X, VOID_ROWS, FLOOR_ROWS, SOIL_ROWS, LEDGE_X, PLATFORMS,  # noqa: E402
-                                PLATFORM_TOP, PLATFORM_LETTERS, BURROW_SLOTS, LANTERN_X, burrow_box, protected_mask)
+                                PLATFORM_TOP, PLATFORM_LETTERS, BURROW_SLOTS, LANTERN_X, burrow_box, protected_mask,
+                                mouth_span)
 
 NAME = "hollow"
 GLOW_R = 12                          # 24x24 kernel
-MOSS_R = 6                           # 12x12 kernel
+MOSS_R = 8                           # 16x16 kernel: planted moss visibly lights the floor around it
 GLOW_GAIN = 0.85
 DEGRADE_MS = (16.0, 20.0, 24.0)
 DEGRADE_WINDOW = 30
 RESTORE_FRAMES = 300
 DRIP_GAP = (2.0, 6.0)
+DRIP_GAP_ALONE = (1.0, 3.0)          # at 0 awake the cave drips every 1-3 s (up to 2 columns in flight): it breathes
 DRIP_SPEED = 2.0                     # sim px per frame
+SKY_DRIFT_HZ = 0.5                   # the mouth gradient drifts ~1 level at 0.5 Hz across its 14 rows, day and night
+SKY_DRIFT_AMP = 0.07                 # in gradient phase (about one row of the 3-stop ramp)
+MOSS_BODY = {0: (5, 2), 1: (5, 3), 2: (6, 3), 3: (7, 4)}    # sim (w, h) of a moss clump by size: 20 px wide on screen from day one
+PARTICLE_TTL = 30
 STAR_N = 6
 MOON_X, MOON_Y = 257, 3
 SYNODIC = 29.530588853
@@ -77,8 +83,10 @@ _ROCK = np.array(L.hex_rgb(L.COLORS["panel"]), dtype=np.uint8)
 _EDGE = np.array(L.hex_rgb(L.COLORS["hairline"]), dtype=np.uint8)
 _TEXT2 = np.array(L.hex_rgb(L.COLORS["text2"]), dtype=np.uint8)
 _TEXT = np.array(L.hex_rgb(L.COLORS["text"]), dtype=np.uint8)
-SKY_NIGHT = (L.hex_rgb("#0B0E14"), L.hex_rgb("#141A2A"))       # CONCEPT 5 / WORLD 6.1 (no new hexes)
-SKY_DAY = (L.hex_rgb("#1D2B4A"), L.hex_rgb("#3A5F8A"))
+# CONCEPT 5 / WORLD 6.1 (no new hexes): 3 stops top -> horizon. Night ends on the day palette's dark stop so the mouth
+# stays the brightest region of the 0-awake tile after dark (art-rules 4; the 10 % lit gate).
+SKY_NIGHT = (L.hex_rgb("#0B0E14"), L.hex_rgb("#141A2A"), L.hex_rgb("#1D2B4A"))
+SKY_DAY = (L.hex_rgb("#1D2B4A"), L.hex_rgb("#2B4569"), L.hex_rgb("#3A5F8A"))     # middle stop = the average of the two spec stops
 
 
 def _log(msg: str) -> None:
@@ -104,7 +112,7 @@ def _kernel(r: int, power: float = 2.0, hole: float = 0.0) -> np.ndarray:
 
 _RIM_CACHE: "Dict[Tuple, np.ndarray]" = {}
 _SOIL = (_ROCK.astype(np.int16) * 0.8).astype(np.uint8)         # #0D1017, the soil tone (rock at 80 %)
-SPECKLE_EDGE, SPECKLE_SOIL = 0.04, 0.06                          # rock texture: 4 % hairline tone, 6 % soil tone
+SPECKLE_EDGE, SPECKLE_SOIL = 0.15, 0.10                          # rock texture: 15 % hairline tone, 10 % soil tone (visible grain at 4x)
 PLATFORM_IDLE, PLATFORM_LIVE = 0.35, 0.60                        # platform top: accent at 35 %, 60 % only while someone stands
 
 
@@ -203,6 +211,8 @@ class CaveScene(object):
         self.drips: List[List[float]] = []
         self._next_drip = 0.0
         self._stars: Optional[np.ndarray] = None
+        self._particles: List[List[float]] = []             # dig rubble in flight: [x, y, vx, vy, ttl]
+        self._sky_cols: Optional[np.ndarray] = None
         self.honesty_violations = 0
         self.test_pips = 0
         self._n_hidden = 0
@@ -560,8 +570,7 @@ class CaveScene(object):
     # ------------------------------------------------------------------ static cave layer
     def _static_layer(self, ctx, now: float) -> np.ndarray:
         terrain = self.world.terrain()
-        lt = _time.localtime(now)
-        key = (self._terrain_ver, id(terrain), ctx.preset, lt.tm_yday, lt.tm_hour, lt.tm_min)
+        key = (self._terrain_ver, id(terrain), ctx.preset)
         if self._static is not None and key == self._static_key:
             return self._static
         img = np.empty((SIM_H, SIM_W, 3), dtype=np.uint8)
@@ -592,29 +601,31 @@ class CaveScene(object):
         acc = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.float32)
         top = (acc * PLATFORM_IDLE).astype(np.uint8)
         side = (acc * 0.2).astype(np.uint8)
-        for x, w in PLATFORMS:
-            img[PLATFORM_TOP, x:x + w] = top
-            img[PLATFORM_TOP, x] = _EDGE
-            img[PLATFORM_TOP, x + w - 1] = _EDGE
-            img[PLATFORM_TOP + 1:PLATFORM_TOP + 3, x:x + w] = side
-        # sky in the mouth (real local hour): 3-stop gradient over rows 0-13 of the open columns
-        d = daylight(now)
-        c0 = tuple(SKY_NIGHT[0][i] * (1 - d) + SKY_DAY[0][i] * d for i in range(3))
-        c1 = tuple(SKY_NIGHT[1][i] * (1 - d) + SKY_DAY[1][i] * d for i in range(3))
-        cm = tuple((c0[i] + c1[i]) / 2.0 for i in range(3))
-        mouth_rows = range(0, 14)
-        for r in mouth_rows:
-            f = r / 13.0
-            col = [c0[i] * (1 - f) * (1 - f) + cm[i] * 2 * f * (1 - f) + c1[i] * f * f for i in range(3)]
-            row = terrain[r, MOUTH_X[0] - 4:MOUTH_X[1] + 4]
-            seg = img[r, MOUTH_X[0] - 4:MOUTH_X[1] + 4]
-            seg[row] = np.array(col, dtype=np.uint8)
-        # moon (phase from the date), only visible enough at night
-        if d < 0.7:
-            self._draw_moon(img, terrain, now, 1.0 - d)
-        # lantern chain (lowered/raised by the keeper heartbeat, drawn dynamic in _dynamic); nothing here
+        for x, w in PLATFORMS:                                     # rounded ends: the corner pixel is dropped each end
+            img[PLATFORM_TOP, x + 1:x + w - 1] = top
+            img[PLATFORM_TOP + 1, x] = _EDGE
+            img[PLATFORM_TOP + 1, x + w - 1] = _EDGE
+            img[PLATFORM_TOP + 1:PLATFORM_TOP + 3, x + 1:x + w - 1] = side
+            img[PLATFORM_TOP + 2, x] = side
+            img[PLATFORM_TOP + 2, x + w - 1] = side
+        # the sky, the moon and the stars are drawn every frame in _dynamic (the sky breathes; the moon rides on it);
+        # the lantern chain too (lowered/raised by the keeper heartbeat)
         self._static, self._static_key = img, key
         return img
+
+    def _sky(self, img: np.ndarray, terrain: np.ndarray, now: float, d: float) -> None:
+        """Real-clock 3-stop gradient over the open mouth cells, rows 0-13, drifting about one level at 0.5 Hz with a
+        slow wave down the rows (WORLD.md 6.1; art-rules 4 `something moves every frame`, day and night)."""
+        c = [tuple(SKY_NIGHT[k][i] * (1 - d) + SKY_DAY[k][i] * d for i in range(3)) for k in range(3)]
+        ph = 2.0 * math.pi * SKY_DRIFT_HZ * now
+        x0, x1 = MOUTH_X[0] - 8, MOUTH_X[1] + 8
+        for r in range(0, 14):
+            f = r / 13.0 + SKY_DRIFT_AMP * math.sin(ph + r * 0.45)
+            f = min(1.0, max(0.0, f))
+            col = np.array([c[0][i] * (1 - f) * (1 - f) + c[1][i] * 2 * f * (1 - f) + c[2][i] * f * f for i in range(3)],
+                           dtype=np.uint8)
+            row = terrain[r, x0:x1]
+            img[r, x0:x1][row] = col
 
     def _draw_moon(self, img: np.ndarray, terrain: np.ndarray, now: float, vis: float) -> None:
         ph = moon_phase(now)
@@ -656,6 +667,10 @@ class CaveScene(object):
 
     def _dynamic(self, img: np.ndarray, ctx, now: float) -> None:
         d = daylight(now)
+        terrain = self.world.terrain()
+        self._sky(img, terrain, now, d)
+        if d < 0.7:
+            self._draw_moon(img, terrain, now, 1.0 - d)
         if self._stars is None:
             self._stars = self._stars_init()
         if d < 0.6 and len(self._stars):
@@ -663,18 +678,22 @@ class CaveScene(object):
                 k = 0.5 + 0.5 * math.sin(2 * math.pi * now / per + ph)
                 v = (_TEXT.astype(np.float32) * (0.25 + 0.55 * k) * (1.0 - d)).astype(np.uint8)
                 img[int(y), int(x)] = np.maximum(img[int(y), int(x)], v)
-        # drips: 1 px lines falling 2 px/frame from the ceiling to the floor, then a 3-frame splash
-        if now >= self._next_drip:
+        # drips: 1 px streaks falling 2 px/frame from the ceiling (or a stalactite tip) to the floor, then a 3-frame
+        # splash. Alone (0 awake) the cave drips every 1-3 s with up to two columns in flight; otherwise 2-6 s.
+        awake_n = self.behaviour.awake_count()
+        in_flight = sum(1 for dr in self.drips if dr[2] <= 0)
+        if now >= self._next_drip and in_flight < (2 if awake_n == 0 else 3):
             x = int(self._u(LEDGE_X[1] + 4, SIM_W - 30))
-            if MOUTH_X[0] - 2 <= x <= MOUTH_X[1] + 2:
-                x = MOUTH_X[1] + 6
-            col = self.world.terrain()[VOID_ROWS[0]:VOID_ROWS[0] + 6, x]      # the stepped ceiling: first carved row
+            if MOUTH_X[0] - 8 <= x <= MOUTH_X[1] + 8:
+                x = MOUTH_X[1] + 12
+            col = terrain[VOID_ROWS[0]:VOID_ROWS[0] + 10, x]      # the stepped ceiling / a stalactite: first carved row
             open_rows = np.nonzero(col)[0]
             y0 = float(VOID_ROWS[0] + (int(open_rows[0]) if len(open_rows) else 0))
             self.drips.append([float(x), y0, 0.0])
-            self._next_drip = now + self._u(*DRIP_GAP)
+            self._next_drip = now + self._u(*(DRIP_GAP_ALONE if awake_n == 0 else DRIP_GAP))
         floor = float(FLOOR_ROWS[0])
         drip_c = (_TEXT2.astype(np.float32) * 0.55).astype(np.uint8)
+        drip_h = (_TEXT2.astype(np.float32) * 0.85).astype(np.uint8)
         keep = []
         for dr in self.drips:
             x, y, splash = dr
@@ -682,6 +701,8 @@ class CaveScene(object):
                 dr[2] -= 1
                 xi = int(x)
                 img[int(floor) - 1, max(0, xi - 1):min(SIM_W, xi + 2)] = drip_c
+                if dr[2] >= 2:
+                    img[int(floor) - 2, max(0, xi - 1):min(SIM_W, xi + 2):2] = drip_h    # the splash pair
                 if dr[2] > 0:
                     keep.append(dr)
                 continue
@@ -689,32 +710,76 @@ class CaveScene(object):
             if y2 >= floor:
                 dr[1], dr[2] = floor, 3.0
                 self.events.append({"type": "drip_land", "x": int(x)})
+                self.behaviour.drip_landed(float(x), now)
                 keep.append(dr)
             else:
                 dr[1] = y2
-                img[int(y2) - 1:int(y2) + 1, int(x)] = drip_c
+                yi = int(y2)
+                img[max(0, yi - 2):yi, int(x)] = drip_c
+                img[yi, int(x)] = drip_h                            # a brighter head: 4x8 px on screen, legible
                 keep.append(dr)
         self.drips = keep[-12:]
+        # dig rubble in flight (3-4 pixels arcing up from a fresh dig, 1 s), 2 px wide so they read at 4x
+        rub_c = (_TEXT2.astype(np.float32) * 0.7).astype(np.uint8)
+        keep_p = []
+        for pt in self._particles:
+            pt[0] += pt[2]
+            pt[3] += 0.12
+            pt[1] += pt[3]
+            pt[4] -= 1
+            xi, yi = int(pt[0]), int(pt[1])
+            if pt[4] > 0 and 0 <= yi < SIM_H - 1 and 0 <= xi < SIM_W - 1:
+                img[yi, xi:xi + 2] = rub_c
+                keep_p.append(pt)
+        self._particles = keep_p
         # platform tops: the 60 % accent only while a pip stands there (the tally you can see from the tile)
         acc = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.float32)
         counts = self.behaviour.platform_counts()
         for letter, (x, w) in zip(PLATFORM_LETTERS, PLATFORMS):
             if counts.get(letter):
                 img[PLATFORM_TOP, x + 1:x + w - 1] = (acc * PLATFORM_LIVE).astype(np.uint8)
-        # moss body pixels (accent, pulsing at 0.25 Hz; glow added in _glow)
+        # moss clumps (accent, pulsing at 0.25 Hz; glow added in _glow): an angular mound 5x2 sim at planting (20 px on
+        # screen), 7x4 fully grown, with a brighter crown pixel
         for m in self.world.moss:
             pulse = 0.7 + 0.3 * math.sin(2 * math.pi * 0.25 * now + (m.get("x", 0) % 7))
             size = int(m.get("size") or 0)
             x, y = int(m.get("x", 0)), int(m.get("y", 0))
+            mw, mh = MOSS_BODY.get(size, MOSS_BODY[3])
             col = (acc * pulse).astype(np.uint8)
-            w = 1 + size
-            img[max(0, y - (1 if size >= 2 else 0)):y + 1, max(0, x - w // 2):min(SIM_W, x - w // 2 + w)] = col
-        # lantern chain at x 300: lowered + lit on a fresh keeper heartbeat, raised + dark otherwise
+            for k in range(mh):                                    # row k above the floor: narrower toward the crown
+                ww = max(1, mw - 2 * k) if k else mw
+                xa = max(0, x - ww // 2)
+                yy = y - k
+                if 0 <= yy < SIM_H:
+                    img[yy, xa:min(SIM_W, xa + ww)] = col
+            crown = min(SIM_H - 1, max(0, y - mh + 1))
+            img[crown, min(SIM_W - 1, x)] = (acc * min(1.0, pulse + 0.2)).astype(np.uint8)
+        # care left at a sleeper's burrow (a fed berry / a wrapped gift): a 5x3 accent mound beside the sleeper until
+        # the owner returns (WORLD.md 3.3 gifts_pending / care_log render)
+        care_c = (acc * 0.55).astype(np.uint8)
+        for e in self.behaviour.entities.values():
+            if e.state not in ("asleep", "burrowed") or e.burrow is None:
+                continue
+            p = self.world.pip(e.key)
+            if not p or not (p.get("care_log") or p.get("gifts_pending")):
+                continue
+            bx, by, bw, bh = burrow_box(e.burrow)
+            gx, gy = bx + bw - 4, by + bh - 2
+            img[gy, gx - 2:gx + 3] = care_c
+            img[gy - 1, gx - 1:gx + 2] = care_c
+            img[gy - 2, gx] = (acc * 0.8).astype(np.uint8)
+        # lantern chain at x 300: lowered + lit on a fresh keeper heartbeat, raised + dark otherwise; the raised chain
+        # sways 1 px at 0.25 Hz, a carving lantern swings at 0.5 Hz
         agent = ctx.agent or {}
         hb = iso_to_epoch(agent.get("heartbeat_ts"))
         fresh = hb is not None and (now - hb) < HEARTBEAT_FRESH_S
         macro = (ctx.macro or {}).get("active")
-        sway = int(round(math.sin(2 * math.pi * 0.5 * now))) if macro else 0
+        if macro:
+            sway = int(round(math.sin(2 * math.pi * 0.5 * now)))
+        elif not fresh:
+            sway = int(round(math.sin(2 * math.pi * 0.25 * now)))
+        else:
+            sway = 0
         chain_len = 10 if fresh else 4
         img[0:chain_len, LANTERN_X] = _EDGE
         lx = LANTERN_X + sway
@@ -736,18 +801,24 @@ class CaveScene(object):
         if not lights_out:
             k = self._glow_k if not fog else self._glow_k[6:18, 6:18]
             r = GLOW_R if not fog else 6
+            acc_g = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.float32) / 255.0
             for e in self.behaviour.entities.values():
                 if not e.is_awake():
                     continue
                 col = np.array(L.hex_rgb(names[P.colour_idx(e.key)]), dtype=np.float32) / 255.0
                 br = (0.4 + 0.6 * e.energy) * (0.4 if e.state == "curled" else 1.0) * GLOW_GAIN
+                if now < e.flash_until:
+                    br *= 2.2                                   # the eat / care flash: 3 frames, then back
                 cx, cy = int(e.x), int(e.draw_y(now)) - P.tier_box(e.tier)[1] // 2
                 self._add_kernel(buf, k, r, cx, cy, col * br)
+                if now < e.carry_until:                         # the carried glow-berry lights the pip's front
+                    bw = P.tier_box(e.tier)[0]
+                    self._add_kernel(buf, self._moss_k, MOSS_R, cx + e.facing * (bw // 2 + 3), cy, acc_g * 0.45)
         acc = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.float32) / 255.0
         for m in self.world.moss:
             pulse = 0.6 + 0.4 * math.sin(2 * math.pi * 0.25 * now + (m.get("x", 0) % 7))
             self._add_kernel(buf, self._moss_k, MOSS_R, int(m.get("x", 0)), int(m.get("y", 0)) - 1,
-                             acc * pulse * (0.35 + 0.15 * int(m.get("size") or 0)))
+                             acc * pulse * (0.5 + 0.15 * int(m.get("size") or 0)))
         lit = np.clip(img.astype(np.float32) + buf * 255.0, 0, 255).astype(np.uint8)
         return lit
 
@@ -801,6 +872,28 @@ class CaveScene(object):
                 region[m] = src[m]
             else:
                 region[m] = rgb[sy0:sy0 + (y1c - y0c), sx0:sx0 + (x1c - x0c)][m]
+            if e.is_awake() and now < e.carry_until:
+                self._berry(img, ctx, x0 + w + 3 if e.facing >= 0 else x0 - 4, y0 + h // 2)
+            if e.is_awake() and now < e.flash_until:
+                cx = x0 + w // 2
+                for (dx, dy) in ((-3, -2), (0, -3), (3, -2)):   # 3 sparkle pixels for the 3-frame flash
+                    yy, xx = y0 + dy, cx + dx
+                    if 0 <= yy < SIM_H and 0 <= xx < SIM_W:
+                        img[yy, xx] = _TEXT
+
+    def _berry(self, img: np.ndarray, ctx, cx: int, cy: int) -> None:
+        """A 5x5 glow-berry (a diamond in the accent with a highlight pixel): 20x20 px on screen when carried or left."""
+        acc = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.uint8)
+        dark = (acc.astype(np.float32) * 0.6).astype(np.uint8)
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                if abs(dx) + abs(dy) > 2:
+                    continue
+                yy, xx = cy + dy, cx + dx
+                if 0 <= yy < SIM_H and 0 <= xx < SIM_W:
+                    img[yy, xx] = dark if abs(dx) + abs(dy) == 2 else acc
+        if 0 <= cy - 1 < SIM_H and 0 <= cx < SIM_W:
+            img[cy - 1, cx] = _TEXT
 
     # ------------------------------------------------------------------ frame
     def frame(self, ctx, size) -> Image.Image:
@@ -819,6 +912,7 @@ class CaveScene(object):
             self._ingest(ctx, now)
             self._honesty_check()
             ev = self.behaviour.tick(now, dt)
+            self._idle_life(ev, now)
             self._persist(ctx, now, ev, dt)
             self.events.extend(ev)
             sim = self._static_layer(ctx, now).copy()
@@ -838,6 +932,35 @@ class CaveScene(object):
                 self.log("frame failed (%d): %s" % (self.errors, traceback.format_exc().strip().splitlines()[-1]))
             self.events = [{"type": "world_error", "count": self.errors}]
             return self._fallback(w, h)
+
+    def _idle_life(self, ev: List[Dict[str, Any]], now: float) -> None:
+        """Between messages (WORLD.md 3.3, 10): an idle awake pip mutters one of ITS OWNER'S real tokens every ~45-90 s
+        (allowlist AND blocklist, WORLD.md 11.3; the honesty monitor's `text` rule sees it in pip.words), and a fresh
+        dig throws 3-4 rock pixels. Nothing here invents a word: no words on record, no mutter."""
+        b, w = self.behaviour, self.world
+        for e_ in ev:
+            typ = e_.get("type")
+            if typ == "mutter_due":
+                p = w.pip(e_.get("pip"))
+                ent = b.get(e_.get("pip"))
+                if p is None or ent is None or not ent.is_awake() or p.get("_test"):
+                    continue
+                try:
+                    from stream.chat_bridge import filter_words
+                    words = filter_words(w.top_words(p), now)
+                except Exception:
+                    words = []
+                if words:
+                    word = words[int(self.rng.integers(len(words)))]
+                    b.speak(ent.key, now, word)
+                    e_["type"], e_["text"] = "mutter", word
+            elif typ == "dig":
+                ent = b.get(e_.get("pip"))
+                if ent is None:
+                    continue
+                for _ in range(3 + int(self.rng.integers(2))):
+                    self._particles.append([ent.x + self._u(-2, 2), ent.y - 1.0, self._u(-1.0, 1.0), -self._u(0.9, 1.6),
+                                            float(PARTICLE_TTL)])
 
     def _upscale(self, sim: np.ndarray, w: int, h: int) -> Image.Image:
         k = max(1, min(w // SIM_W, h // SIM_H))
@@ -996,6 +1119,8 @@ class CaveScene(object):
             if w.pip(tgt) is None:
                 return False, "no pip called @%s here" % tgt
             w.care(tgt, actor, verb, t)
+            if verb == "feed":
+                b.carry(actor, t)            # the glow-berry is carried (5x5 sim, 20 px) and eaten with a 3-frame flash
             if other is not None and other.is_awake():
                 b.care_received(tgt, t, actor)
                 if me.platform is None and tgt != actor:
@@ -1026,13 +1151,15 @@ class CaveScene(object):
                 cands += [((px + pw + 3, FLOOR_ROWS[0] + 2), 16), ((px - 4, FLOOR_ROWS[0] + 2), 16),
                           ((px + pw + 3, FLOOR_ROWS[0] + 4), 16), ((px - 4, FLOOR_ROWS[0] + 4), 16)]
             why = "nothing to dig there"
+            # the pocket with the MOST rock wins (a full 3x3 hole + its hairline rim = 5x5 sim = 20 px on screen)
+            cands = sorted(cands, key=lambda c: -w.dig_cells(c[0][0], c[0][1], self._protected))
             for (cx, cy), radius in cands:
                 if w.dig_cells(cx, cy, self._protected) <= 0:
                     continue
                 n, why = w.dig(actor, cx, cy, self._protected, radius=radius)
                 if n:
                     self._terrain_ver += 1
-                    b.events.append({"type": "dig", "pip": actor, "cells": n})
+                    b.events.append({"type": "dig", "pip": actor, "cells": n, "x": cx, "y": cy})
                     return True, "ok"
                 if why == "dig cap reached tonight":
                     return False, why

@@ -14,7 +14,8 @@ colour at 55 %), 2 one-pixel legs, a tail (stub / curl / fin), an antenna (none 
 Tiers (sim px, body box): 0 seedling 10x8 · 1 hatchling 12x10 · 2 pip 12x10 + longer antenna · 3 elder 14x12 + crest.
 The sprite array is one row taller than the tier box (bob headroom): shape (h + 1, w).
 
-Frames: idle0 idle1 walk0 walk1 blink speak curled asleep wave0 wave1 sit0 sit1 duck0 duck1 egg0 egg1 egg2.
+Frames: idle0 idle1 walk0 walk1 blink speak curled asleep asleep1 wave0 wave1 sit0 sit1 duck0 duck1 egg0 egg1 egg2
+(asleep1 = the sleeping breath, chest row 1 px higher, alternating every 2 s).
 The egg frames use no name colour at all (the seed is nameless until the hold clears).
 
     from stream.world import pips
@@ -45,7 +46,7 @@ from stream import layout as L  # noqa: E402
 
 TIER_BOX: Dict[int, Tuple[int, int]] = {0: (10, 8), 1: (12, 10), 2: (12, 10), 3: (14, 12)}
 TIER_NAMES = ("seedling", "hatchling", "pip", "elder")
-FRAMES = ("idle0", "idle1", "walk0", "walk1", "blink", "speak", "curled", "asleep",
+FRAMES = ("idle0", "idle1", "walk0", "walk1", "blink", "speak", "curled", "asleep", "asleep1",
           "wave0", "wave1", "sit0", "sit1", "duck0", "duck1", "egg0", "egg1", "egg2")
 BODY_NAMES = ("wedge", "slab", "rhombus", "ramp")
 TAIL_NAMES = ("stub", "curl", "fin")
@@ -184,9 +185,9 @@ def _assemble(g: Dict[str, int], tier: int, frame: str, colour: Tuple[int, int, 
     legs_row = H - 1
     eyes_closed = frame in ("blink", "curled", "asleep")
 
-    if frame == "asleep":                         # flat: bottom half of the body, no antenna, legs tucked
-        bm = body_mask(g["body"], bw, bh)
-        keep = max(3, bh // 2)
+    if frame.startswith("asleep"):                # flat: bottom half of the body, no antenna, legs tucked;
+        bm = body_mask(g["body"], bw, bh)         # `asleep1` = the chest row rises 1 px (the 2 s sleeping breath)
+        keep = min(bh, max(3, bh // 2) + (1 if frame == "asleep1" else 0))
         bm = bm[bh - keep:, :]
         top = H - 1 - keep
         _paint_body(rgb, mask, bm, top, tail_w, fill, line)

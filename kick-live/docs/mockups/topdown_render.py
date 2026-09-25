@@ -129,9 +129,12 @@ def box_blur(a, r, passes=3):
 
 
 def elevation(u, v):
-    n = fbm(u, v, 1 / 26.0, 5, SEED)
+    base = fbm(u, v, 1 / 30.0, 2, SEED)
     g = ((MAP_T - u) + (MAP_T - v)) / (2.0 * MAP_T)     # sea to the south-east
-    e = 0.82 * n + 0.55 * g - 0.20
+    b = 1.0 * base + 0.45 * g - 0.26
+    detail = fbm(u, v, 1 / 9.0, 3, SEED + 50) - 0.5
+    land = np.clip((b - SEA) / 0.08, 0, 1)
+    e = b + 0.18 * detail * land
     return np.clip(e, 0, 1).astype(np.float32)
 
 
@@ -145,21 +148,109 @@ class World:
         self.frame = frame
         self.evening = frame == "B"
         self.rng = np.random.RandomState(SEED + (1 if frame == "A" else 2))
-        # tile-res fields for the whole map (minimap + site search)
         tv, tu = np.mgrid[0:MAP_T, 0:MAP_T].astype(np.float32)
+        self.tu, self.tv = tu, tv
         self.E_t = elevation(tu + 0.5, tv + 0.5)
         self.M_t = moisture(tu + 0.5, tv + 0.5)
-        self.cam = self._pick_camera()
+        self._sea_fields()
+        su, sv = self._pick_site_world()
+        self.cam = (int(np.clip(su - 18, 0, MAP_T - VTW)), int(np.clip(sv - 12, 0, MAP_T - VTH)))
         self._pixel_fields()
+        self.site = (su + 0.5 - self.cam[0], sv + 0.5 - self.cam[1])
         self.river = self._trace_river()
         self._carve_river()
-        sx_t, sy_t = self._pick_site()             # view tiles in the scouting camera
-        su, sv = self.cam[0] + sx_t, self.cam[1] + sy_t
-        # the camera follows life: re-centre on the settlement, then rebuild the pixel fields
-        self.cam = (int(np.clip(round(su - VTW / 2), 0, MAP_T - VTW)), int(np.clip(round(sv - 13.6), 0, MAP_T - VTH)))
-        self._pixel_fields()
-        self._carve_river()
-        self.site = (su - self.cam[0], sv - self.cam[1])
+
+    def _sea_fields(self):
+        """Sea = water connected to the map border; ponds are the rest. D_t = tile distance to the sea."""
+        water = self.E_t < SEA
+        sea = np.zeros_like(water)
+        sea[0, :] = sea[-1, :] = True
+        sea[:, 0] = sea[:, -1] = True
+        sea &= water
+        for _ in range(MAP_T):
+            grown = sea.copy()
+            grown[1:, :] |= sea[:-1, :]
+            grown[:-1, :] |= sea[1:, :]
+            grown[:, 1:] |= sea[:, :-1]
+            grown[:, :-1] |= sea[:, 1:]
+            grown &= water
+            if (grown == sea).all():
+                break
+            sea = grown
+        self.sea_t = sea
+        self.pond_t = water & ~sea
+        D = np.where(sea, 0.0, np.inf).astype(np.float32)
+        front = sea.copy()
+        for k in range(1, 3 * MAP_T):
+            grown = front.copy()
+            grown[1:, :] |= front[:-1, :]
+            grown[:-1, :] |= front[1:, :]
+            grown[:, 1:] |= front[:, :-1]
+            grown[:, :-1] |= front[:, 1:]
+            newly = grown & ~front
+            if not newly.any():
+                break
+            D[newly] = k
+            front = grown
+        self.D_t = D
+
+    def _pick_site_world(self):
+        """Whole-map search: flat grassland ~9 tiles from the sea (sea to the lower-right), hills to the
+        upper-left, forest close by, no ponds in the frame."""
+        E, M, D = self.E_t, self.M_t, self.D_t
+        tu, tv = self.tu, self.tv
+        sea_y, sea_x = np.nonzero(self.sea_t)
+        hill_y, hill_x = np.nonzero(E > 0.62)
+        for_y, for_x = np.nonzero((M > 0.58) & (E > SEA + 0.03) & (E < 0.62))
+        pond_y, pond_x = np.nonzero(self.pond_t)
+        best, best_s = None, 1e9
+        for ty in range(16, MAP_T - 16, 2):
+            for tx in range(22, MAP_T - 22, 2):
+                e = E[ty, tx]
+                if e < 0.36 or e > 0.58:
+                    continue
+                d = D[ty, tx]
+                if not (9 <= d <= 12):
+                    continue
+                win = E[ty - 3:ty + 4, tx - 3:tx + 4]
+                slope = float(win.max() - win.min())
+                if slope > 0.10:
+                    continue
+                if len(pond_x) and np.min(np.hypot(pond_x - tx, pond_y - ty)) < 15:
+                    continue
+                near = np.hypot(sea_x - tx, sea_y - ty) < 18
+                if near.sum() < 30:
+                    continue
+                wx, wy = sea_x[near].mean() - tx, sea_y[near].mean() - ty
+                if wx < 4 or wy < 3:
+                    continue
+                hn = ((np.hypot(hill_x - tx, hill_y - ty) < 17) & (hill_x <= tx) & (hill_y <= ty)).sum()
+                if hn < 12:
+                    continue
+                fn = (np.hypot(for_x - tx, for_y - ty) < 13).sum()
+                if fn < 40:
+                    continue
+                sc = slope * 6 + abs(d - 10.5) * 0.3 - min(hn, 60) * 0.01 - min(fn, 120) * 0.004
+                if sc < best_s:
+                    best, best_s = (tx, ty), sc
+        if best is None:
+            # relax: any flat coast site with sea to the lower-right
+            for ty in range(16, MAP_T - 16, 2):
+                for tx in range(22, MAP_T - 22, 2):
+                    e = E[ty, tx]
+                    if e < 0.34 or e > 0.6 or not (6 <= D[ty, tx] <= 12):
+                        continue
+                    near = np.hypot(sea_x - tx, sea_y - ty) < 18
+                    if near.sum() < 20:
+                        continue
+                    wx, wy = sea_x[near].mean() - tx, sea_y[near].mean() - ty
+                    if wx < 3 or wy < 2:
+                        continue
+                    win = E[ty - 3:ty + 4, tx - 3:tx + 4]
+                    sc = float(win.max() - win.min())
+                    if sc < best_s:
+                        best, best_s = (tx, ty), sc
+        return best or (MAP_T // 2, MAP_T // 2)
 
     def _pixel_fields(self):
         cx0, cy0 = self.cam
@@ -169,58 +260,53 @@ class World:
         self.E = elevation(self.U, self.V)
         self.M = moisture(self.U, self.V)
 
-    # camera: a 40x27 window with sea bottom-right, hills top-left, forest somewhere
-    def _pick_camera(self):
-        best, best_s = (60, 60), 1e9
-        for cy0 in range(8, MAP_T - VTH - 8, 3):
-            for cx0 in range(8, MAP_T - VTW - 8, 3):
-                e = self.E_t[cy0:cy0 + VTH, cx0:cx0 + VTW]
-                m = self.M_t[cy0:cy0 + VTH, cx0:cx0 + VTW]
-                water = e < SEA
-                wf = water.mean()
-                if wf < 0.08 or wf > 0.20:
-                    continue
-                ys, xs = np.nonzero(water)
-                if xs.mean() < 0.62 * VTW or ys.mean() < 0.58 * VTH:
-                    continue
-                hf = (e > 0.66).mean()
-                ff = ((m > 0.58) & (e > SEA + 0.05) & (e < 0.66)).mean()
-                s = abs(wf - 0.13) * 4 + abs(hf - 0.10) * 3 + abs(ff - 0.28) * 2
-                if s < best_s:
-                    best, best_s = (cx0, cy0), s
-        return best
-
     def _trace_river(self):
         cx0, cy0 = self.cam
-        # start: the highest tile in the top-left 45% of the view
-        sub = self.E_t[cy0:cy0 + int(VTH * 0.45), cx0:cx0 + int(VTW * 0.45)]
-        sy, sx = np.unravel_index(np.argmax(sub), sub.shape)
-        u, v = cx0 + sx + 0.5, cy0 + sy + 0.5
-        # sea centroid in view (tie-break bias only)
-        e_view = self.E_t[cy0:cy0 + VTH, cx0:cx0 + VTW]
+        su, sv = self.site[0] + cx0, self.site[1] + cy0
+        E = self.E_t
+        tu, tv = self.tu, self.tv
+        dd = np.hypot(tu - su, tv - sv)
+        cand = (dd > 7) & (dd < 17) & (tu <= su + 2) & (tv <= sv + 1)
+        if not cand.any():
+            cand = (dd > 7) & (dd < 20)
+        score = np.where(cand, E, -1)
+        sy, sx = np.unravel_index(np.argmax(score), score.shape)
+        u, v = sx + 0.5, sy + 0.5
+        # target: the sea that is actually in frame (fallback: the global sea-distance field)
+        e_view = E[cy0:cy0 + VTH, cx0:cx0 + VTW]
         ys, xs = np.nonzero(e_view < SEA)
-        sea_u, sea_v = cx0 + xs.mean(), cy0 + ys.mean()
+        in_view_sea = len(xs) > 40
+        if in_view_sea:
+            sea_u, sea_v = cx0 + xs.mean(), cy0 + ys.mean()
         pts = [(u, v)]
         du, dv = 0.0, 0.0
         step = 0.5
-        for _ in range(600):
+        for _ in range(900):
             angs = np.linspace(0, 2 * math.pi, 24, endpoint=False)
             cu = u + step * np.cos(angs)
             cv = v + step * np.sin(angs)
-            e = elevation(cu, cv) + 0.03 * vnoise(cu, cv, 0.7, SEED + 99)
-            dist = np.hypot(cu - sea_u, cv - sea_v) / MAP_T
-            align = (np.cos(angs) * du + np.sin(angs) * dv)
-            cost = e + 0.05 * dist - 0.012 * align
+            e = elevation(cu, cv) + 0.02 * vnoise(cu, cv, 0.7, SEED + 99)
+            ti = np.clip(cv.astype(int), 0, MAP_T - 1)
+            tj = np.clip(cu.astype(int), 0, MAP_T - 1)
+            dsea = np.hypot(cu - sea_u, cv - sea_v) / 40.0 if in_view_sea else self.D_t[ti, tj] / 40.0
+            align = np.cos(angs) * du + np.sin(angs) * dv
+            dsite = np.hypot(cu - su, cv - sv)
+            prev = np.array(pts[:-1]) if len(pts) > 1 else None
+            revisit = np.zeros_like(cu)
+            if prev is not None:
+                dmin = np.min(np.hypot(cu[:, None] - prev[None, :, 0], cv[:, None] - prev[None, :, 1]), axis=1)
+                revisit = np.clip(1 - dmin / 1.4, 0, 1)
+            cost = e + 0.08 * dsea - 0.015 * align + 1.2 * np.clip(1 - dsite / 8.5, 0, 1) + 0.5 * revisit
             k = int(np.argmin(cost))
             nu, nv = float(cu[k]), float(cv[k])
             du, dv = (nu - u) / step, (nv - v) / step
             u, v = nu, nv
             pts.append((u, v))
-            if elevation(np.array([u]), np.array([v]))[0] < SEA - 0.015:
+            if elevation(np.array([u]), np.array([v]))[0] < SEA - 0.012:
                 break
-            if not (0 < u < MAP_T and 0 < v < MAP_T):
+            if not (1 < u < MAP_T - 1 and 1 < v < MAP_T - 1):
                 break
-        return pts
+        return pts[6:] if len(pts) > 12 else pts
 
     def to_px(self, u, v):
         cx0, cy0 = self.cam
@@ -276,14 +362,22 @@ class World:
         return best  # view-tile coords
 
     def dry_box(self, x0, y0, x1, y1, margin=14):
-        """True when a screen box (world px) holds no water or river bank."""
-        xs = np.linspace(x0 - margin, x1 + margin, 7)
-        ys = np.linspace(y0 - margin, y1 + margin, 5)
-        for yy in ys:
-            for xx in xs:
-                xi, yi = int(np.clip(xx, 0, W - 1)), int(np.clip(yy, 0, WH - 1))
-                if self.water[yi, xi] or self.river_field[yi, xi] > 0.12:
-                    return False
+        """True when a screen box (world px) holds no water or river bank (exact, every pixel)."""
+        xa, xb = int(np.clip(x0 - margin, 0, W - 1)), int(np.clip(x1 + margin, 1, W))
+        ya, yb = int(np.clip(y0 - margin, 0, WH - 1)), int(np.clip(y1 + margin, 1, WH))
+        if xb <= xa or yb <= ya:
+            return False
+        sub = self.water[ya:yb, xa:xb] | (self.river_field[ya:yb, xa:xb] > 0.12)
+        return not sub.any()
+
+    def dry_segment(self, x0, y0, x1, y1):
+        n = max(2, int(math.hypot(x1 - x0, y1 - y0) / 6))
+        for i in range(n + 1):
+            t = i / n
+            xi = int(np.clip(x0 + (x1 - x0) * t, 0, W - 1))
+            yi = int(np.clip(y0 + (y1 - y0) * t, 0, WH - 1))
+            if self.water[yi, xi] or self.river_field[yi, xi] > 0.3:
+                return False
         return True
 
     def site_px(self):
@@ -307,21 +401,23 @@ def paint_terrain(w: World) -> np.ndarray:
     grass = grass * (1 - t2) + lush * t2
     grass *= (1 + 0.14 * mott[..., None])
     # hills
-    hill = np.array(hex_rgb("#9CA66A"), np.float32)
-    rock = np.array(hex_rgb("#8E8A7A"), np.float32)
+    hill = np.array(hex_rgb("#7E8F58"), np.float32)
+    rock = np.array(hex_rgb("#76735F"), np.float32)
     th = np.clip((E - 0.60) / 0.10, 0, 1)[..., None]
     col = grass * (1 - th) + hill * th
     tr = np.clip((E - 0.70) / 0.08, 0, 1)[..., None]
     col = col * (1 - tr) + rock * tr
+    speck = 0.55 * np.clip((fbm(w.U, w.V, 2.6, 2, SEED + 610) - 0.62) / 0.12, 0, 1) * np.clip((E - 0.66) / 0.06, 0, 1)
+    col = col * (1 - speck[..., None]) + rock * 0.92 * speck[..., None]
     # stepped terraces on the high ground (the 3/4 RTS elevation read)
     q = ((E - 0.58) / 0.045) % 1.0
     edge = np.clip((0.10 - q) / 0.10, 0, 1) * np.clip((E - 0.58) / 0.03, 0, 1)
-    col = col * (1 - 0.22 * edge[..., None])
+    col = col * (1 - 0.16 * edge[..., None])
     # shore sand
     sand = np.array(hex_rgb("#E6D5A2"), np.float32)
     ts = np.clip(1 - (E - SEA) / 0.035, 0, 1)[..., None]
     col = col * (1 - ts) + sand * ts
-    rb = np.clip((w.river_field - 0.18) / 0.32, 0, 1)[..., None]
+    rb = np.clip((w.river_field - 0.30) / 0.20, 0, 1)[..., None]
     col = col * (1 - rb) + sand * rb
     # water
     shallow = np.array(hex_rgb("#6FB3CF"), np.float32)
@@ -334,8 +430,9 @@ def paint_terrain(w: World) -> np.ndarray:
     # relief: light from top-left
     Eb = box_blur(E, 4)
     gy, gx = np.gradient(Eb)
-    shade = 1.0 + 44.0 * (-gx * (TW / 8.0) - gy * (TH / 8.0))
-    shade = np.clip(shade, 0.70, 1.24)
+    steep = 44.0 + 40.0 * np.clip((Eb - 0.52) / 0.12, 0, 1)
+    shade = 1.0 + steep * (-gx * (TW / 8.0) - gy * (TH / 8.0))
+    shade = np.clip(shade, 0.66, 1.26)
     shade = np.where(w.water, 1.0, shade)
     col = col * shade[..., None]
     # ripples
@@ -409,7 +506,7 @@ class Scene:
         self.w = w
         self.items = []     # (sort_y, callable)
         self.rng = np.random.RandomState(SEED + 77)
-        self.shadow_dx, self.shadow_dy = (1.1, 0.55) if not w.evening else (1.4, 0.6)
+        self.shadow_dx, self.shadow_dy = (1.7, 0.6) if not w.evening else (1.5, 0.6)
 
     def add(self, y, fn):
         self.items.append((y, fn))
@@ -665,10 +762,18 @@ def text_stroke(d, xy, txt, f, fill, stroke=2, anchor="la", stroke_fill=(28, 20,
     d.text(xy, txt, font=f, fill=fill, anchor=anchor, stroke_width=stroke, stroke_fill=stroke_fill)
 
 
-_BUBBLE_RECTS = []
+_BUBBLE_RECTS = []      # placed bubbles
+_KEEP_OUT = []          # huts, plaza, stones: bubbles never cover these
 
 
-def bubble(img, anchor_xy, txt, maxw=380):
+def _hits(x0, y0, x1, y1):
+    for r in _BUBBLE_RECTS + _KEEP_OUT:
+        if not (x1 < r[0] or x0 > r[2] or y1 < r[1] or y0 > r[3]):
+            return True
+    return False
+
+
+def bubble(img, anchor_xy, txt, maxw=330):
     d = ImageDraw.Draw(img, "RGBA")
     f = font("menlo", 22)
     words = txt.split()
@@ -684,27 +789,28 @@ def bubble(img, anchor_xy, txt, maxw=380):
     lw = max(d.textlength(l, font=f) for l in lines)
     bw, bh = lw + 24, len(lines) * 27 + 14
     ax, ay = anchor_xy
-    x0 = min(max(8, ax - bw / 2), W - bw - 8)
-    y0 = ay - bh - 14
-    if y0 < 16:
-        y0 = 16
-    for _ in range(12):
-        hit = [r for r in _BUBBLE_RECTS if not (x0 + bw < r[0] or x0 > r[2] or y0 + bh < r[1] or y0 > r[3])]
-        if not hit:
+    cands = []
+    for dy in (6, -30, -66, 60, -100, 100, -140, -190):
+        for dx in (18, 60, 110, 170):
+            cands.append((ax + dx, max(16, ay - bh + dy), True))
+            cands.append((ax - bw - dx, max(16, ay - bh + dy), False))
+        cands.append((ax - bw / 2, max(16, ay - bh + dy - 30), True))
+    pick = None
+    for x0, y0, right in cands:
+        if x0 < 8 or x0 + bw > W - 8 or y0 + bh > HUD_Y0 - WY0 - 8:
+            continue
+        if not _hits(x0, y0, x0 + bw, y0 + bh):
+            pick = (x0, y0, right)
             break
-        r = hit[0]
-        # slide sideways first, then up
-        if r[0] > ax:
-            x0 = max(8, r[0] - bw - 10)
-        elif r[2] < ax + bw:
-            x0 = min(W - bw - 8, r[2] + 10)
-        else:
-            y0 = max(16, r[1] - bh - 10)
+    if pick is None:
+        x0 = ax + 18 if ax + 18 + bw < W - 8 else ax - bw - 18
+        pick = (x0, max(16, ay - bh + 6), x0 > ax)
+    x0, y0, right = pick
     _BUBBLE_RECTS.append((x0, y0, x0 + bw, y0 + bh))
     d.rounded_rectangle([x0, y0, x0 + bw, y0 + bh], 8, fill=(251, 244, 230, 240), outline=(59, 46, 30, 255), width=2)
-    tx = min(max(x0 + 14, ax), x0 + bw - 14)
-    d.polygon([(tx - 8, y0 + bh - 1), (tx + 8, y0 + bh - 1), (ax, ay - 2)], fill=(251, 244, 230, 240))
-    d.line([(tx - 8, y0 + bh - 1), (ax, ay - 2), (tx + 8, y0 + bh - 1)], fill=(59, 46, 30, 255), width=2)
+    cx = x0 + 10 if right else x0 + bw - 10
+    d.polygon([(cx, y0 + bh - 12), (cx + (14 if right else -14), y0 + bh - 4), (ax, ay + 6)], fill=(251, 244, 230, 240))
+    d.line([(cx, y0 + bh - 12), (ax, ay + 6), (cx + (14 if right else -14), y0 + bh - 4)], fill=(59, 46, 30, 255), width=2)
     for i, l in enumerate(lines):
         d.text((x0 + 12, y0 + 8 + i * 27), l, font=f, fill=INK)
 
@@ -752,7 +858,7 @@ def time_grade(img: Image.Image, w: World):
     if not w.evening:
         # dawn: gold from the top-left, cool blue in the far right, mist in the low ground
         glow = np.clip(1 - np.hypot(px / W, py / WH) / 0.9, 0, 1) ** 1.6
-        arr = arr * np.array([0.98, 0.97, 0.99]) + glow[..., None] * np.array([44, 26, 0])
+        arr = arr * np.array([0.94, 0.93, 0.98]) + glow[..., None] * np.array([62, 36, 0])
         cool = np.clip((px / W - 0.45) / 0.55, 0, 1) ** 1.4
         arr = arr + cool[..., None] * np.array([-8, 2, 18])
         mist = np.clip((0.37 - w.E) / 0.10, 0, 1) * (0.45 + 0.55 * fbm(w.U, w.V, 1 / 5.0, 2, SEED + 41))
@@ -761,10 +867,10 @@ def time_grade(img: Image.Image, w: World):
         arr = arr * (1 - mist[..., None]) + np.array([236, 236, 240]) * mist[..., None]
     else:
         # evening: amber from the top-left, violet in the shadowed east, warmer overall
-        glow = np.clip(1 - np.hypot(px / W, (py / WH) * 0.8) / 0.95, 0, 1) ** 1.5
-        arr = arr * np.array([1.06, 0.93, 0.80]) + glow[..., None] * np.array([48, 22, -6])
-        vio = np.clip((px / W - 0.4) / 0.6, 0, 1) ** 1.3
-        arr = arr + vio[..., None] * np.array([6, -6, 22])
+        glow = np.clip(1 - np.hypot(px / W, (py / WH) * 0.8) / 0.95, 0, 1) ** 1.6
+        arr = arr * np.array([0.96, 0.87, 0.78]) + glow[..., None] * np.array([34, 10, -8])
+        vio = np.clip((px / W - 0.35) / 0.65, 0, 1) ** 1.3
+        arr = arr * (1 - 0.10 * vio[..., None]) + vio[..., None] * np.array([4, -6, 26])
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 
@@ -901,38 +1007,65 @@ NAMES = ["kai_dnb", "mira_9", "sami.exe", "lowkeyjord", "noor.wav", "pixelpaul",
          "holly_hz", "zed_ttv", "luca_99", "bigmarcus", "dev_rin", "xX_tobi_Xx"]
 
 
+def find_spot(w, sx, sy, r_tiles, half_w, up, down, prefer_deg, occupied, spread=(0, 15, -15, 30, -30, 45, -45, 60, -60, 90, -90, 120, -120, 150, -150, 180)):
+    """First dry spot on a ring around the plaza whose box (half_w wide, up above / down below the anchor)
+    is clear of water, river, frame edges and the occupied rects. Angles fan out from prefer_deg."""
+    for dr in (0, 1.0, -0.8, 2.0, 3.0):
+        for da in spread:
+            a = math.radians(prefer_deg + da)
+            x = sx + (r_tiles + dr) * TW * math.cos(a)
+            y = sy + (r_tiles + dr) * TH * math.sin(a)
+            box = (x - half_w, y - up, x + half_w, y + down)
+            if box[0] < 24 or box[2] > W - 24 or box[1] < 90 or box[3] > WH - 130:
+                continue
+            if not w.dry_box(*box, margin=10):
+                continue
+            if any(not (box[2] < o[0] or box[0] > o[2] or box[3] < o[1] or box[1] > o[3]) for o in occupied):
+                continue
+            if not w.dry_segment(sx, sy, x, y):
+                continue
+            return (x, y)
+    return None
+
+
 def build_frame(frame: str):
     w = World(frame)
     base = paint_terrain(w)
     img = Image.fromarray(base.astype(np.uint8))  # RGB: ImageDraw "RGBA" mode blends onto RGB
     sx, sy = w.site_px()
     sc = Scene(w)
+    occupied = [(sx - 70, sy - 70, sx + 70, sy + 40),      # plaza core
+                (0, 0, 830, 112), (0, 0, 300, 190), (W - 200, 0, W, 200)]   # chips, dial, minimap
 
-    # ---- village geometry (same site both frames; B is day 5)
+    # ---- village ring (same site both frames; B is day 5)
     hut_pos = []
     rng = np.random.RandomState(SEED + 88)
-    n_huts = 2 if frame == "A" else 9
     ring_names = NAMES[:2] if frame == "A" else NAMES[:8] + ["luca_99"]
     for i, nm in enumerate(ring_names):
-        a = -math.pi / 2 + i * (2 * math.pi / 9) + rng.uniform(-0.15, 0.15)
-        r = 5.0 + rng.uniform(-0.4, 0.6)
-        hx, hy = sx + r * TW * math.cos(a), sy + r * TH * math.sin(a)
-        for _ in range(6):
-            if not w.px_water(hx, hy + 6) and w.river_field[int(np.clip(hy, 0, WH - 1)), int(np.clip(hx, 0, W - 1))] < 0.15:
+        slot = (0, 4)[i] if frame == "A" else i
+        a = -math.pi / 2 + slot * (2 * math.pi / 9) + rng.uniform(-0.15, 0.15)
+        r = 6.6 + rng.uniform(-0.3, 0.4)
+        hx, hy = sx + r * TW * math.cos(a), sy + r * TH * 0.72 * math.sin(a)
+        for _ in range(8):
+            if w.dry_box(hx - 40, hy - 50, hx + 40, hy + 12, margin=10):
                 break
-            r -= 0.5
-            hx, hy = sx + r * TW * math.cos(a), sy + r * TH * math.sin(a)
+            r -= 0.45
+            hx, hy = sx + r * TW * math.cos(a), sy + r * TH * 0.72 * math.sin(a)
         hut_pos.append((hx, hy, nm))
+        occupied.append((hx - 48, hy - 78, hx + 48, hy + 16))
 
-    # nearest river point (for the water trail) and forest edge
+    # nearest river point (for the water trail) and the sea direction
     rp = np.array(w.river_pts_px)
     dists = np.hypot(rp[:, 0] - sx, rp[:, 1] - sy)
+    hidden = (rp[:, 1] < 150) | (rp[:, 1] > WH - 150) | (rp[:, 0] < 60) | (rp[:, 0] > W - 60)
+    dists = np.where(hidden, 1e9, dists)
     k = int(np.argmin(dists))
     river_pt = tuple(rp[k])
-    # step back from the water 22 px toward the site
     vx, vy = sx - river_pt[0], sy - river_pt[1]
     L = math.hypot(vx, vy) or 1
-    water_pt = (river_pt[0] + vx / L * 26, river_pt[1] + vy / L * 20)
+    water_pt = (river_pt[0] + vx / L * 30, river_pt[1] + vy / L * 22)
+    ys_, xs_ = np.nonzero(w.E < SEA)
+    sea_deg = math.degrees(math.atan2((ys_.mean() - sy) / TH, (xs_.mean() - sx) / TW)) if len(xs_) else 45.0
 
     # trees: forest where moisture is high, thinned around the village and away from the water
     trees = []
@@ -948,7 +1081,7 @@ def build_frame(frame: str):
                     continue
                 dens = (m - 0.56) * 4.0 + (0.12 if e > 0.60 else 0)
                 dv = math.hypot((x - sx) / TW, (y - sy) / TH)
-                if dv < 6.0:
+                if dv < 7.8:
                     dens -= 0.6
                 if trng.rand() < dens:
                     kind = 1 if (e > 0.56 and trng.rand() < 0.65) else 0
@@ -956,22 +1089,23 @@ def build_frame(frame: str):
                     if kind == 1:
                         tone = mix(hex_rgb("#2F6B3A"), hex_rgb("#5F9A4A"), trng.rand() * 0.7)
                     trees.append((x, y, kind, 12 + trng.rand() * 10, tone))
-    # the forest edge nearest the site (a work point)
     if trees:
         ta = np.array([(t[0], t[1]) for t in trees])
-        kk = int(np.argmin(np.hypot(ta[:, 0] - sx, ta[:, 1] - sy)))
-        forest_pt = (ta[kk, 0] - 20, ta[kk, 1] + 10)
+        dm = np.hypot(ta[:, None, 0] - ta[None, :, 0], ta[:, None, 1] - ta[None, :, 1])
+        company = (dm < 70).sum(axis=1) >= 4
+        dsite = np.hypot(ta[:, 0] - sx, ta[:, 1] - sy)
+        dsite = np.where(company & (dsite > 9.5 * TW), dsite, 1e9)
+        kk = int(np.argmin(dsite))
+        forest_pt = (ta[kk, 0] - 30, ta[kk, 1] + 14)
     else:
         forest_pt = (sx + 300, sy - 200)
-    # rocks on the hills
     for _ in range(90):
         x, y = trng.randint(0, W), trng.randint(0, WH)
         if w.E[y, x] > 0.64 and not w.water[y, x] and trng.rand() < 0.5:
             rock(sc, x, y, 5 + trng.rand() * 7)
 
-    # ---- trails, farms, vote stones (all placed on dry land by search)
-    farm_pts = []
-    stone_pt = None
+    # ---- farms and vote stones: searched spots on dry land, clear of everything placed so far
+    farm_pts, stone_pt = [], None
     if frame == "A":
         paths = [([(hut_pos[0][0], hut_pos[0][1] + 4), (sx, sy), (hut_pos[1][0], hut_pos[1][1] + 4)], 0.25),
                  ([(sx, sy), water_pt], 0.2)]
@@ -980,33 +1114,22 @@ def build_frame(frame: str):
         paths = [([(hx, hy + 4), (sx, sy)], 0.45) for hx, hy, _ in hut_pos]
         paths.append(([(sx, sy), water_pt], 1.0))
         paths.append(([(sx, sy), forest_pt], 0.7))
-        # farms: toward the water, pulled back until the whole plot is dry
-        fdx, fdy = -vx / L, -vy / L
-        for i, nm in enumerate(("holly_hz", "noor.wav")):
-            fx = sx + fdx * TW * 7.5 + (i - 0.5) * 150 * (-fdy)
-            fy = sy + fdy * TH * 7.5 + (i - 0.5) * 90 * fdx
-            for _ in range(14):
-                if w.dry_box(fx - 52, fy - 56, fx + 52, fy + 4) and 40 < fy < WH - 130 and 60 < fx < W - 60:
-                    break
-                fx -= fdx * 22
-                fy -= fdy * 16
+        for nm, pref in (("holly_hz", sea_deg + 12), ("noor.wav", sea_deg - 70)):
+            spot = find_spot(w, sx, sy, 8.0, 56, 56, 6, pref, occupied)
+            if spot is None:
+                spot = find_spot(w, sx, sy, 8.0, 56, 56, 6, pref, occupied[:1])
+            if spot is None:
+                continue
+            fx, fy = spot
             farm_pts.append((fx, fy, nm))
+            occupied.append((fx - 70, fy - 70, fx + 70, fy + 12))
             paths.append(([(sx, sy), (fx, fy)], 0.6))
-        # vote stones: first dry candidate around the plaza, clear of huts
-        for ox, oy in ((-7.0, 2.0), (7.5, 2.0), (-7.0, -1.5), (7.5, -1.5), (0, 7.5), (-4, 7), (4, 7)):
-            cx_, cy_ = sx + ox * TW, sy + oy * TH
-            if not (150 < cx_ < W - 150 and 60 < cy_ < WH - 150):
-                continue
-            if not w.dry_box(cx_ - 175, cy_ - 30, cx_ + 175, cy_ + 40):
-                continue
-            if any(abs(cx_ - hx) < 200 and abs(cy_ - hy) < 90 for hx, hy, _ in hut_pos):
-                continue
-            if any(abs(cx_ - fx) < 220 and abs(cy_ - fy) < 100 for fx, fy, _ in farm_pts):
-                continue
-            stone_pt = (cx_, cy_)
-            break
+        stone_pt = find_spot(w, sx, sy, 9.5, 180, 40, 40, 180, occupied)
         if stone_pt is None:
-            stone_pt = (sx - 7 * TW, sy + 2 * TH)
+            stone_pt = find_spot(w, sx, sy, 9.5, 180, 40, 40, 180, occupied[:1])
+        if stone_pt is None:
+            stone_pt = (sx - 9 * TW, sy)
+        occupied.append((stone_pt[0] - 190, stone_pt[1] - 50, stone_pt[0] + 190, stone_pt[1] + 50))
         paths.append(([(sx, sy), stone_pt], 0.5))
         draw_trails(img, w, paths, plaza=(sx, sy), plaza_r=58)
         for fx, fy, nm in farm_pts:
@@ -1017,12 +1140,11 @@ def build_frame(frame: str):
 
     # ---- objects
     for x, y, kind, size, tone in trees:
-        # keep trees off huts, farms and the plaza
         if any(abs(x - hx) < 64 and -80 < y - hy < 44 for hx, hy, _ in hut_pos):
             continue
-        if any(abs(x - fx) < 80 and -80 < y - fy < 30 for fx, fy, _ in farm_pts):
+        if any(abs(x - fx) < 84 and -84 < y - fy < 30 for fx, fy, _ in farm_pts):
             continue
-        if stone_pt and abs(x - stone_pt[0]) < 190 and -50 < y - stone_pt[1] < 60:
+        if stone_pt and abs(x - stone_pt[0]) < 200 and -56 < y - stone_pt[1] < 64:
             continue
         tree(sc, x, y, kind, size, tone)
 
@@ -1032,7 +1154,7 @@ def build_frame(frame: str):
             hut(sc, hx, hy, nm, awake=False)
             side = -1 if hx > sx else 1
             creature(sc, hx + side * 30, hy + 30, nm, frame="asleep", facing=side, tier=1)
-        # a survey stake where the plaza will be
+
         def stake(img_):
             d = ImageDraw.Draw(img_, "RGBA")
             d.line([(sx, sy), (sx, sy - 26)], fill=(120, 90, 60, 255), width=3)
@@ -1040,46 +1162,44 @@ def build_frame(frame: str):
         sc.add(sy, stake)
     else:
         awake_names = set(NAMES) - {"mira_9", "gav1n"}
-        for i, (hx, hy, nm) in enumerate(hut_pos):
-            if nm == "luca_99":
-                hut(sc, hx, hy, nm, awake=True, building=True)
-            else:
-                hut(sc, hx, hy, nm, awake=nm in awake_names)
-        # sleepers by their huts
+        for hx, hy, nm in hut_pos:
+            hut(sc, hx, hy, nm, awake=nm in awake_names, building=(nm == "luca_99"))
         for hx, hy, nm in hut_pos:
             if nm in ("mira_9", "gav1n"):
                 side = -1 if hx > sx else 1
                 creature(sc, hx + side * 30, hy + 30, nm, frame="asleep", facing=side, tier=2)
         monument(sc, sx, sy - 6, raised_by=9)
+        occupied.append((sx - 160, sy - 80, sx + 160, sy + 34))
         vx_, vy_ = stone_pt
         voters = (["sami.exe", "pixelpaul", "dev_rin", "zed_ttv"],
                   ["kai_dnb", "noor.wav", "holly_hz", "lowkeyjord", "tinytash", "bigmarcus", "xX_tobi_Xx"],
                   ["luca_99"])
         vote_stones(sc, vx_, vy_, (4, 7, 1), voters)
-        # builders
+        # builders at the unfinished hut
         lh = [h for h in hut_pos if h[2] == "luca_99"][0]
-        creature(sc, lh[0] - 46, lh[1] + 10, "luca_99", frame="walk0", facing=1, tier=1, carry="hammer")
-        creature(sc, lh[0] + 50, lh[1] + 16, "xX_tobi_Xx", frame="idle1", facing=-1, tier=1, carry="log")
+        creature(sc, lh[0] - 50, lh[1] + 10, "luca_99", frame="walk0", facing=1, tier=1, carry="hammer")
+        creature(sc, lh[0] + 78, lh[1] + 30, "xX_tobi_Xx", frame="idle1", facing=-1, tier=1, carry="log")
         # gatherers at the forest edge
-        creature(sc, forest_pt[0] - 10, forest_pt[1] + 8, "pixelpaul", frame="walk1", facing=-1, tier=2, carry="log")
-        creature(sc, forest_pt[0] + 50, forest_pt[1] + 26, "dev_rin", frame="idle0", facing=-1, tier=1)
+        a1 = creature(sc, forest_pt[0] - 10, forest_pt[1] + 8, "pixelpaul", frame="walk1", facing=-1, tier=2, carry="log")
+        bubbles.append((a1, "3 more logs and the mill stands"))
+        creature(sc, forest_pt[0] + 70, forest_pt[1] + 40, "dev_rin", frame="idle0", facing=-1, tier=1)
         # at the water
-        a2 = creature(sc, water_pt[0], water_pt[1], "sami.exe", frame="idle0", facing=1, tier=2, carry="pot")
-        bubbles.append((a2, "we need a bridge over the river"))
+        creature(sc, water_pt[0], water_pt[1], "sami.exe", frame="idle0", facing=1, tier=2, carry="pot")
         # farmers
         for fx, fy, nm in farm_pts:
-            a3 = creature(sc, fx + 62, fy + 14, nm, frame="walk0", facing=-1, tier=2)
+            a3 = creature(sc, fx - 72, fy + 14, nm, frame="walk0", facing=1, tier=2)
             if nm == "noor.wav":
                 bubbles.append((a3, "planting by the water, who's with me"))
         # voters at the stones
-        a4 = creature(sc, vx_ + 118 + 56, vy_ + 26, "kai_dnb", frame="wave0", facing=-1, tier=2)
+        a4 = creature(sc, vx_ + 30, vy_ + 40, "kai_dnb", frame="wave0", facing=-1, tier=2)
         bubbles.append((a4, "B! the well goes by the plaza"))
-        creature(sc, vx_ - 118 - 58, vy_ + 22, "zed_ttv", frame="idle1", facing=1, tier=1)
-        # wanderers on the trail and at the stone
-        mid = ((sx + water_pt[0]) / 2, (sy + water_pt[1]) / 2)
-        creature(sc, mid[0] - 30, mid[1] + 10, "lowkeyjord", frame="walk1", facing=1, tier=2)
-        creature(sc, sx + 74, sy + 30, "tinytash", frame="sit0", facing=-1, tier=2)
-        creature(sc, sx - 88, sy + 40, "bigmarcus", frame="idle0", facing=1, tier=2)
+        creature(sc, vx_ - 118 - 62, vy_ + 24, "zed_ttv", frame="idle1", facing=1, tier=1)
+        # on the trails and at the stone
+        mid = ((sx * 0.35 + water_pt[0] * 0.65), (sy * 0.35 + water_pt[1] * 0.65))
+        creature(sc, mid[0], mid[1] + 10, "lowkeyjord", frame="walk1", facing=-1, tier=2)
+        creature(sc, sx - 20, sy + 72, "tinytash", frame="sit0", facing=1, tier=2)
+        fm = (sx * 0.3 + forest_pt[0] * 0.7, sy * 0.3 + forest_pt[1] * 0.7)
+        creature(sc, fm[0], fm[1] + 12, "bigmarcus", frame="walk0", facing=1, tier=2)
 
     sc.draw_all(img)
 
@@ -1087,8 +1207,11 @@ def build_frame(frame: str):
     img = time_grade(img, w)
     img = draw_cloud_wisps(img, cloud_lay)
 
-    # ---- screen-scale text layer
+    # ---- screen-scale text layer: bubbles keep clear of huts, plaza and stones
     _BUBBLE_RECTS.clear()
+    _KEEP_OUT.clear()
+    _KEEP_OUT.extend(occupied)
+    _KEEP_OUT.append((0, 0, 820, 100))            # the plank chips
     for anchor, txt in bubbles:
         bubble(img, anchor, txt)
 
@@ -1100,7 +1223,7 @@ def build_frame(frame: str):
         chip(full, (16, WY0 + 58), "2 settled here · nobody awake · day 2 · dawn", font("menlo", 20))
     else:
         chip(full, (16, WY0 + 14), "@luca_99 settled · 18:02 · builder #14 · raising a hut on the east ring", font("hn", 22))
-        wdt, _ = chip(full, (16, WY0 + 58), "NEXT EVENT · where does the well go?  A river · B plaza · C hill", font("menlo", 20))
+        chip(full, (16, WY0 + 58), "NEXT EVENT · where does the well go?  A river · B plaza · C hill", font("menlo", 20))
     time_dial(full, (16, WY0 + 104), w.evening)
     d = ImageDraw.Draw(full, "RGBA")
     d.text((16 + 76, WY0 + 118), ("06:41 · dawn" if frame == "A" else "18:07 · evening"), font=font("menlo", 20), fill=CREAM,
@@ -1115,20 +1238,20 @@ def build_frame(frame: str):
     else:
         minimap(full, w, [(su, sv), (su + 20, sv - 10), (su - 14, sv + 12), (su + 8, sv + 16)], [22, 10, 9, 8], (sx, sy))
 
+    cc = lambda n: hex_rgb(pips.colour_hex(n, "kick"))
     if frame == "A":
-        colony = ["2 settled · 3 more: the Well opens",
+        colony = ["2 settled · 3 more: Well opens",
                   "nobody awake · 2 asleep · day 2",
                   "last night: @kai_dnb built first"]
         keeper = ["no keeper on duty", "scrolls kept for next time", "last raised: stake · by @kai_dnb"]
         chat = ["chat is quiet. say anything.", "", ""]
         header(full, ("atleastonce", "SETTLEMENT · v0.6.0"), "2 SETTLED · 0 AWAKE", "NEXT EVENT 02:41", "1")
     else:
-        colony = ["14 settled · 6 more: the Mill opens",
+        colony = ["14 settled · 6 more: Mill opens",
                   "12 awake · 2 asleep · day 5",
                   "last event: rain · by @sami.exe"]
         keeper = ["keeper on duty", "surveying: East Field · @noor.wav", "12:40 left · then the well vote"]
-        cc = lambda n: hex_rgb(pips.colour_hex(n, "kick"))
-        chat = [("@kai_dnb ", cc("kai_dnb"), "B"), ("@sami.exe ", cc("sami.exe"), "we need a bridge over it"),
+        chat = [("@kai_dnb ", cc("kai_dnb"), "B"), ("@pixelpaul ", cc("pixelpaul"), "3 more logs, mill stands"),
                 ("@noor.wav ", cc("noor.wav"), "planting by the water")]
         header(full, ("atleastonce", "SETTLEMENT · v0.6.3"), "14 SETTLED · 12 AWAKE", "NEXT EVENT 01:23", "7")
     hud(full, colony, keeper, chat)
@@ -1142,7 +1265,7 @@ def main():
     b, wb = build_frame("B")
     b.save(os.path.join(OUT, "topdown_B_busy.png"))
     b.resize((320, 180), Image.LANCZOS).save(os.path.join(OUT, "topdown_thumb_320x180.png"))
-    print("cam", wa.cam, "site", wa.site, "river pts", len(wa.river), "site px", wa.site_px())
+    print("cam", wa.cam, "site", wa.site, "river pts", len(wa.river), "site px", wa.site_px(), "sea", wa.sea_t.mean(), "ponds", wa.pond_t.sum())
 
 
 if __name__ == "__main__":

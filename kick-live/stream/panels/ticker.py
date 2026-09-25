@@ -63,12 +63,30 @@ class Ticker(Panel):
             pass
         return None
 
+    @staticmethod
+    def _room(ctx):
+        """(awake <= 1, keeper on duty): a lone viewer gets the four words and the letters, not the !command legend; the
+        `keepers are AI agents` line rides only while a keeper is actually on duty (the lantern is lit)."""
+        import sys as _sys
+        awake = None
+        m = _sys.modules.get("stream.panels.world")
+        try:
+            if m is not None and hasattr(m, "world_counts"):
+                awake = m.world_counts()[0]
+        except Exception:
+            awake = None
+        from stream.state_store import iso_to_epoch as _iso
+        hb = _iso((ctx.agent or {}).get("heartbeat_ts"))
+        fresh = hb is not None and (float(ctx.now) - hb) < 120.0
+        return (awake is None or awake <= 1, fresh)
+
     @classmethod
     def _content_key(cls, ctx):
         """Cheap hashable summary of everything that changes the strip's pixels."""
         ships = tuple((str(s.get("version")), str(s.get("picked_by")), str(s.get("title")), bool(s.get("agent_pick")),
                        s.get("ok") is not False) for s in (ctx.ships or [])[-10:])
-        return (ships, ctx.chat_display is not False, bool((ctx.ask or {}).get("enabled")), ctx.preset, cls._keeper_line(ctx))
+        return (ships, ctx.chat_display is not False, bool((ctx.ask or {}).get("enabled")), ctx.preset, cls._keeper_line(ctx),
+                cls._room(ctx))
 
     def _items(self, ctx):
         """-> list of items; each item is a list of (text, colour) segments."""
@@ -97,16 +115,20 @@ class Ticker(Panel):
         if kl:
             items.append([(kl, accent)])
         items.append([(HONESTY, text)])
-        # WORLD.md 5 row 9 legend: the world verbs (exact word), the letters, !idea (sing is a later carving)
+        # WORLD.md 5 row 9 legend: the world verbs (exact word), the letters; the !commands only once the room has company
+        alone, keeper_here = self._room(ctx)
         legend = [("say anything: a pip hatches with your name", text), ("   ", text2),
                   ("feed", accent), (" · ", text2), ("pet", accent), (" · ", text2), ("dig", accent), (" · ", text2),
                   ("plant", accent), ("   ", text2), ("A", accent), (" / ", text2), ("B", accent), (" / ", text2), ("C", accent),
-                  (" walks your pip to a platform", text2), ("   ", text2), ("!idea <what to carve>", accent),
-                  ("   ", text2), ("!theme ember", accent), ("   ", text2), ("!stats", accent), ("   ", text2), ("!help", accent)]
+                  (" walks your pip to a platform", text2)]
+        if not alone:
+            legend += [("   ", text2), ("!idea <what to carve>", accent), ("   ", text2), ("!theme ember", accent),
+                       ("   ", text2), ("!stats", accent), ("   ", text2), ("!help", accent)]
         if (ctx.ask or {}).get("enabled"):
             legend += [("   ", text2), ("!ask <anything>", accent)]
         items.append(legend)
-        items.append([(RULE, text)])
+        if keeper_here:
+            items.append([(RULE, text)])
         return items
 
     # ------------------------------------------------------------------ strip

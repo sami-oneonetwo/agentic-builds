@@ -117,8 +117,8 @@ class ChatLog(Panel):
             name = L.strip_non_bmp(str(m.get("display_name") or "?")) or "?"
             key = str(m.get("name") or name).lower()
             segs: List[Tuple[str, str, str]] = [("text", name, L.name_color(key, ctx.preset))]
-            if m.get("first_ever") and m.get("builder_n"):
-                segs.append(("text", " #%d" % int(m["builder_n"]), accent))
+            if m.get("first_ever") and m.get("builder_n") and not name.lower().startswith("builder #"):
+                segs.append(("text", " #%d" % int(m["builder_n"]), accent))       # `builder #8` already carries its number
             body = m.get("text_clean")
             if body is None:
                 body = L.strip_non_bmp(str(m.get("text") or ""))

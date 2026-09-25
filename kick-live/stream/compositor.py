@@ -64,6 +64,7 @@ PANEL_BUDGET_MS = 28.0
 PANEL_STRIKES = 30
 PANEL_RETRY_FRAMES = 300
 STATIC_WATCHDOG_FRAMES = 30
+WORLD_BAND = (72, 512)           # the static watchdog watches the WORLD rows (art-rules 4), so the header clock cannot mask a frozen cave
 HEADER_MIN_STD = 8.0             # self-test: luminance std of the 0-66 header band below this counts as a blank header
 HOT_RELOAD_S = 2.0               # file watch interval (wallclock)
 HOT_RELOAD_SETTLE_S = 0.3        # a file modified less than this long ago may still be half-written: next poll
@@ -433,7 +434,8 @@ class Compositor(object):
         faults = set(filter(None, (os.environ.get("KL_FAULT_PANELS") or "").split(",")))
         slows = set(filter(None, (os.environ.get("KL_SLOW_PANELS") or "").split(",")))
         self._faults, self._slows = faults, slows
-        order = sorted(PANEL_REGISTRY.values(), key=lambda p: (p.region.startswith("header"), p.key))  # header last
+        # world FIRST (the colony / keeper / ticker strips read its counts the same tick), header LAST (the thumbnail)
+        order = sorted(PANEL_REGISTRY.values(), key=lambda p: (p.region.startswith("header"), p.region != "world", p.key))
         self.slots: List[Slot] = []
         for p in order:
             self.apply_test_hooks(p)
@@ -448,7 +450,10 @@ class Compositor(object):
         self.dropped = 0
         self.frames = 0
         self.same_frames = 0
+        self.same_world = 0
+        self.longest_static_world = 0
         self.last_bytes: Optional[bytes] = None
+        self.last_world: Optional[bytes] = None
         self.running = True
         self.vq: "queue.Queue" = queue.Queue(maxsize=6)
         self.aq: "queue.Queue" = queue.Queue(maxsize=64)
@@ -473,6 +478,8 @@ class Compositor(object):
         slot = Slot(panel)
         if panel.region.startswith("header"):
             self.slots.append(slot)
+        elif panel.region == "world":
+            self.slots.insert(0, slot)
         else:
             idx = next((i for i, s in enumerate(self.slots) if s.panel.region.startswith("header")), len(self.slots))
             self.slots.insert(idx, slot)
@@ -666,6 +673,15 @@ class Compositor(object):
         if votes:
             self._log_vote_ack(votes, frame)
         return self.canvas
+
+    def _world_static(self, b: bytes) -> None:
+        """Track identical WORLD-region frames (rows 72-512 of the rgb24 buffer): the header clock and the ticker move
+        every frame, so a whole-frame comparison never fires when only the cave is frozen."""
+        wb = b[L.W * 3 * WORLD_BAND[0]:L.W * 3 * WORLD_BAND[1]]
+        self.same_world = self.same_world + 1 if wb == self.last_world else 0
+        self.last_world = wb
+        if self.same_world > self.longest_static_world:
+            self.longest_static_world = self.same_world
 
     def _log_vote_ack(self, votes: List[Dict], frame: int) -> None:
         """Prove CONCEPT 2 'name on screen within one second': the world plank (stream/panels/world.py PANEL.last_plank;
@@ -882,6 +898,7 @@ class Compositor(object):
             b = img.tobytes()
             self.same_frames = self.same_frames + 1 if b == self.last_bytes else 0
             self.last_bytes = b
+            self._world_static(b)
             if _np is not None:
                 # header over every scene, proven per frame: the 0-66 band must have contrast (std of luminance > 8)
                 band = _np.frombuffer(b, dtype=_np.uint8)[:L.W * 66 * 3].reshape(66, L.W, 3)
@@ -894,11 +911,17 @@ class Compositor(object):
                 self._update_counters(t_start, time.perf_counter())
         self._update_counters(t_start, time.perf_counter())
         log(self._report("self-test"))
-        log("static-frame watchdog: longest identical run %d frames (limit %d)" % (self.same_frames, STATIC_WATCHDOG_FRAMES))
+        log("static-frame watchdog: longest identical run %d frames (limit %d); WORLD region (rows %d-%d) longest static run %d frames -> %s" % (
+            self.same_frames, STATIC_WATCHDOG_FRAMES, WORLD_BAND[0], WORLD_BAND[1], self.longest_static_world,
+            "PASS" if self.longest_static_world < STATIC_WATCHDOG_FRAMES else "FAIL"))
+        if self.longest_static_world >= STATIC_WATCHDOG_FRAMES:
+            rc_static = 1
+        else:
+            rc_static = 0
         log("header band check: %d/%d frames non-blank (min luminance std %.1f, threshold %.0f) -> %s" % (
             n - self.header_blank, n, hdr_min if hdr_min is not None else -1.0, HEADER_MIN_STD, "PASS" if not self.header_blank else "FAIL"))
         log("vote ack check: %d/%d live votes acknowledged on the world plank in the same frame" % (self.vote_acks[0], self.vote_acks[1]))
-        rc = 0
+        rc = rc_static
         # WORLD.md 11: the honesty assertions run every frame inside the world panel (HonestyMonitor); the self-test
         # fails when any frame had a violation (a planted fake pip must turn this red).
         wm = sys.modules.get("stream.panels.world")
@@ -973,9 +996,12 @@ class Compositor(object):
                 del self.frame_ms[:-3000]
             self.frames += 1
             self.same_frames = self.same_frames + 1 if b == self.last_bytes else 0
-            if self.same_frames >= STATIC_WATCHDOG_FRAMES and not static_logged:
+            self._world_static(b)
+            if self.same_world >= STATIC_WATCHDOG_FRAMES and not static_logged:
                 static_logged = True
-                self._activity("watchdog: %d identical frames, nothing is moving" % self.same_frames)
+                self._activity("watchdog: the cave has not moved for %d frames (world rows %d-%d)" % (self.same_world, WORLD_BAND[0], WORLD_BAND[1]))
+            elif self.same_world < STATIC_WATCHDOG_FRAMES:
+                static_logged = False
             self.last_bytes = b
             # the audio block for THIS frame was already rendered inside render_frame (scope shows it)
             self._put(self.vq, b)

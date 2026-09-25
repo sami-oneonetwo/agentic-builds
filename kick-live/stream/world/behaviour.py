@@ -15,7 +15,8 @@
     b.entities ; b.awake() ; b.awake_count() ; b.asleep_count() ; b.platform_counts() ; b.newest_speaker
 
 EVENTS (dicts, `type` first): seed, sink, hatch, wake, sleep, speak, hop, walk, arrive, leave_platform, blink,
-tier_up, curl, uncurl, emote, credits, first_light. Every event carries `pip` (the lowercase key) except seed/sink
+tier_up, curl, uncurl, emote, credits, first_light, mutter_due (an idle pip may say one of its OWN words: the scene
+picks it through the allowlist + blocklist and calls speak()). Every event carries `pip` (the lowercase key) except seed/sink
 (`key` only: nothing about a seed may be drawn as a name). Consumers: audio (motifs, stings), the text layer
 (labels, bubbles), rounds (arrive/leave -> platform tallies), the ticker.
 
@@ -56,8 +57,19 @@ TWITCH_LEN = 0.2
 SEED_FALL_PX_PER_FRAME = 2.0
 SEED_TIMEOUT_S = HOLD_S + 4.0
 CREDITS_GAP_S = 1.5
-PLATFORM_STAND_SPACING = 3
+PLATFORM_STAND_SPACING = 7               # standing slots: x = platform_x + PLATFORM_SLOT_X0 + 7 * i, 3 per row, then a row 1 px up
+PLATFORM_SLOT_X0 = 4
+PLATFORM_SLOTS_PER_ROW = 3
 VOTE_WALK_S = 2.0                        # a vote walk ARRIVES within 1-3 s (WORLD.md 4): speed = max(wander max, dist / 2 s)
+STAND_WANDER_PX = 6.0                    # a standing pip idles +/- 6 sim px along its platform (still counted as standing)
+STAND_SPEED = 3.0                        # sim px/s while shuffling on the platform
+SHUFFLE_GAP = (3.0, 8.0)
+MUTTER_FIRST = (20.0, 35.0)              # an idle awake pip mutters one of its OWN words (WORLD.md 3.3) this long after it last spoke,
+MUTTER_GAP = (45.0, 90.0)                # then every 45-90 s; the scene picks the word (allowlist + blocklist) and calls speak()
+CARRY_S = 2.4                            # a glow-berry is carried this long, then eaten with a 3-frame flash
+FLASH_S = 3.0 / 30.0
+DRIP_FACE_PX = 30.0                      # a drip landing this close turns idle pips toward it; within DRIP_HOP_PX they hop
+DRIP_HOP_PX = 6.0
 
 
 def hashed_x(key: str, lo: int = WANDER_X[0], hi: int = WANDER_X[1]) -> float:
@@ -74,7 +86,8 @@ class Entity(object):
                  "cleared", "next_blink_t", "blink_until", "hop_t", "speak_until", "mouth_until", "text", "pause_until",
                  "last_active_t", "last_attention_t", "sleep_t", "twitch_t", "twitch_until", "emote", "emote_until",
                  "on_arrive", "minutes_tonight", "first_ever", "wake_t", "bob_phase", "born_t", "credits_done",
-                 "learned_from", "walk_frame_t")
+                 "learned_from", "walk_frame_t", "carry_until", "flash_until", "shuffle_t", "shuffle_target", "slot_x",
+                 "next_mutter_t")
 
     def __init__(self, key: str, origin: str, t: float):
         self.key = key
@@ -121,6 +134,12 @@ class Entity(object):
         self.credits_done = False
         self.learned_from: Optional[str] = None
         self.walk_frame_t = 0.0
+        self.carry_until = 0.0
+        self.flash_until = 0.0
+        self.shuffle_t = 0.0
+        self.shuffle_target: Optional[float] = None
+        self.slot_x: Optional[float] = None
+        self.next_mutter_t = 1e18
 
     # -- read-only helpers ----------------------------------------------------------
     def is_awake(self) -> bool:
@@ -140,7 +159,9 @@ class Entity(object):
             k = int(max(0.0, t - self.seed_t))                # one crack per second, under the 1 Hz rule
             return "egg%d" % min(2, k)
         if self.state in ("asleep", "burrowed"):
-            return "curled" if t < self.twitch_until else "asleep"
+            if t < self.twitch_until:
+                return "curled"
+            return "asleep1" if int((t + self.bob_phase * 4.0) // 2.0) % 2 else "asleep"   # 2 s breath (art-rules 4)
         if self.state == "curled":
             return "curled"
         if self.emote and t < self.emote_until:
@@ -149,8 +170,8 @@ class Entity(object):
             return "blink"
         if t < self.mouth_until:
             return "speak"
-        if self.state == "walking" and abs(self.vx) > 0.5:
-            return "walk%d" % int((t * 4.0) % 2)               # alternate legs every 250 ms
+        if self.state in ("walking", "voting") and abs(self.vx) > 0.5:
+            return "walk%d" % int((t * 4.0) % 2)               # alternate legs every 250 ms (also the platform shuffle)
         return "idle%d" % int(((t + self.bob_phase * 2.0) * 0.5) % 2)   # 1 px bob at 0.5 Hz
 
     def draw_y(self, t: float) -> float:
@@ -162,7 +183,8 @@ class Entity(object):
                 "y": self.draw_y(t), "facing": self.facing, "frame": self.frame_name(t), "platform": self.platform,
                 "burrow": self.burrow, "text": self.text if t < self.speak_until else None,
                 "speaking": t < self.speak_until, "learned_from": self.learned_from, "first_ever": self.first_ever,
-                "minutes_tonight": round(self.minutes_tonight, 2), "awake": self.is_awake()}
+                "minutes_tonight": round(self.minutes_tonight, 2), "awake": self.is_awake(),
+                "carrying": t < self.carry_until, "flash": t < self.flash_until}
 
 
 class Behaviour(object):
@@ -329,6 +351,7 @@ class Behaviour(object):
         e.on_arrive = "idle"
         e.minutes_tonight = 0.0
         e.credits_done = False
+        e.next_mutter_t = t + self._u(*MUTTER_FIRST)
         self._ev("wake", pip=e.key, burrow=e.burrow, only_light=(self.awake_count() == 1))
         if not self.first_light_done and self.first_light_pending is None and self.awake_count() == 1:
             # the session's first message came from a RETURNING chatter: that is first light too (WORLD.md 2.2)
@@ -345,6 +368,7 @@ class Behaviour(object):
         e.speak_until = t + SPEAK_S
         e.mouth_until = t + MOUTH_S
         e.last_active_t = t
+        e.next_mutter_t = t + self._u(*MUTTER_GAP)
         self.newest_speaker, self.newest_speaker_t = e.key, t
         for o in self.entities.values():
             if o is not e and o.is_awake() and o.state != "walking":
@@ -378,7 +402,38 @@ class Behaviour(object):
             self._ev("uncurl", pip=e.key)
         if e.is_awake():
             e.hop_t = t
+            e.flash_until = t + FLASH_S
         return True
+
+    def carry(self, key: str, t: float, dur: float = CARRY_S) -> bool:
+        """`feed`: the pip carries a 5x5 glow-berry (drawn by the scene) for `dur`, then eats it with a 3-frame flash."""
+        e = self.get(key)
+        if e is None or not e.is_awake():
+            return False
+        e.carry_until = t + dur
+        e.flash_until = t + dur + FLASH_S
+        e.last_active_t = t
+        return True
+
+    def stir(self, key: str, t: float) -> bool:
+        """A sleeper stirs once (the 2-frame twitch, now). Honest: it stays asleep; nothing acts as present."""
+        e = self.get(key)
+        if e is None or e.state not in ("asleep", "burrowed"):
+            return False
+        e.twitch_until = t + TWITCH_LEN
+        e.twitch_t = t + self._u(TWITCH_MIN, TWITCH_MAX)
+        return True
+
+    def drip_landed(self, x: float, t: float) -> None:
+        """A drip hit the floor at sim x: idle awake pips nearby turn to look; one right under it hops."""
+        for e in self.entities.values():
+            if not e.is_awake() or e.state == "walking":
+                continue
+            d = x - e.x
+            if abs(d) <= DRIP_FACE_PX and abs(d) > 1.0:
+                e.facing = 1 if d > 0 else -1
+            if abs(d) <= DRIP_HOP_PX and t - e.hop_t > 1.0:
+                e.hop_t = t
 
     def walk_to(self, key: str, target, t: float) -> bool:
         """target: a platform letter, or a sim x on the floor. Sleepers never walk (honest: the owner is absent)."""
@@ -393,14 +448,29 @@ class Behaviour(object):
                 self._ev("leave_platform", pip=e.key, platform=e.platform)
             idx = PLATFORM_LETTERS.index(letter)
             px, pw = PLATFORMS[idx]
-            standing = len(self.platform_counts()[letter])
-            spread = (standing % 8) * PLATFORM_STAND_SPACING - 10
+            # standing slots (art-rules 4): the i-th arrival (everyone already standing on or heading to this platform)
+            # gets x = platform_x + 4 + 7 i, 3 per row, then a second row 1 px higher, so two real people never share an x
+            taken = set()
+            for o in self.entities.values():
+                if o is not e and o.platform == letter and o.is_awake() and o.slot_x is not None:
+                    taken.add(int(round(o.slot_x)) * 4 + int(round(PLATFORM_TOP - (o.target_y if o.state == "walking" and o.target_y is not None else o.y))))
+            i = 0
+            while True:
+                col, row = i % PLATFORM_SLOTS_PER_ROW, i // PLATFORM_SLOTS_PER_ROW
+                sx = float(px + PLATFORM_SLOT_X0 + PLATFORM_STAND_SPACING * col)
+                sy = float(PLATFORM_TOP - row)
+                if (int(round(sx)) * 4 + int(round(PLATFORM_TOP - sy))) not in taken or i >= 24:
+                    break
+                i += 1
             e.platform = letter
-            e.target_x = float(px + pw / 2 + spread)
-            e.target_y = float(PLATFORM_TOP)
+            e.slot_x = sx
+            e.target_x = sx
+            e.target_y = sy
+            e.shuffle_target = None
             e.on_arrive = "vote"
         else:
             e.platform = None
+            e.slot_x = None
             e.target_x = float(min(WANDER_X[1], max(WANDER_X[0], float(target))))
             e.target_y = float(FLOOR_Y)
             e.on_arrive = "idle"
@@ -421,6 +491,7 @@ class Behaviour(object):
             if e.state == "voting" or e.platform is not None:
                 had = e.platform
                 e.platform = None
+                e.slot_x = None
                 if e.state == "voting":
                     e.state = "awake"
                     e.y = float(FLOOR_Y)
@@ -479,6 +550,7 @@ class Behaviour(object):
         e.pause_until = t + self._u(1.0, 2.5)
         e.next_blink_t = t + self._u(BLINK_MIN, BLINK_MAX)
         e.minutes_tonight = 0.0
+        e.next_mutter_t = t + self._u(*MUTTER_FIRST)
         first_light = not self.first_light_done and (self.first_light_pending == e.key or
                                                      (self.first_light_pending is None and self.awake_count() == 1))
         ev = self._ev("hatch", pip=e.key, display_name=e.display_name, first_ever=e.first_ever, x=e.x,
@@ -513,10 +585,44 @@ class Behaviour(object):
         # leaves the platform: a sleeper cannot vote)
         if not self.credits_active and e.state != "walking" and t - e.last_active_t >= self.sleep_after_s and e.on_arrive != "sleep":
             self._go_to_burrow(e, t, reason="quiet")
+        if e.is_awake() and e.state != "walking" and t >= e.speak_until and t >= e.next_mutter_t and not self.credits_active:
+            e.next_mutter_t = t + self._u(*MUTTER_GAP)
+            self._ev("mutter_due", pip=e.key)            # the scene answers with one of the owner's OWN allowlisted words
         if e.state == "walking":
             self._move(e, t, dt)
+        elif e.state == "voting":
+            self._tick_standing(e, t, dt)
         elif e.state == "awake" and t >= e.pause_until and not self.first_light_done is None:
             self._pick_wander(e, t)
+
+    def _tick_standing(self, e: Entity, t: float, dt: float) -> None:
+        """A pip standing on a platform idles: every 3-8 s it shuffles up to +/- 6 sim px along the stone (never off
+        the platform, never off its row) at 3 px/s. It stays `voting`, so the tally never changes."""
+        if e.platform not in PLATFORM_LETTERS:
+            return
+        px, pw = PLATFORMS[PLATFORM_LETTERS.index(e.platform)]
+        lo, hi = float(px + 2), float(px + pw - 3)
+        if e.shuffle_target is None:
+            if t >= e.shuffle_t:
+                base = e.slot_x if e.slot_x is not None else e.x
+                e.shuffle_target = float(min(hi, max(lo, base + self._u(-STAND_WANDER_PX, STAND_WANDER_PX))))
+                if abs(e.shuffle_target - e.x) < 1.0:
+                    e.shuffle_target = None
+                    e.shuffle_t = t + self._u(*SHUFFLE_GAP)
+            else:
+                e.vx = 0.0
+            return
+        dx = e.shuffle_target - e.x
+        if abs(dx) < 0.3:
+            e.x = e.shuffle_target
+            e.vx = 0.0
+            e.shuffle_target = None
+            e.shuffle_t = t + self._u(*SHUFFLE_GAP)
+            return
+        e.facing = 1 if dx > 0 else -1
+        step = min(abs(dx), STAND_SPEED * dt)
+        e.vx = step / max(dt, 1e-6) * e.facing
+        e.x += step * e.facing
 
     def _go_to_burrow(self, e: Entity, t: float, reason: str) -> None:
         if e.burrow is None:
@@ -574,7 +680,9 @@ class Behaviour(object):
         e.on_arrive = None
         if act == "vote" and e.platform is not None:
             e.state = "voting"
-            e.y = float(PLATFORM_TOP)
+            e.y = float(e.target_y if e.target_y is not None else PLATFORM_TOP)
+            e.shuffle_t = t + self._u(*SHUFFLE_GAP)
+            e.vx = 0.0
             self._ev("arrive", pip=e.key, at=e.platform)
         elif act in ("sleep", "credits") and e.burrow is not None:
             bx, by, bw, bh = burrow_box(e.burrow)

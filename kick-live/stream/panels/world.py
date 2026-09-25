@@ -36,6 +36,7 @@ makes a fresh scene from the new class, re-booted from world.json.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time as _time
 import traceback
@@ -71,17 +72,32 @@ LEGEND = ("feed · pet · dig · plant   (exact word, or with @name)", "A / B / 
 LEGEND_ITEM_S = 5.0
 TEXT_CACHE_MAX = 1400
 STATS_EVERY = 300
-PLATFORM_TITLE_Y = 178                # Menlo 20 option title (WORLD.md 8.1 `title on the platform`) above the carved letter
-PLATFORM_LETTER_Y = 205               # AB 56 glyph bottom lands at region y 268; a standing tier-3 sprite starts at 292
-PLATFORM_COUNT_Y = 240
-PLATFORM_NAMES_Y = 272
-PLATFORM_NAMES_MAX_W = 300
+PLATFORM_TITLE_Y = 184                # Menlo 20 option title (WORLD.md 8.1 `title on the platform`) above the carved letter
+PLATFORM_LETTER_Y = 210               # AB 56 glyph bottom lands at region y 273; a standing tier-3 sprite starts at 292
+PLATFORM_COUNT_Y = 245
+PLATFORM_NAMES_Y = 276
+PLATFORM_NAMES_MAX_W = 400            # the platform's own width: up to 3 names untruncated, else `N standing` (never `@quietnood…`)
 PLATFORM_TITLE_MAX_W = 340
+GUTTER = 16                           # sleeper labels and platform titles never touch the region edge (art-rules 4)
+ALONE_PROMPT_S = 45.0                 # one awake pip and no second chatter for this long -> the loneliness plank (WORLD.md 10)
+SLEEPERS_LIT_S = 5.0                  # `anyone` / `here` from a lone chatter lights every sleeper's label this long
 PLATFORM_CLUSTER_PX = 40              # a pip this close to an occupied platform's crowd gets no floating label (the row is it)
 LABEL_STEP = 22                       # de-collision step for labels / care lines (max 3 steps, then label-on-speak)
 LABEL_MAX_STEPS = 3
 SOIL_LABEL_Y = 372                    # moss labels live in the soil band (region y 368-440 = canvas 440-512), never at pip height
 PRIO_EVENT, PRIO_VERB, PRIO_LIGHT, PRIO_YOU, PRIO_CREDITS = 1, 2, 3, 4, 5   # plank priority: the person outranks the world
+
+
+_LONELY_RE = re.compile(r"\b(anyone|anybody|here|hello|alone|else|nobody|empty|dead)\b", re.IGNORECASE)
+
+
+def _ordinal(n: int) -> str:
+    n = int(n)
+    if 10 <= n % 100 <= 20:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return "%d%s" % (n, suf)
 
 
 def _log(msg: str) -> None:
@@ -393,6 +409,10 @@ class WorldPanel(Panel):
         self.last_plank: Optional[str] = None            # the plank text of the last frame (compositor vote-ack check)
         self.last_plank_row2: Optional[str] = None
         self.last_placed: List[Tuple[int, int, int]] = []
+        self._alone_since: Optional[float] = None       # WORLD.md 10: one person, dead night
+        self._alone_prompted = False
+        self._sleepers_lit_until = 0.0
+        self._lonely_t = -1e9                            # the last loneliness plank (the 45 s prompt and the `anyone?` answer never stack)
 
     def inputs(self, ctx):
         return ctx.frame                              # the sim moves every frame
@@ -421,9 +441,11 @@ class WorldPanel(Panel):
             return None
         p = sc.world.pip(e["key"]) or {}
         nick = p.get("nickname")
-        if nick:
-            return "%s (@%s)" % (L.strip_non_bmp(str(nick))[:12], shown)
-        return "@" + shown
+        txt = ("%s (@%s)" % (L.strip_non_bmp(str(nick))[:12], shown)) if nick else ("@" + shown)
+        tag = self._hatch_tag.get(e["key"])
+        if tag and not shown.startswith("builder #"):          # `@quietnoodle #4` for 3 s after the hatch (builder #N already says it)
+            txt = "%s %s" % (txt, tag[0])
+        return txt
 
     # ------------------------------------------------------------------ events -> notices
     def _notice(self, now: float, text: str, colour, dur: float = NOTICE_S, named: bool = True, start: Optional[float] = None,
@@ -458,6 +480,14 @@ class WorldPanel(Panel):
                                      start=now + 1.0, prio=PRIO_YOU, sticky=True)
                         self._notice(now, "your pip sleeps here when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
                                      named=False, start=now + 9.0, prio=PRIO_LIGHT, sticky=True)
+                        self._notice(now, "stay ten minutes and your pip grows a row of pixels.", L.COLORS["text2"], dur=6.0,
+                                     named=False, start=now + 17.0, prio=PRIO_LIGHT, sticky=True)
+                elif typ == "speak":
+                    # a lone chatter asking `is anyone here` gets the cave's real answer: every sleeper's label lights for 5 s
+                    # and the plank counts them (len()), naming one real sleeper to pet
+                    if sc.awake_count() == 1 and _LONELY_RE.search(str(ev.get("text") or "")):
+                        self._sleepers_lit_until = now + SLEEPERS_LIT_S
+                        self._lonely_plank(sc, ev.get("pip"), now, asked=True)
                 elif typ == "first_light":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
@@ -490,9 +520,13 @@ class WorldPanel(Panel):
                     by = self._shown(sc, ev.get("by"))
                     nm = self._shown(sc, ev.get("pip"))
                     if by and nm:
-                        verb = {"feed": "fed", "pet": "petted", "gift": "left a gift for"}[typ]
-                        tail = " (asleep · it will know on wake)" if ev.get("asleep") or typ == "gift" else ""
-                        self._notice(now, "@%s %s @%s%s" % (by, verb, nm, tail), L.COLORS["text"], prio=PRIO_VERB)
+                        if by == nm:
+                            line = ("@%s's pip ate a glow-berry" % nm) if typ == "feed" else ("@%s petted their own pip" % nm)
+                        else:
+                            verb = {"feed": "fed", "pet": "petted", "gift": "left a gift for"}[typ]
+                            tail = " (asleep · it will know on wake)" if ev.get("asleep") or typ == "gift" else ""
+                            line = "@%s %s @%s%s" % (by, verb, nm, tail)
+                        self._notice(now, line, L.COLORS["text"], prio=PRIO_VERB)
                 elif typ == "dig":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
@@ -523,6 +557,30 @@ class WorldPanel(Panel):
                 d.pop(k, None)
         if self._only_light and (self._only_light[1] <= now or sc.awake_count() > 1):
             self._only_light = None                       # `you are the only light` is a fact only while it is one
+
+    def _lonely_plank(self, sc: H.CaveScene, key: Optional[str], now: float, asked: bool = False) -> None:
+        """WORLD.md 10 `one person, dead night`: the plank answers loneliness with the real colony. `N sleep here` is a
+        len(); the sleeper named is the one nearest the awake pip (a real past chatter); the nearest sleeper stirs once."""
+        sleepers = [e for e in sc.behaviour.entities.values() if e.state == "asleep" and e.display_name]
+        me = sc.behaviour.get(key) if key else None
+        n = len(sleepers)
+        if me is not None and sleepers:
+            near = min(sleepers, key=lambda e: abs(e.x - me.x))
+            nm = self._shown(sc, near.key)
+            sc.behaviour.stir(near.key, now)
+        else:
+            near, nm = None, None
+        if n == 0:
+            txt = "nobody else has ever been here. you're the first light." if asked else "you're alone tonight. every mark you make is here tomorrow."
+        elif nm:
+            txt = ("%d asleep here · pet @%s and they'll know you came." % (n, nm)) if asked else \
+                  ("you're alone tonight. pet @%s and they'll see it when they wake." % nm)
+        else:
+            txt = "%d asleep here. say anything and they hear it tomorrow." % n
+        if not asked and now - self._lonely_t < 30.0:
+            return                                            # the 45 s prompt yields to a fresh answer; a question is always answered
+        self._lonely_t = now
+        self._notice(now, txt, L.COLORS["text"], dur=8.0, prio=PRIO_LIGHT, sticky=True)
 
     def _care_line(self, sc: H.CaveScene, ev: Dict[str, Any], now: float) -> None:
         """`back after 2 nights · fed by @kai x2 · petted by @x · gift from @sami` from the REAL care log."""
@@ -687,6 +745,15 @@ class WorldPanel(Panel):
         labels_on_speak = bool(deg.get("labels_on_speak")) or awake > DENSITY_FALLBACK
         dense = awake > DENSITY_FALLBACK
         self._consume_events(sc, ctx, now, accent)
+        if awake == 1:
+            if self._alone_since is None:
+                self._alone_since, self._alone_prompted = now, False
+            elif not self._alone_prompted and now - self._alone_since >= ALONE_PROMPT_S:
+                self._alone_prompted = True
+                lone = next((e for e in sc.behaviour.entities.values() if e.is_awake()), None)
+                self._lonely_plank(sc, lone.key if lone is not None else None, now)
+        else:
+            self._alone_since, self._alone_prompted = None, False
 
         # 1. platform titles, letters, counts, standing names (drawn first: carved into the rock; their boxes are RESERVED so no
         #    label or bubble ever covers the letter row, WORLD.md 8.1 `title on the platform`)
@@ -696,6 +763,7 @@ class WorldPanel(Panel):
         options = {str(o.get("letter") or "").upper(): o for o in ((ctx.round or {}).get("options") or []) if isinstance(o, dict)}
         best_votes = max([len(counts.get(k) or []) for k in PLATFORM_LETTERS] or [0])
         cluster_x: List[int] = []
+        plat_row: Dict[str, Tuple[int, int]] = {}          # letter -> (x0, x1) of the widest carved row (letter+count / names)
         for letter, (px, pw) in zip(PLATFORM_LETTERS, PLATFORMS):
             cx, _ = sc.sim_to_screen(px + pw / 2.0, 0)
             keys = counts.get(letter) or []
@@ -708,7 +776,7 @@ class WorldPanel(Panel):
                 lead = n > 0 and n == best_votes
                 ts = text_strip(LABEL_FONT, LABEL_SIZE, L.truncate(LABEL_FONT, LABEL_SIZE, title, PLATFORM_TITLE_MAX_W),
                                 accent if lead else L.COLORS["text2"])
-                tx = max(2, min(w - ts.size[0] - 2, cx - ts.size[0] // 2))
+                tx = max(GUTTER, min(w - ts.size[0] - GUTTER, cx - ts.size[0] // 2))
                 _paste(img, ts, tx, PLATFORM_TITLE_Y)
                 placer.reserve(tx, PLATFORM_TITLE_Y, tx + ts.size[0], PLATFORM_TITLE_Y + LABEL_H)
             lt = text_strip("AB", 56, letter, "#%02x%02x%02x" % carved, stroke=False)
@@ -716,24 +784,30 @@ class WorldPanel(Panel):
             ct = text_strip("Menlo", 22, "%d" % n, accent if n else L.COLORS["text2"])
             _paste(img, ct, cx + lt.size[0] // 2 + 8, PLATFORM_COUNT_Y)
             placer.reserve(cx - lt.size[0] // 2, PLATFORM_LETTER_Y, cx + lt.size[0] // 2 + 8 + ct.size[0], PLATFORM_LETTER_Y + 64)
+            plat_row[letter] = (cx - lt.size[0] // 2, cx + lt.size[0] // 2 + 8 + ct.size[0])
             if n and names_on:
+                # the names row: up to 3 real names UNTRUNCATED across the platform's width; when they do not fit, the row
+                # says `N standing` (a len()), never a chopped name (art-rules 4)
                 segs: List[Image.Image] = []
                 total = 0
-                for k in keys[-3:]:
-                    nm = self._shown(sc, k)
-                    if not nm:
-                        continue
+                shown = [self._shown(sc, k) for k in keys[-3:]]
+                shown = [nm for nm in shown if nm]
+                for j, nm in enumerate(shown):
                     if segs:
                         sep = text_strip(LABEL_FONT, LABEL_SIZE, " · ", L.COLORS["text2"])
                         segs.append(sep); total += sep.size[0]
-                    s = text_strip(LABEL_FONT, LABEL_SIZE, L.truncate(LABEL_FONT, LABEL_SIZE, "@" + nm, 140), P.colour_hex(k, ctx.preset))
-                    segs.append(s); total += s.size[0]
-                if total > PLATFORM_NAMES_MAX_W:
-                    segs = segs[:1]; total = segs[0].size[0]
-                x = cx - total // 2
+                    k = keys[-3:][j] if j < len(keys[-3:]) else keys[-1]
+                    st = text_strip(LABEL_FONT, LABEL_SIZE, "@" + nm, P.colour_hex(k, ctx.preset))
+                    segs.append(st); total += st.size[0]
+                if total > PLATFORM_NAMES_MAX_W and len(shown) > 1:
+                    st = text_strip(LABEL_FONT, LABEL_SIZE, "%d standing" % n, L.COLORS["text"])
+                    segs, total = [st], st.size[0]
+                x = max(GUTTER, min(w - GUTTER - total, cx - total // 2))
                 placer.reserve(x, PLATFORM_NAMES_Y, x + total, PLATFORM_NAMES_Y + LABEL_H)
-                for s in segs:
-                    _paste(img, s, x, PLATFORM_NAMES_Y); x += s.size[0]
+                r0, r1 = plat_row.get(letter, (x, x + total))
+                plat_row[letter] = (min(r0, x), max(r1, x + total))
+                for st in segs:
+                    _paste(img, st, x, PLATFORM_NAMES_Y); x += st.size[0]
 
         # 2. labels (awake: above the sprite; sleepers: one at a time on a 5 s rotation; standing pips: the platform row).
         #    De-collision: a label that intersects anything already placed moves up in 22 px steps, at most 3; still
@@ -770,6 +844,10 @@ class WorldPanel(Panel):
                 ov = self._label_override.get(key)
                 if ov:
                     txt = ov[0]
+                elif now < self._sleepers_lit_until and not dense:
+                    p = sc.world.pip(key) or {}                # `is anyone here` -> every sleeper answers with its real last seen
+                    nm = self._label_text(sc, e)
+                    txt = "%s · asleep since %s" % (nm, when_text(p.get("last_seen_ts"), now)) if nm else None
                 elif key == sleeper_pick:
                     p = sc.world.pip(key) or {}
                     nm = self._label_text(sc, e)
@@ -778,7 +856,8 @@ class WorldPanel(Panel):
                 continue
             strip = text_strip(LABEL_FONT, LABEL_SIZE, txt, P.colour_hex(key, ctx.preset))
             sw = strip.size[0]
-            x0 = max(2, min(w - sw - 2, cx - sw // 2))
+            gut = GUTTER if not e.get("awake") else 2
+            x0 = max(gut, min(w - sw - gut, cx - sw // 2))
             y = placer.place_up(x0, top - LABEL_H - 2, sw, LABEL_H, LABEL_STEP, LABEL_MAX_STEPS, floor=PLATFORM_TITLE_Y - 60)
             if y is None:
                 if not e.get("speaking"):
@@ -823,8 +902,18 @@ class WorldPanel(Panel):
                 continue
             b = bubble_img(rows)
             cx, ly = label_pos.get(key, (int(e["sx"] + e["sw"] // 2), int(e["sy"]) - 2))
-            bx = max(2, min(w - b.size[0] - 2, cx - b.size[0] // 2))
-            by = placer.up(bx, max(2, ly - 4 - b.size[1]), b.size[0], b.size[1], BUBBLE_LINE_H, max_steps=8, floor=2)
+            if e.get("state") == "voting" and e.get("platform"):
+                # a standing pip speaks BESIDE the letter column (the letter / count / names stack is ~100 px tall; a bubble
+                # pushed above it floats 200 px from the creature): just past the widest carved row, at the pip's height.
+                r0, r1 = plat_row.get(str(e.get("platform")), (cx - 40, cx + 40))
+                side_x = max(cx + 40, r1 + 10)
+                if side_x + b.size[0] > w - 2:
+                    side_x = min(cx - 40, r0 - 10) - b.size[0]
+                bx = max(2, min(w - b.size[0] - 2, side_x))
+                by = placer.up(bx, max(2, int(e["sy"] + e["sh"]) - 8 - b.size[1]), b.size[0], b.size[1], BUBBLE_LINE_H, max_steps=8, floor=2)
+            else:
+                bx = max(2, min(w - b.size[0] - 2, cx - b.size[0] // 2))
+                by = placer.up(bx, max(2, ly - 4 - b.size[1]), b.size[0], b.size[1], BUBBLE_LINE_H, max_steps=8, floor=2)
             _paste(img, b, bx, by)
         if single is not None:
             _, nm, line = single
@@ -832,24 +921,19 @@ class WorldPanel(Panel):
             s = text_strip(BUBBLE_FONT, BUBBLE_SIZE, L.truncate(BUBBLE_FONT, BUBBLE_SIZE, txt, w - 2 * 16), L.COLORS["text"])
             _paste(img, s, 16, h - 34)
 
-        # 4. hatch tags (#N, 3 s) and the only-light line (10 s), under the pip
-        for e in ents:
-            key = e.get("key")
-            if not key:
-                continue
-            tag = self._hatch_tag.get(key)
-            cx = int(e["sx"] + e["sw"] // 2)
-            base_y = int(e["sy"] + e["sh"]) + 2
-            if tag and names_on:
-                s = text_strip(LABEL_FONT, LABEL_SIZE, tag[0], accent)
-                tx = cx - s.size[0] // 2
-                ty = placer.down(tx, base_y, s.size[0], LABEL_H, LABEL_H, ceiling=h - 2)
-                _paste(img, s, tx, ty)
-                base_y = ty + LABEL_H
-            if self._only_light and self._only_light[0] == key:
+        # 4. the only-light line (10 s): ABOVE the pip's name label, through the placer, so it never overprints the
+        #    label, a bubble or the platform rows (the `#N` hatch tag rides inside the name label itself)
+        if self._only_light:
+            for e in ents:
+                key = e.get("key")
+                if not key or key != self._only_light[0] or not e.get("awake"):
+                    continue
                 s = text_strip(LABEL_FONT, LABEL_SIZE, "you are the only light in the cave.", L.COLORS["text"])
+                cx, ly = label_pos.get(key, (int(e["sx"] + e["sw"] // 2), int(e["sy"]) - 2))
                 tx = max(2, min(w - s.size[0] - 2, cx - s.size[0] // 2))
-                ty = placer.down(tx, min(h - LABEL_H - 2, base_y), s.size[0], LABEL_H, LABEL_H, ceiling=h - 2)
+                ty = placer.place_up(tx, ly - LABEL_H - 2, s.size[0], LABEL_H, LABEL_STEP, 6, floor=2)
+                if ty is None:
+                    ty = placer.down(tx, int(e["sy"] + e["sh"]) + 2, s.size[0], LABEL_H, LABEL_H, ceiling=h - 2)
                 _paste(img, s, tx, ty)
 
         # 5. moss labels on a 5 s rotation, in the SOIL BAND under the floor (never at pip height where people gather);

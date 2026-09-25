@@ -43,6 +43,8 @@ from stream.world import pips as P  # noqa: E402
 
 SCHEMA = 1
 FLUSH_S = 5.0
+DIG_W = 5                         # a dig pocket is 5 wide x 3 tall sim cells (20 x 12 px on screen)
+DIG_CAP = 45                      # cells per user per session (3 full pockets)
 BAK_KEEP = 7
 MILESTONES = [3, 5, 10, 25, 50]
 HIST_GAP_S = 45 * 60.0            # a gap this long between records in history = a new (pseudo) session
@@ -500,9 +502,18 @@ class WorldState(object):
                         m = bits.reshape(SIM_H, SIM_W).astype(bool)
                 except Exception as e:
                     self.log("terrain_b64 corrupt (%r): default cavern" % (e,))
+            ver = int(self.data["world"].get("terrain_ver") or 1)
             if m is None:
                 m = default_terrain()
+            elif ver < TERRAIN_VER:
+                try:
+                    m = upgrade_terrain(m, ver)
+                    self.log("terrain upgraded v%d -> v%d (digs kept)" % (ver, TERRAIN_VER))
+                except Exception as e:
+                    self.log("terrain upgrade failed (%r): keeping the saved cavern" % (e,))
+            self.data["world"]["terrain_ver"] = TERRAIN_VER
             self._terrain = m
+            self.dirty = True
         return self._terrain
 
     def set_terrain(self, mask: np.ndarray) -> None:
@@ -510,10 +521,10 @@ class WorldState(object):
         self.dirty = True
 
     def dig_cells(self, cx: int, cy: int, protected: Optional[np.ndarray] = None) -> int:
-        """Dry probe: how many of the 3x3 cells around (cx, cy) a dig there would carve (solid and unprotected)."""
+        """Dry probe: how many of the DIG_W x 3 cells around (cx, cy) a dig there would carve (solid and unprotected)."""
         m = self.terrain()
         y0, y1 = max(0, cy - 1), min(SIM_H, cy + 2)
-        x0, x1 = max(0, cx - 1), min(SIM_W, cx + 2)
+        x0, x1 = max(0, cx - DIG_W // 2), min(SIM_W, cx + DIG_W // 2 + 1)
         if y1 <= y0 or x1 <= x0:
             return 0
         allowed = ~m[y0:y1, x0:x1]
@@ -521,10 +532,11 @@ class WorldState(object):
             allowed = allowed & ~protected[y0:y1, x0:x1]
         return int(allowed.sum())
 
-    def dig(self, key: str, cx: int, cy: int, protected: Optional[np.ndarray] = None, cap: int = 40,
+    def dig(self, key: str, cx: int, cy: int, protected: Optional[np.ndarray] = None, cap: int = DIG_CAP,
             radius: int = 8) -> Tuple[int, str]:
-        """Carve a 3x3 around (cx, cy) if inside the digger's own `radius` (8 sim px; the scene passes more for a pip
-        standing on a platform, whose footing is protected). Returns (cells, reason)."""
+        """Carve a DIG_W x 3 pocket around (cx, cy) if inside the digger's own `radius` (8 sim px; the scene passes more
+        for a pip standing on a platform, whose footing is protected). 5 wide = 20 px on screen, the legibility floor
+        (fix round 1: a 3x3 hole read as an 8-12 px smudge). Returns (cells, reason)."""
         p = self.pip(key)
         if p is None:
             return 0, "no pip"
@@ -535,7 +547,7 @@ class WorldState(object):
             return 0, "too far from your pip"
         m = self.terrain().copy()
         y0, y1 = max(0, cy - 1), min(SIM_H, cy + 2)
-        x0, x1 = max(0, cx - 1), min(SIM_W, cx + 2)
+        x0, x1 = max(0, cx - DIG_W // 2), min(SIM_W, cx + DIG_W // 2 + 1)
         region = m[y0:y1, x0:x1]
         allowed = ~region
         if protected is not None:
@@ -796,6 +808,12 @@ LANTERN_X = 300
 
 
 TERRAIN_SEED = 41370704          # the default cavern is deterministic (terrain persists in world.json; only speckle is per session)
+TERRAIN_VER = 2                  # 2: stalactites 4-8 px, floor rubble 1-3 px, torn mouth flanks, Ledge outcrops (fix round 1).
+                                 # A saved terrain of an older version is upgraded in WorldState.terrain(): the new rock lands,
+                                 # every cell a real person dug stays carved.
+STALACTITE_N = (3, 5)
+STALACTITE_DEPTH = (4, 8)
+STALACTITE_GAP = (6, 20)
 
 
 def burrow_box(i: int) -> Tuple[int, int, int, int]:
@@ -818,17 +836,32 @@ def _runs(rng, x0: int, x1: int, lo: int, hi: int):
         x += n
 
 
-def default_terrain() -> np.ndarray:
-    """True = carved (void). The cavern minus the Ledge, the jagged mouth, 16 arched burrow recesses, plus a stepped
+def mouth_span(r: int, ver: int = TERRAIN_VER) -> Tuple[int, int]:
+    """Open columns [a, b) of cave-mouth row r. v1: a 32-wide slot with a 0-3 px saw-tooth. v2: a TORN opening that
+    flares 2-4 px per step toward the cavern (rows 0-13), so at tile scale it reads as a break in the rock, not a window."""
+    if ver < 2:
+        return MOUTH_X[0] + (r * 7) % 4, MOUTH_X[1] - (r * 5 + 2) % 4
+    step = r // 2                                             # a new step every 2 rows
+    flare_l = (step * 3 + (r * 7) % 3) // 2                   # 0 .. ~10 px wider at the bottom
+    flare_r = (step * 2 + (r * 5 + 2) % 4) // 2
+    a = MOUTH_X[0] + 3 - flare_l + ((r * 7) % 3 if r % 2 else 0)
+    b = MOUTH_X[1] - 3 + flare_r - ((r * 5) % 3 if r % 2 == 0 else 0)
+    return max(MOUTH_X[0] - 6, a), min(MOUTH_X[1] + 6, b)
+
+
+def default_terrain(ver: int = TERRAIN_VER) -> np.ndarray:
+    """True = carved (void). The cavern minus the Ledge, the mouth, 16 arched burrow recesses, plus a stepped
     ceiling (stalactite steps of 0-3 px hanging into rows 14-16) and a stepped floor (stalagmite steps of 0-2 px rising
-    into rows 86-87), in seeded runs of 6-20 columns. The mouth pillars, the lantern column and the platform footings
-    are left flat; protected cells (dig) are never carved here."""
+    into rows 86-87), in seeded runs of 6-20 columns. v2 (TERRAIN_VER) adds 3-5 stalactites hanging 4-8 px into the
+    void at 6-20 column spacing with matching 1-3 px rubble bumps on the floor line, a torn flared mouth, and two
+    rock outcrops on the Ledge face, so ceiling, floor and wall are visibly irregular at tile scale (art-rules 4).
+    The mouth pillars, the lantern column and the platform footings are left flat; protected cells (dig) are never
+    carved here."""
     m = np.zeros((SIM_H, SIM_W), dtype=bool)
     m[VOID_ROWS[0]:VOID_ROWS[1] + 1, LEDGE_X[1]:SIM_W] = True
-    for r in range(0, 14):                                    # jagged mouth
-        jl = (r * 7) % 4
-        jr = (r * 5 + 2) % 4
-        m[r, MOUTH_X[0] + jl:MOUTH_X[1] - jr] = True
+    for r in range(0, 14):                                    # the mouth
+        a, b = mouth_span(r, ver)
+        m[r, a:b] = True
     rng = np.random.default_rng(TERRAIN_SEED)
     keep_flat = np.zeros(SIM_W, dtype=bool)                   # columns whose ceiling / floor stay straight
     keep_flat[MOUTH_X[0] - 6:MOUTH_X[1] + 6] = True
@@ -853,7 +886,52 @@ def default_terrain() -> np.ndarray:
         m[y, x + 2:x + w - 2] = True
         m[y + 1, x + 1:x + w - 1] = True
         m[y + 2:y + h, x:x + w] = True
+    if ver >= 2:
+        rng2 = np.random.default_rng(TERRAIN_SEED ^ 0x5A17)
+        n = STALACTITE_N[1]                                   # five: one per ~50 columns of ceiling
+        x = LEDGE_X[1] + 6
+        placed = 0
+        span = (SIM_W - 24 - x) // max(1, n)                  # spread across the whole ceiling, jittered by 6-20 columns
+        while placed < n and x < SIM_W - 24:
+            x += span - 10 + int(rng2.integers(STALACTITE_GAP[0], STALACTITE_GAP[1] + 1))
+            while x < SIM_W - 24 and keep_flat[max(0, x - 3):x + 4].any():
+                x += 4                                        # step past the mouth / lantern columns, never skip a spike
+            if x >= SIM_W - 24:
+                break
+            depth = int(rng2.integers(STALACTITE_DEPTH[0], STALACTITE_DEPTH[1] + 1))
+            wid = 3 if depth <= 5 else 4
+            for k in range(depth):                            # a tapering spike: wide at the ceiling, 1 px at the tip
+                half = max(0, int(round((wid / 2.0) * (1.0 - k / float(depth)))))
+                a, b = x - half, x + half + 1
+                m[VOID_ROWS[0] + k, a:b] = False
+            bump = int(rng2.integers(1, 4))                    # matching rubble on the floor line under it
+            bx = x + int(rng2.integers(-3, 4))
+            if not plat_flat[max(0, bx - 2):bx + 3].any():
+                for k in range(bump):
+                    half = max(0, bump - 1 - k)
+                    m[FLOOR_ROWS[0] - 1 - k, bx - half:bx + half + 1] = False
+            placed += 1
+        for bx in (76, 132, 196, 236, 262):                   # loose rubble on the floor line between the platforms
+            if plat_flat[max(0, bx - 2):bx + 3].any():
+                continue
+            bump = 1 + (bx // 20) % 3                          # 1-3 px
+            for k in range(bump):
+                half = max(0, bump - 1 - k)
+                m[FLOOR_ROWS[0] - 1 - k, bx - half:bx + half + 1] = False
+        for (y0, rows, out) in ((VOID_ROWS[0] + 9, 5, 3), (VOID_ROWS[0] + 38, 7, 4), (VOID_ROWS[0] + 60, 4, 2)):
+            for k in range(rows):                             # Ledge face outcrops: the left wall is torn rock, not a ruler
+                d = out - (abs(k - rows // 2) * out) // max(1, rows // 2 + 1)
+                m[y0 + k, LEDGE_X[1]:LEDGE_X[1] + max(1, d)] = False
     return m
+
+
+def upgrade_terrain(saved: np.ndarray, saved_ver: int) -> np.ndarray:
+    """A persisted terrain of an older default: apply the new rock features while keeping every cell a real person dug
+    (carved in `saved` but solid in the OLD default)."""
+    old = default_terrain(saved_ver)
+    new = default_terrain(TERRAIN_VER)
+    dug = saved & ~old
+    return new | dug
 
 
 def protected_mask() -> np.ndarray:

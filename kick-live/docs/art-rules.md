@@ -65,11 +65,19 @@ Invented names only: pip, the Hollow, keeper, glowmoss, seed, burrow, platform, 
 - Labels never overprint each other or the platform rows: the text layer keeps a per-frame list of placed boxes (platform
   title / letter / count / names first), shifts a colliding label up in 22 px steps (max 3, then label-on-speak for that
   pip), keeps moss labels in the soil band, and gives no floating label to a pip within 40 px of an occupied platform's
-  crowd (the platform row names it). A vote walk arrives within 1-3 s (`VOTE_WALK_S`).
-- The cave is texture, not UI fill: seeded rock speckle (4 % `#1C2130`, 6 % `#0D1017`), stepped ceiling and floor
-  (0-3 px runs of 6-20 columns), uneven arched burrows (12-16 wide, staggered), platform tops at 35 % accent with
-  hairline end caps and 60 % only while a pip stands there. The void stays `#0B0E14` and the mouth is the brightest
-  region of the 0-awake tile.
+  crowd (the platform row names it). The `#N` hatch tag rides INSIDE the name label (`@name #4`, 3 s) and the only-light
+  line goes through the placer above the label. The names row shows up to 3 names untruncated across the platform's
+  width or `N standing`, never a chopped name; sleeper labels and platform titles keep a 16 px gutter. Two pips never
+  share an x on a platform (standing slots 7 sim px apart). A vote walk arrives within 1-3 s (`VOTE_WALK_S`).
+- The cave is texture, not UI fill: seeded rock speckle (15 % `#1C2130`, 10 % `#0D1017`), stepped ceiling and floor
+  (0-3 px runs of 6-20 columns) plus 4-5 stalactites 4-8 px deep with rubble under them, a torn flared mouth, outcrops on
+  the Ledge face, uneven arched burrows (12-16 wide, staggered), platform tops at 35 % accent with rounded ends and 60 %
+  only while a pip stands there. The void stays `#0B0E14` and the mouth is the brightest region of the 0-awake tile
+  (the night gradient ends on the day palette's dark stop `#1D2B4A`). Terrain is versioned (`terrain_ver`); a saved
+  cavern is upgraded with every dug cell kept.
+- The cave breathes even with nobody awake (fix round 1): the mouth gradient drifts ~1 level at 0.5 Hz, sleepers breathe
+  (2 frames, 2 s), drips fall every 1-3 s (two columns) at 0 awake, the raised lantern sways 1 px at 0.25 Hz. The
+  compositor's static watchdog watches the WORLD rows (72-512), not the whole frame.
 - The 320x180 tile must still show a light source at 0 awake (sky and moon in the mouth, moss); the empty cave is
   dark but never black.
 

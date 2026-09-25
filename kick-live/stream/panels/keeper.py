@@ -29,7 +29,7 @@ from stream.world import keepers as K
 
 HEARTBEAT_FRESH_S = 120.0
 FAIL_SHOW_S = 20.0
-IDEA_HINT = "nothing carved yet · !idea"
+IDEA_HINT = "!idea <text> leaves a scroll for the keepers"
 
 
 def _mmss(sec) -> str:
@@ -75,7 +75,27 @@ class KeeperPanel(Panel):
     def _line1(self, ctx) -> Tuple[str, str]:
         if self._fresh(ctx):
             return "keeper on duty", L.preset(ctx.preset)["accent"]
-        return "no keeper on duty · scrolls kept for next time", L.COLORS["text2"]
+        return "the keepers are away tonight", L.COLORS["text2"]
+
+    @staticmethod
+    def _visitors(ctx) -> Optional[str]:
+        """`last here: @a 18:00 · @b 14:59` from the world's real visits (HEARTH graft, WORLD.md 10); None before boot."""
+        m = sys.modules.get("stream.panels.world")
+        if m is None or not hasattr(m, "scene") or not _names_on(ctx):
+            return None
+        try:
+            sc = m.scene()
+            if sc is None or not sc.booted:
+                return None
+            visits = list((sc.world.data.get("world") or {}).get("visits") or [])[-3:]
+            segs = []
+            for v in reversed(visits):
+                nm = m.shown_name(v.get("name"))
+                if nm:
+                    segs.append("@%s %s" % (nm, m.when_text(v.get("ts"), float(ctx.now))))
+            return ("last here: " + " · ".join(segs)) if segs else None
+        except Exception:
+            return None
 
     @staticmethod
     def _last_macro(ctx):
@@ -100,7 +120,12 @@ class KeeperPanel(Panel):
                     return ("last carved: %s · %s%s" % (lc["name"], lc["version"], (" · opened by @%s's hatch" % who) if who else ""),
                             L.COLORS["text"])
                 if kp.waiting is not None:
-                    return "milestone %d reached · %s waits for a keeper" % (int(kp.waiting), K.chamber_name(kp.waiting)), L.COLORS["warn"]
+                    # the colony strip already says `<chamber> opens next time a keeper is here`; this strip shows the
+                    # people instead of repeating it
+                    vis = self._visitors(ctx)
+                    if vis:
+                        return vis, L.COLORS["text2"]
+                    return "your !idea <text> waits on the wall for them", L.COLORS["text2"]
             except Exception:
                 pass
         if mac.get("active"):
@@ -119,6 +144,9 @@ class KeeperPanel(Panel):
             return ("%s: %s%s%s" % ("last carved" if ok else "last carve failed", title, (" · %s" % ver) if ver else "",
                                     (" · asked by @%s" % who) if who else ""),
                     L.COLORS["text"] if ok else L.COLORS["warn"])
+        vis = self._visitors(ctx) if not self._fresh(ctx) else None
+        if vis:
+            return vis, L.COLORS["text2"]
         return IDEA_HINT, L.COLORS["text2"]
 
     def _failure(self, ctx) -> List[str]:
@@ -159,12 +187,18 @@ class KeeperPanel(Panel):
                 break
             d.text((L.PAD, y), L.truncate(font, sz, txt, maxw), font=L.font(font, sz), fill=col)
             y += step + (6 if sz == 22 else 0)
-        # lantern glyph: chain + lit/dark lamp at the right edge, the same honesty test as the cave's lantern
+        # lantern glyph (24 px): a dotted chain, a hood, a glass body and a base, lit only on the same honesty test as the
+        # cave's lantern (a fresh keeper heartbeat)
         lit = self._fresh(ctx)
         accent = L.preset(ctx.preset)["accent"]
         lx = w - L.PAD - 8
-        d.line([(lx, 6), (lx, 18)], fill=L.COLORS["text2"], width=1)
-        d.rectangle([lx - 6, 18, lx + 6, 32], fill=accent if lit else L.COLORS["hairline"], outline=L.COLORS["text2"], width=1)
+        for yy in (6, 10, 14):
+            d.point((lx, yy), fill=L.COLORS["text2"])
+        d.polygon([(lx - 7, 22), (lx + 7, 22), (lx + 4, 17), (lx - 4, 17)], fill=L.COLORS["text2"])
+        d.rectangle([lx - 6, 23, lx + 6, 37], fill=accent if lit else L.COLORS["hairline"], outline=L.COLORS["text2"], width=1)
+        if lit:
+            d.rectangle([lx - 2, 27, lx + 2, 33], fill=L.COLORS["text"])
+        d.line([(lx - 7, 39), (lx + 7, 39)], fill=L.COLORS["text2"], width=2)
         return img
 
 

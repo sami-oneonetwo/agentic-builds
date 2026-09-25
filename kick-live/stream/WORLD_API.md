@@ -102,8 +102,12 @@ layer** (WORLD.md §11.3); this module only removes stop-words and other chatter
  "sx": 828, "sy": 308, "sw": 48, "sh": 44,   # screen box of the sprite inside the world region (label goes above sy)
  "facing": 1, "frame": "walk1", "platform": None, "burrow": None,
  "text": "hello cave", "speaking": True, "learned_from": None,     # bubble text ONLY while speaking (6 s), else None
- "first_ever": True, "minutes_tonight": 3.2, "awake": True, "colour": "#C4B5FD"}
+ "first_ever": True, "minutes_tonight": 3.2, "awake": True, "colour": "#C4B5FD",
+ "carrying": False, "flash": False}              # carrying a glow-berry (feed, 2.4 s); the 3-frame eat / care flash
 ```
+Standing pips (state `voting`) hold a SLOT on the platform: x = platform_x + 4 + 7 i for the i-th arrival, 3 per row, then a
+row 1 px higher, and idle +/- 6 sim px along the stone every 3-8 s (still `voting`, still counted). Sleepers breathe (frames
+`asleep` / `asleep1` alternate every 2 s) and twitch every 8-15 s; `behaviour.stir(key, t)` makes one twitch now.
 States: `seed hatching awake walking voting curled asleep burrowed`. For `seed`/`hatching` the dict has
 `display_name: None` and `key: None`: **nothing about a seed may be drawn as a name.** `burrowed` = hidden by a mod
 (draw no label). `display_name` is already the filtered name (`builder #N` on a blocklist hit); if `ctx.chat_display`
@@ -119,6 +123,7 @@ is False the text layer draws no names at all (WORLD.md §4 `!kill`).
 | `hatch` | `pip, display_name, first_ever, x, only_light` | audio (new-builder rise + motif), text layer (`#N` shell tag 3 s, `you are the only light in the cave` when `only_light`), colony bar |
 | `first_light` | `pip` | audio (first pad voice), plank `@name woke the Hollow · HH:MM` |
 | `speak` | `pip, text, learned_from` | audio (motif per word chunk ≤ 6), text layer bubble |
+| `mutter` | `pip, text` | an idle awake pip said one of ITS OWNER'S own tokens (allowlist + blocklist; `speak` follows next frame). Fix round 1: first ~20-35 s after the hatch/wake, then every 45-90 s, never while speaking |
 | `hop` | `pip` | audio (tick) |
 | `walk` | `pip, to` (`"A"/"B"/"C"`, `"burrow"`, or an int x), `reason?` | audio footsteps |
 | `arrive` | `pip, at` | rounds (platform tally changed), audio vote blip |
@@ -130,7 +135,7 @@ is False the text layer draws no names at all (WORLD.md §4 `!kill`).
 | `tier_up` | `pip, tier` | audio rising third + sweep, ticker |
 | `emote` | `pip, kind` | audio |
 | `feed` / `pet` / `gift` | `pip, by, asleep` | audio pop / duet, text layer hearts |
-| `dig` | `pip, cells` | audio thud |
+| `dig` | `pip, cells, x, y` | audio thud; the scene throws 3-4 rubble pixels (1 s). A pocket is 5 wide x 3 tall sim cells (20 px on screen), cap 45 cells per user per session |
 | `plant` | `pip, x, y` | audio thud + sparkle |
 | `forget`, `banish`, `burrowed` | `pip`, `reason?` | plank |
 | `credits_start` / `credits` / `credits_end` | `count` / `pip, minutes_tonight` | text layer credits line |

@@ -74,11 +74,10 @@ class Readout(Panel):
             age = (ctx.now - ctx.updated_t) if ctx.updated_t else None
             out.append("state: stale" if age is None else _fit("state: stale %ds" % int(age)))
         cl0 = ctx.compositor_live or {}
-        if cl0.get("selftest"):
-            out.append("self-test: no a/v")        # PNG frames, no ffmpeg, no audio engine: not a live health readout
-        elif ctx.audio_source == "fallback":
+        selftest = bool(cl0.get("selftest"))
+        if not selftest and ctx.audio_source == "fallback":
             out.append("audio: fallback")          # run.sh aevalsrc bed carries the audio (18-char line limit)
-        elif ctx.audio_source == "none":
+        elif not selftest and ctx.audio_source == "none":
             out.append("audio: none")
         cs = ctx.chat_stats or {}
         if cs:
@@ -86,8 +85,8 @@ class Readout(Panel):
             fresh = t is not None and (ctx.now - t) < CHAT_STATS_FRESH_S
             if not cs.get("connected") or not fresh:
                 out.append("chat: reconnecting")
-        else:
-            out.append("chat: no listener")
+        elif not selftest:
+            out.append("chat: reconnecting")       # no chat_stats.json yet: the listener is not up; plain words, no jargon
         cl = ctx.compositor_live or {}
         dropped = int(cl.get("dropped_frames") or 0)
         if dropped:
