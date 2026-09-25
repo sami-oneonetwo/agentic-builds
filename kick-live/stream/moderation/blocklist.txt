@@ -1,0 +1,104 @@
+# stream/moderation/blocklist.txt - one term per line, '#' starts a comment. Hot-reloaded within 5 s.
+#
+# Matching (stream/chat_bridge.py): the message AND the username are leet-normalised
+# (0->o 1->i 3->e 4->a 5->s 7->t 8->b @->a $->s !->i |->l +->t, lowercase, 3+ repeated letters
+# collapsed to 2, punctuation -> space), then
+#   * single words match whole tokens; terms of 5+ letters also tolerate the suffixes
+#     -s -es -z -ed -ing -er -ers (retard -> retarded; but spic never matches spicy/spices),
+#   * phrases match as a whole-word sequence,
+#   * a run of 3+ single-letter tokens is re-joined and re-checked (catches "n i g g e r"),
+#   * nothing is matched inside longer words ("therapist", "Montenegro", "Scunthorpe" stay clean).
+# Short terms (< 5 letters) therefore need their plural listed explicitly.
+# A text hit drops the message and its vote/idea and increments moderation.dropped (shown in !stats).
+# A username hit renders the user as "builder #N" everywhere; the name is never drawn.
+# Starter list: minimal and real. Slurs and hate terms first, then explicit sexual terms.
+# Ordinary profanity (shit, damn, ...) is deliberately NOT here; add it below if the channel wants it.
+
+# --- racial / ethnic / religious slurs ---
+nigger
+nigga
+niggah
+negro
+kike
+kikes
+spic
+spics
+wetback
+beaner
+chink
+gook
+gooks
+zipper head
+towelhead
+raghead
+sand nigger
+paki
+pakis
+gypsy
+gypsies
+abo
+coon
+coons
+jigaboo
+porch monkey
+
+# --- sexuality / gender slurs ---
+faggot
+fagot
+fag
+fags
+dyke
+dykes
+tranny
+trannies
+trannie
+shemale
+homo
+homos
+
+# --- disability slurs ---
+retard
+retarded
+spastic
+mongoloid
+
+# --- hate / harassment ---
+heil hitler
+sieg heil
+1488
+white power
+gas the jews
+kill yourself
+kys
+neck yourself
+rape you
+
+# --- explicit sexual terms ---
+cunt
+cunts
+cock
+cocks
+dick pic
+pussy
+porn
+porns
+porno
+pornhub
+onlyfans
+dildo
+blowjob
+handjob
+cumshot
+cum
+jerk off
+jack off
+rape
+rapes
+raped
+rapist
+whore
+slut
+sluts
+milf
+milfs
+hentai

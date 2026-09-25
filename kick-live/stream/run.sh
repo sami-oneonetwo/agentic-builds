@@ -8,7 +8,8 @@
 #   MODE=live|test|file        live -> -f flv "$RTMPS_URL$STREAM_KEY"   (exit 3 if STREAM_KEY is empty)
 #                              test -> HLS at $RUN_DIR/hls/index.m3u8, prints progress every 5 s
 #                              file -> $RUN_DIR/out.flv                  (default: live)
-#   SOURCE=compositor|testsrc  compositor -> $PYTHON stream/compositor.py | rawvideo rgb24 on stdin
+#   SOURCE=compositor|testsrc  compositor -> $PYTHON stream/relay.py -- stream/compositor.py | rawvideo rgb24 on stdin
+#                              (RELAY=0 -> legacy: compositor.py piped directly; a compositor restart then drops ingest)
 #                              testsrc    -> lavfi colour bars + channel name + UTC clock (default: compositor)
 #   AUDIO_SOURCE=generated|pipe:<fifo>|silence
 #                              generated -> low-level ambient tone bed, about -18 dBFS peak (default)
@@ -16,8 +17,9 @@
 #   DURATION=<seconds>         adds -t (stop after N seconds)
 #   STREAM_WIDTH/HEIGHT/FPS, VIDEO_BITRATE, AUDIO_BITRATE, RTMPS_URL, STREAM_KEY, KICK_CHANNEL
 #
-# Files: $LOG_DIR/ffmpeg.log (stderr, stream key masked), $LOG_DIR/compositor.log,
-#        $RUN_DIR/ffmpeg_progress.txt (-progress, machine readable), $PID_DIR/ffmpeg.pid, $PID_DIR/compositor.pid
+# Files: $LOG_DIR/ffmpeg.log (stderr, stream key masked), $LOG_DIR/compositor.log, $LOG_DIR/relay.log,
+#        $RUN_DIR/ffmpeg_progress.txt (-progress, machine readable), $RUN_DIR/relay_status.json,
+#        $PID_DIR/ffmpeg.pid, $PID_DIR/relay.pid, $PID_DIR/compositor.pid (written by the relay for its child)
 # Exit codes: 0 ok / ffmpeg exit code, 2 usage, 3 refused (live without STREAM_KEY), 4 missing input program/file
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../scripts/env.sh"
@@ -53,8 +55,15 @@ if [ "$MODE" = live ] && [ -z "$STREAM_KEY" ]; then
   exit 3
 fi
 COMPOSITOR="$KICK_LIVE_ROOT/stream/compositor.py"
+RELAY_PY="$KICK_LIVE_ROOT/stream/relay.py"
+RELAY="${RELAY:-1}"          # SOURCE=compositor only: 1 -> relay.py owns ffmpeg's pipes and supervises the compositor
+                             # (restartable without dropping ingest); 0 -> legacy direct pipe compositor | ffmpeg
 if [ "$SOURCE" = compositor ] && [ ! -f "$COMPOSITOR" ]; then
   echo "run.sh: SOURCE=compositor but $COMPOSITOR does not exist (use SOURCE=testsrc until it is built)" >&2
+  exit 4
+fi
+if [ "$SOURCE" = compositor ] && [ "$RELAY" = 1 ] && [ ! -f "$RELAY_PY" ]; then
+  echo "run.sh: SOURCE=compositor RELAY=1 but $RELAY_PY does not exist (RELAY=0 for the direct pipe)" >&2
   exit 4
 fi
 if [ "$SOURCE" = compositor ] && [ ! -x "$PYTHON" ]; then
@@ -75,7 +84,7 @@ case "$SOURCE" in
     V_FILTER="$(kl_testsrc_filter)" ;;
 esac
 
-A_IN=()
+A_IN=(); FIFO=""
 case "$AUDIO_SOURCE" in
   generated)
     # Four detuned partials (A2, E3, A3, E4) with slow independent LFOs, low-passed, -18 dB.
@@ -147,7 +156,10 @@ mask_stream() { # stdin -> stdout with the key replaced, line by line, unbuffere
 
 log "mode=$MODE source=$SOURCE audio=$AUDIO_SOURCE size=${STREAM_WIDTH}x${STREAM_HEIGHT}@${STREAM_FPS} v=$VIDEO_BITRATE a=$AUDIO_BITRATE gop=$GOP out=$OUT_DESC${DURATION:+ duration=${DURATION}s}"
 if [ "$DRY_RUN" = 1 ]; then
-  [ "$SOURCE" = compositor ] && echo "$PYTHON $COMPOSITOR |"
+  if [ "$SOURCE" = compositor ]; then
+    if [ "$RELAY" = 1 ]; then echo "$PYTHON $RELAY_PY --sock $RUN_DIR/relay.sock${FIFO:+ --audio-fifo $FIFO} -- $PYTHON $COMPOSITOR --run-dir $RUN_DIR |"
+    else echo "$PYTHON $COMPOSITOR |"; fi
+  fi
   masked_cmd; exit 0
 fi
 
@@ -155,7 +167,7 @@ fi
 : > "$PROGRESS"
 { echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) run.sh start mode=$MODE source=$SOURCE out=$OUT_DESC"; masked_cmd; } >> "$FFLOG"
 
-FF_PID=""; COMP_PID=""; PRINTER_PID=""
+FF_PID=""; COMP_PID=""; PRINTER_PID=""; SRC_PROC=""
 cleanup() {
   trap - TERM INT EXIT
   [ -n "$PRINTER_PID" ] && kill "$PRINTER_PID" 2>/dev/null || true
@@ -166,13 +178,28 @@ cleanup() {
     [ "$alive" = 0 ] && break; sleep 0.5
   done
   for p in $FF_PID $COMP_PID; do kill -KILL "$p" 2>/dev/null || true; done
-  rm -f "${PID_DIR:?}/ffmpeg.pid" "${PID_DIR:?}/compositor.pid"
+  rm -f "${PID_DIR:?}/ffmpeg.pid" "${PID_DIR:?}/compositor.pid" "${PID_DIR:?}/relay.pid"
 }
 on_term() { log "signal received, stopping ffmpeg${COMP_PID:+ and compositor}"; cleanup; exit 143; }
 trap on_term TERM INT
 trap cleanup EXIT
 
-if [ "$SOURCE" = compositor ]; then
+if [ "$SOURCE" = compositor ] && [ "$RELAY" = 1 ]; then
+  # stream/relay.py OWNS ffmpeg's inputs (stdout -> pipe:0, audio -> the FIFO) and spawns/supervises the compositor
+  # as its child (RELAY_SOCK=$RUN_DIR/relay.sock). The compositor can die or be restarted (scripts/deploy.sh)
+  # any number of times: the relay repeats the last frame / shows a card, ffmpeg never sees EOF, ingest never drops.
+  RELAY_ARGS=(--sock "$RUN_DIR/relay.sock" --run-dir "$RUN_DIR" --fps "$STREAM_FPS" --width "$STREAM_WIDTH" --height "$STREAM_HEIGHT"
+              --pid-file "$PID_DIR/compositor.pid" --child-log "$LOG_DIR/compositor.log"
+              --status "$RUN_DIR/relay_status.json" --activity-file "$ACTIVITY_FILE")
+  [ -n "$FIFO" ] && RELAY_ARGS+=(--audio-fifo "$FIFO")
+  "$PYTHON" "$RELAY_PY" "${RELAY_ARGS[@]}" -- "$PYTHON" "$COMPOSITOR" --run-dir "$RUN_DIR" \
+      2>> "$LOG_DIR/relay.log" | "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
+  FF_PID=$!
+  set +o pipefail                              # see the RELAY=0 branch: we want ffmpeg's own rc, not the pipeline's
+  sleep 0.2; COMP_PID="$(jobs -p | head -1 || true)"   # first pipeline member = the relay
+  [ -n "$COMP_PID" ] && echo "$COMP_PID" > "$PID_DIR/relay.pid"
+  SRC_PROC=relay
+elif [ "$SOURCE" = compositor ]; then
   "$PYTHON" "$COMPOSITOR" 2>> "$LOG_DIR/compositor.log" | "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
   FF_PID=$!
   # `wait $FF_PID` reports the PIPELINE status and bash applies pipefail when the job is reaped: the compositor
@@ -182,12 +209,13 @@ if [ "$SOURCE" = compositor ]; then
   # bash: `jobs -p` yields the process-group leader of the job = first pipeline member = compositor
   sleep 0.2; COMP_PID="$(jobs -p | head -1 || true)"
   [ -n "$COMP_PID" ] && echo "$COMP_PID" > "$PID_DIR/compositor.pid"
+  SRC_PROC=compositor
 else
   "${CMD[@]}" 2> >(trap "" TERM INT; mask_stream >> "$FFLOG") &
   FF_PID=$!
 fi
 echo "$FF_PID" > "$PID_DIR/ffmpeg.pid"
-log "ffmpeg pid=$FF_PID${COMP_PID:+ compositor pid=$COMP_PID} log=$FFLOG progress=$PROGRESS"
+log "ffmpeg pid=$FF_PID${COMP_PID:+ ${SRC_PROC:-compositor} pid=$COMP_PID} log=$FFLOG progress=$PROGRESS"
 
 # MODE=test: print a one-line progress summary every 5 s from the -progress file.
 if [ "$MODE" = test ]; then
@@ -209,8 +237,8 @@ fi
 if [ -n "$COMP_PID" ]; then
   while kill -0 "$FF_PID" 2>/dev/null; do
     if ! kill -0 "$COMP_PID" 2>/dev/null; then
-      log "compositor pid=$COMP_PID died while ffmpeg pid=$FF_PID is running; stopping ffmpeg"
-      echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) run.sh compositor died, stopping ffmpeg" >> "$FFLOG"
+      log "${SRC_PROC:-compositor} pid=$COMP_PID died while ffmpeg pid=$FF_PID is running; stopping ffmpeg"
+      echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) run.sh ${SRC_PROC:-compositor} died, stopping ffmpeg" >> "$FFLOG"
       sleep 3                                  # let -shortest flush the last frames first
       kill -TERM "$FF_PID" 2>/dev/null || true
       break

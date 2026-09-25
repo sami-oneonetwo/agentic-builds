@@ -1,0 +1,984 @@
+#!/usr/bin/env python
+"""compositor.py - SHIP IT LIVE frame loop. 1280x720 rgb24 at 30 fps on stdout for stream/run.sh
+(SOURCE=compositor), s16le 48 kHz stereo audio in lockstep on a FIFO, or PNG frames for --self-test.
+
+Usage:
+  python stream/compositor.py                      # stream: rgb24 frames -> stdout (run.sh pipes to ffmpeg)
+  python stream/compositor.py --audio-fifo PATH    # also write 48000/fps samples per frame to the FIFO
+                                                   # (default: AUDIO_SOURCE=pipe:PATH from the environment)
+  python stream/compositor.py --self-test 90       # render 90 PNGs to $RUN_DIR/selftest/, no ffmpeg, no FIFO
+  --run-dir DIR   override $RUN_DIR      --fps N   override $STREAM_FPS (30; 24 is the fallback)
+  --frames N      stop after N frames    --no-audio  skip the in-process AudioEngine entirely
+Test hooks: KL_FAULT_PANELS=key1,key2 makes those panels raise in render(); KL_SLOW_PANELS=key1 makes
+them sleep 35 ms per render (trips the 28 ms frame-time guard). Both prove the loop survives.
+KL_ROUND_S=<sec> shortens the micro round; KL_CHANGELOG=<path> redirects the CHANGELOG append (tests only).
+KL_SELFTEST_REALTIME=1 paces --self-test at real fps (so a file can be edited mid-run).
+
+Run-dir guard (journal 012): the canonical LIVE run dirs are ~/.local/share/kick-live/run and
+~/.local/share/kick-live/run-live (+ $KL_LIVE_RUN_DIR). Any test mode (--self-test, --frames, KL_*) pointed at
+one of them exits 2 before touching a file; stream mode into one of them needs KL_LIVE=1 or an explicit
+--run-dir <canonical>, otherwise exit 2 (an inherited $RUN_DIR is never enough to start a live render).
+
+Hot reload (journal 011, no-restart rule): stream/panels/*.py and stream/scenes/*.py are watched (mtime, every
+2 s). A changed file is py_compile'd first (syntax error -> logged, old module kept), then executed as a NEW
+module object and its panels re-registered without restarting the loop or touching ffmpeg. If the new panel
+raises within its first 30 renders the previous panel + module object are restored (rollback) and an
+activity line is written. KL_HOT_RELOAD=0 disables the watcher.
+
+Pacing: wallclock. If the loop falls a whole frame behind, the last frame is duplicated (with a fresh
+audio block) rather than letting stream time drift; counted as dropped_frames. One frame = one audio
+block, so A/V cannot drift by construction. Nothing here ever goes live: it only writes to stdout and
+the FIFO run.sh hands it.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib
+import importlib.util
+import json
+import os
+import py_compile
+import queue
+import re
+import signal
+import sys
+import threading
+import time
+import traceback
+from typing import Dict, List, Optional, Tuple
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from PIL import Image  # noqa: E402
+
+from stream import layout as L  # noqa: E402
+from stream.panels import PANEL_REGISTRY, IMPORT_ERRORS, discover, placeholder  # noqa: E402
+from stream.state_store import StateStore, epoch_to_iso, iso_to_epoch, run_path  # noqa: E402
+from stream.chat_bridge import ChatBridge  # noqa: E402
+from stream.rounds import RoundEngine  # noqa: E402
+from stream.audio import AudioEngine  # noqa: E402
+
+PANEL_BUDGET_MS = 28.0
+PANEL_STRIKES = 30
+PANEL_RETRY_FRAMES = 300
+STATIC_WATCHDOG_FRAMES = 30
+HEADER_MIN_STD = 8.0             # self-test: luminance std of the 0-66 header band below this counts as a blank header
+HOT_RELOAD_S = 2.0               # file watch interval (wallclock)
+HOT_RELOAD_SETTLE_S = 0.3        # a file modified less than this long ago may still be half-written: next poll
+HOT_RELOAD_PROBATION = 30        # renders during which a raise rolls back to the previous panel + module
+TEST_ENV_HOOKS = ("KL_ROUND_S", "KL_FAULT_PANELS", "KL_SLOW_PANELS", "KL_CHANGELOG", "KL_SELFTEST_REALTIME")
+
+
+def log(msg: str) -> None:
+    sys.stderr.write("%s compositor: %s\n" % (time.strftime("%H:%M:%S"), msg))
+    sys.stderr.flush()
+
+
+# ---------------------------------------------------------------------------- run-dir guard
+def canonical_run_dirs() -> List[str]:
+    """The LIVE run dirs (realpaths): ~/.local/share/kick-live/run, .../run-live, plus $KL_LIVE_RUN_DIR."""
+    home = os.path.expanduser("~")
+    dirs = [os.path.join(home, ".local", "share", "kick-live", "run"),
+            os.path.join(home, ".local", "share", "kick-live", "run-live")]
+    extra = os.environ.get("KL_LIVE_RUN_DIR")
+    if extra:
+        dirs.append(extra)
+    return [os.path.realpath(d) for d in dirs]
+
+
+def test_mode_reasons(self_test: int, frames: int, env=None) -> List[str]:
+    """Why this invocation counts as a test: --self-test, --frames, or any KL_* test hook in the environment."""
+    env = os.environ if env is None else env
+    out: List[str] = []
+    if self_test:
+        out.append("--self-test")
+    if frames:
+        out.append("--frames")
+    for k in TEST_ENV_HOOKS:
+        if env.get(k):
+            out.append(k)
+    return out
+
+
+def run_dir_guard(run_dir: str, explicit_run_dir: bool, reasons: List[str], env=None) -> Optional[str]:
+    """None when the start is allowed, else the refusal message (caller prints it and exits 2).
+    Test mode + canonical dir -> always refused. Stream mode + canonical dir -> needs KL_LIVE=1 or --run-dir."""
+    env = os.environ if env is None else env
+    real = os.path.realpath(run_dir)
+    canon = canonical_run_dirs()
+    if real not in canon:
+        # Belt and braces for the leak that bit on 2026-09-25: env.sh derives $STATE_FILE etc. from $RUN_DIR at
+        # source time, so a later `RUN_DIR=/tmp/cp-x` prefix leaves them pointing at the shared dir. run_path()
+        # now ignores such stale values; still refuse if any derived file would land in a canonical dir.
+        for env_name, default_name in (("STATE_FILE", "state.json"), ("CHAT_FILE", "chat.jsonl"),
+                                       ("ACTIVITY_FILE", "activity.jsonl"), ("METRICS_FILE", "metrics.jsonl")):
+            p = run_path(run_dir, env_name, default_name)
+            if os.path.realpath(os.path.dirname(os.path.abspath(p))) in canon:
+                return ("REFUSING to start: run_dir is %s but $%s=%s points into the canonical LIVE run dir.\n"
+                        "  Stale env.sh export? unset %s (or re-source scripts/env.sh with RUN_DIR already set)." % (run_dir, env_name, p, env_name))
+        return None
+    if reasons:
+        return ("REFUSING to start: run_dir %s is the canonical LIVE run dir and this is a test run (%s).\n"
+                "  Tests must use an isolated dir: RUN_DIR=/tmp/cp-<label> $PYTHON stream/compositor.py ... or --run-dir /tmp/cp-<label>.\n"
+                "  (journal 012: a test against the shared dir wrote foreign version/round fields into the live state.json)"
+                % (run_dir, ", ".join(reasons)))
+    if env.get("KL_LIVE") == "1" or explicit_run_dir:
+        return None
+    return ("REFUSING to start: run_dir %s is the canonical LIVE run dir (inherited from $RUN_DIR) but neither KL_LIVE=1\n"
+            "  nor an explicit --run-dir %s was given. A live render must say so: KL_LIVE=1 ... or --run-dir <canonical>."
+            % (run_dir, run_dir))
+
+
+class Slot(object):
+    def __init__(self, panel):
+        self.panel = panel
+        self.key = panel.key
+        self.box = L.region_box(panel.region)
+        self.size = (self.box[2], self.box[3])
+        self.img: Optional[Image.Image] = None
+        self.last_inputs = object()
+        self.error_logged = False
+        self.retry_at = -1
+        self.disabled_until = -1
+        self.strikes = 0
+        self.renders = 0
+        self.render_ms_total = 0.0
+        self.render_ms_max = 0.0
+        self.prev: Optional[Tuple] = None      # (previous panel or None, [(modname, previous module or None)]) while on probation
+        self.probation = 0                     # renders left before a hot-reloaded panel is committed
+
+    def reset(self) -> None:
+        self.last_inputs = object()
+        self.error_logged = False
+        self.retry_at = -1
+        self.disabled_until = -1
+        self.strikes = 0
+
+    def rebox(self) -> None:
+        self.box = L.region_box(self.panel.region)
+        self.size = (self.box[2], self.box[3])
+
+
+class HotReloader(object):
+    """Watches stream/panels/*.py and stream/scenes/*.py (mtime + size, every HOT_RELOAD_S s of wallclock).
+
+    change -> py_compile (syntax error: logged + activity line, old module kept)
+           -> the file is executed as a NEW module object under its dotted name (the old object survives for
+              rollback), register() calls land in PANEL_REGISTRY, the matching Slot gets the new panel with
+              `prev` armed for HOT_RELOAD_PROBATION renders
+           -> a scene file also re-executes every panel module whose source mentions `stream.scenes`, so the
+              stage rebinds to the fresh scene module (their Slot.prev carries the scene module too)
+    An import-time exception restores sys.modules and the registry (old module kept). A raise inside
+    inputs()/render() while `prev` is armed -> Compositor._rollback(): previous panel + module objects back,
+    one stderr line + one activity line. Nothing here touches the encoder: ffmpeg never notices.
+    """
+
+    WATCH = (("stream.panels", os.path.join(ROOT, "stream", "panels")),
+             ("stream.scenes", os.path.join(ROOT, "stream", "scenes")))
+
+    def __init__(self, comp: "Compositor"):
+        self.comp = comp
+        self.enabled = os.environ.get("KL_HOT_RELOAD", "1") != "0"
+        self.sig: Dict[str, Tuple[int, int]] = self._scan()
+        self.last_poll: Optional[float] = None
+        self.pyc_dir = os.path.join(comp.run_dir, ".hotreload")
+        self.stats: Dict = {"reloads": 0, "rejected": 0, "rollbacks": 0, "last": None}
+
+    def _scan(self) -> Dict[str, Tuple[int, int]]:
+        out: Dict[str, Tuple[int, int]] = {}
+        for _pkg, d in self.WATCH:
+            try:
+                names = os.listdir(d)
+            except OSError:
+                continue
+            for n in names:
+                if not n.endswith(".py") or n.startswith("_"):
+                    continue
+                p = os.path.join(d, n)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                out[p] = (st.st_mtime_ns, st.st_size)
+        return out
+
+    def poll(self, wall_now: float, frame: int) -> None:
+        """Call once per frame; does the stat walk every HOT_RELOAD_S seconds."""
+        if not self.enabled:
+            return
+        if self.last_poll is not None and wall_now - self.last_poll < HOT_RELOAD_S:
+            return
+        self.last_poll = wall_now
+        cur = self._scan()
+        for p, sig in sorted(cur.items()):
+            if self.sig.get(p) == sig:
+                continue
+            if wall_now - sig[0] / 1e9 < HOT_RELOAD_SETTLE_S:
+                continue                                   # still being written; look again next poll
+            self.sig[p] = sig
+            try:
+                self._changed(p, frame)
+            except Exception:
+                log("hot reload: unexpected error on %s:\n%s" % (p, traceback.format_exc()))
+        for p in list(self.sig):
+            if p not in cur:
+                self.sig.pop(p, None)
+                log("hot reload: %s removed; the loaded module stays" % os.path.relpath(p, ROOT))
+
+    def _modname(self, path: str) -> Tuple[Optional[str], Optional[str]]:
+        d = os.path.abspath(os.path.dirname(path))
+        for pkg, wd in self.WATCH:
+            if os.path.abspath(wd) == d:
+                return pkg, pkg + "." + os.path.splitext(os.path.basename(path))[0]
+        return None, None
+
+    def _syntax_error(self, path: str) -> Optional[str]:
+        """py_compile the file into $RUN_DIR/.hotreload/ (never into the package's __pycache__). None when it compiles."""
+        try:
+            os.makedirs(self.pyc_dir, exist_ok=True)
+            cfile = os.path.join(self.pyc_dir, os.path.basename(path) + "c")
+            py_compile.compile(path, cfile=cfile, doraise=True)
+            return None
+        except py_compile.PyCompileError as e:
+            msg = str(getattr(e, "msg", e) or e)
+            lines = [ln.strip() for ln in msg.strip().splitlines() if ln.strip()]
+            m = re.search(r"line (\d+)", msg)
+            return "%s%s" % (lines[-1] if lines else "compile error", " (line %s)" % m.group(1) if m else "")
+        except Exception as e:
+            return repr(e)
+
+    def _changed(self, path: str, frame: int) -> None:
+        pkg, modname = self._modname(path)
+        if not modname:
+            return
+        rel = os.path.relpath(path, ROOT)
+        err = self._syntax_error(path)
+        if err:
+            self.stats["rejected"] += 1
+            msg = "hot reload REJECTED %s: %s; old module kept" % (rel, err)
+            log(msg)
+            self.comp._activity(msg)
+            return
+        if pkg == "stream.scenes":
+            self._reload_scene(modname, path, frame)
+        else:
+            self._reload_panel_module(modname, path, frame, [])
+
+    @staticmethod
+    def _exec_fresh(modname: str, path: str) -> Tuple[Optional[object], Optional[str]]:
+        """Execute `path` as a NEW module object registered as `modname`. (module, None) or (None, error)."""
+        old = sys.modules.get(modname)
+        try:
+            spec = importlib.util.spec_from_file_location(modname, path)
+            mod = importlib.util.module_from_spec(spec)
+            mod.__package__ = modname.rpartition(".")[0]
+            sys.modules[modname] = mod
+            spec.loader.exec_module(mod)
+            return mod, None
+        except Exception:
+            if old is not None:
+                sys.modules[modname] = old
+            else:
+                sys.modules.pop(modname, None)
+            return None, traceback.format_exc().strip().splitlines()[-1]
+
+    def _reload_panel_module(self, modname: str, path: str, frame: int, cascade: List[Tuple[str, object]]) -> bool:
+        old_mod = sys.modules.get(modname)
+        before = dict(PANEL_REGISTRY)
+        _mod, err = self._exec_fresh(modname, path)
+        if err:
+            PANEL_REGISTRY.clear()
+            PANEL_REGISTRY.update(before)
+            self.stats["rejected"] += 1
+            msg = "hot reload FAILED %s at import: %s; old module kept" % (modname, err)
+            log(msg)
+            self.comp._activity(msg)
+            return False
+        changed = [k for k, v in PANEL_REGISTRY.items() if before.get(k) is not v]
+        if not changed:
+            log("hot reload: %s re-executed but registered no panel; nothing swapped" % modname)
+            return True
+        prev_mods: List[Tuple[str, object]] = [(modname, old_mod)] + list(cascade)
+        for k in changed:
+            panel = PANEL_REGISTRY[k]
+            slot = self.comp.slot_for(k)
+            if slot is None:
+                slot = self.comp.add_slot(panel)
+                slot.prev = (None, prev_mods)              # rollback = drop the slot again
+            else:
+                slot.prev = (slot.panel, prev_mods)
+                slot.panel = panel
+                slot.rebox()
+            slot.reset()
+            slot.probation = HOT_RELOAD_PROBATION
+            self.comp.apply_test_hooks(panel)
+        self.stats["reloads"] += 1
+        self.stats["last"] = modname
+        msg = "hot reload: %s -> panel%s [%s] live from frame %d (rollback armed for %d renders)" % (
+            modname, "s" if len(changed) > 1 else "", " ".join(changed), frame, HOT_RELOAD_PROBATION)
+        log(msg)
+        self.comp._activity(msg)
+        return True
+
+    def _reload_scene(self, modname: str, path: str, frame: int) -> None:
+        old_mod = sys.modules.get(modname)
+        _mod, err = self._exec_fresh(modname, path)
+        if err:
+            self.stats["rejected"] += 1
+            msg = "hot reload FAILED %s at import: %s; old module kept" % (modname, err)
+            log(msg)
+            self.comp._activity(msg)
+            return
+        self.stats["reloads"] += 1
+        self.stats["last"] = modname
+        deps: List[Tuple[str, str]] = []
+        for pkg, d in self.WATCH:
+            if pkg != "stream.panels":
+                continue
+            for n in sorted(os.listdir(d)):
+                if not n.endswith(".py") or n.startswith("_"):
+                    continue
+                p = os.path.join(d, n)
+                try:
+                    with open(p, "r", encoding="utf-8") as fh:
+                        src = fh.read()
+                except OSError:
+                    continue
+                if "stream.scenes" in src and (pkg + "." + n[:-3]) in sys.modules:
+                    deps.append((pkg + "." + n[:-3], p))
+        msg = "hot reload: %s -> fresh scene module at frame %d; rebinding %s" % (
+            modname, frame, ", ".join(m for m, _ in deps) or "no panels")
+        log(msg)
+        self.comp._activity(msg)
+        for dep_mod, dep_path in deps:
+            self._reload_panel_module(dep_mod, dep_path, frame, [(modname, old_mod)])
+
+
+class Compositor(object):
+    def __init__(self, run_dir: str, fps: float, audio_fifo: Optional[str], no_audio: bool, selftest: int = 0):
+        self.run_dir = run_dir
+        self.fps = float(fps)
+        self.frame_dt = 1.0 / self.fps
+        self.block = int(round(48000 / self.fps))
+        self.audio_fifo = audio_fifo
+        self.selftest = selftest
+        # RELAY_SOCK (set by stream/relay.py, the process that owns ffmpeg's pipes): send frames + audio blocks
+        # over that unix socket instead of stdout/FIFO, so this process can restart without ffmpeg noticing.
+        self.relay_sock = None if selftest else (os.environ.get("RELAY_SOCK") or None)
+        self.activity_file = run_path(run_dir, "ACTIVITY_FILE", "activity.jsonl")
+        os.makedirs(run_dir, exist_ok=True)
+
+        self.store = StateStore(run_dir, log=log)
+        self.bridge = ChatBridge(run_dir, log=log)
+        # Test hooks (never set in production): KL_ROUND_S shortens the 180 s round so a self-test can
+        # exercise open -> closing -> ship; KL_CHANGELOG redirects the CHANGELOG append away from docs/.
+        round_s = float(os.environ.get("KL_ROUND_S") or 180.0)
+        self.engine = RoundEngine(run_dir, self.store, self.bridge, log=log, round_s=round_s,
+                                  closing_s=round_s * (150.0 / 180.0), changelog_path=os.environ.get("KL_CHANGELOG") or None)
+        if round_s != 180.0:
+            log("TEST HOOK: KL_ROUND_S=%g (rounds are %g s, not 180 s)" % (round_s, round_s))
+        self.audio = None if no_audio else AudioEngine(block=self.block, fps=self.fps, log=log)
+        if audio_fifo:
+            self.audio_source = "fifo"
+        elif no_audio:
+            self.audio_source = "none"
+        else:
+            self.audio_source = "fallback"       # run.sh aevalsrc bed carries the audio
+
+        discover(log)
+        for m in IMPORT_ERRORS:
+            self._activity("panel import failed: %s" % m[:160])
+        faults = set(filter(None, (os.environ.get("KL_FAULT_PANELS") or "").split(",")))
+        slows = set(filter(None, (os.environ.get("KL_SLOW_PANELS") or "").split(",")))
+        self._faults, self._slows = faults, slows
+        order = sorted(PANEL_REGISTRY.values(), key=lambda p: (p.region.startswith("header"), p.key))  # header last
+        self.slots: List[Slot] = []
+        for p in order:
+            self.apply_test_hooks(p)
+            self.slots.append(Slot(p))
+        log("%d panels: %s" % (len(self.slots), " ".join(s.key for s in self.slots)))
+        self.reloader = HotReloader(self)
+        if self.reloader.enabled:
+            log("hot reload: watching %d files under stream/panels + stream/scenes every %g s" % (len(self.reloader.sig), HOT_RELOAD_S))
+
+        self.canvas = Image.new("RGB", (L.W, L.H), L.COLORS["bg"])
+        self.frame_ms: List[float] = []
+        self.dropped = 0
+        self.frames = 0
+        self.same_frames = 0
+        self.last_bytes: Optional[bytes] = None
+        self.running = True
+        self.vq: "queue.Queue" = queue.Queue(maxsize=6)
+        self.aq: "queue.Queue" = queue.Queue(maxsize=64)
+        self.writer_error: Optional[str] = None
+        self._boot_chat: List[Dict] = []      # recent (< 60 s) !idea/!theme records found at boot, applied on the first tick
+        self.counters: Dict = {"fps_target": int(round(self.fps)), "fps_actual": 0.0, "frame_ms_avg": 0.0, "frame_ms_p95": 0.0,
+                               "dropped_frames": 0, "scene": "STATUS", "uptime_s": 0, "panels_disabled": [],
+                               "hot_reload": self.reloader.stats, "selftest": bool(selftest)}
+        self._frame_votes: List[Dict] = []    # accepted live votes ingested this frame (vote-to-strip latency proof)
+        self.vote_acks = [0, 0]               # [acknowledged on the same frame, total]
+        self.header_blank = 0                 # frames whose header band (rows 0-66) had no contrast
+
+    # ------------------------------------------------------------------ slots (hot reload uses these)
+    def slot_for(self, key: str) -> Optional[Slot]:
+        for s in self.slots:
+            if s.key == key:
+                return s
+        return None
+
+    def add_slot(self, panel) -> Slot:
+        """Insert a slot for a newly registered panel, keeping header panels last."""
+        slot = Slot(panel)
+        if panel.region.startswith("header"):
+            self.slots.append(slot)
+        else:
+            idx = next((i for i, s in enumerate(self.slots) if s.panel.region.startswith("header")), len(self.slots))
+            self.slots.insert(idx, slot)
+        return slot
+
+    def apply_test_hooks(self, panel) -> None:
+        if panel.key in self._faults:
+            self._inject_fault(panel)
+        if panel.key in self._slows:
+            self._inject_slow(panel)
+
+    # ------------------------------------------------------------------ test hooks
+    @staticmethod
+    def _inject_fault(panel):
+        def boom(ctx, size):
+            raise RuntimeError("injected fault (KL_FAULT_PANELS)")
+        panel.render = boom
+        log("TEST HOOK: panel %s will raise in render()" % panel.key)
+
+    @staticmethod
+    def _inject_slow(panel):
+        orig = panel.render
+
+        def slow(ctx, size):
+            time.sleep(0.035)
+            return orig(ctx, size)
+        panel.render = slow
+        orig_inputs = panel.inputs
+        panel.inputs = lambda ctx: (orig_inputs(ctx), ctx.frame)     # force a render every frame
+        log("TEST HOOK: panel %s sleeps 35 ms per render (over the %g ms budget)" % (panel.key, PANEL_BUDGET_MS))
+
+    # ------------------------------------------------------------------ io
+    def _activity(self, text: str) -> None:
+        try:
+            with open(self.activity_file, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"ts": epoch_to_iso(time.time()), "actor": "compositor", "text": text[:200]}) + "\n")
+        except Exception as e:
+            log("activity append failed: %r" % (e,))
+
+    def _writer(self, open_fn, q: "queue.Queue", name: str) -> None:
+        # open() of a FIFO blocks until ffmpeg opens the read end: that is why it lives in its own thread
+        try:
+            with open_fn() as f:
+                while True:
+                    b = q.get()
+                    if b is None:
+                        return
+                    f.write(b)
+        except (BrokenPipeError, OSError) as e:
+            self.writer_error = "%s writer: %r" % (name, e)
+            self.running = False
+        except Exception as e:  # pragma: no cover
+            self.writer_error = "%s writer: %r" % (name, e)
+            self.running = False
+
+    def _put(self, q: "queue.Queue", b) -> bool:
+        """Bounded put that gives up when the writer died (so a closed pipe can never hang the loop)."""
+        while self.running:
+            try:
+                q.put(b, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _relay_writer(self) -> None:
+        """RELAY_SOCK mode: one FRM0 message per frame (video + this frame's audio block) to stream/relay.py.
+        Protocol: header struct('>4sI') kind+length; FRM0 payload = '>I' audio_len + rgb24 + s16le. See relay.py."""
+        import socket
+        import struct
+        hdr = struct.Struct(">4sI")
+        s = None
+        try:
+            deadline = time.time() + 30.0
+            while self.running:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    s.connect(self.relay_sock)
+                    break
+                except OSError as e:
+                    s.close(); s = None
+                    if time.time() > deadline:
+                        raise RuntimeError("relay socket %s not accepting connections: %r" % (self.relay_sock, e))
+                    time.sleep(0.25)
+            if s is None:
+                return
+            for opt in (socket.SO_SNDBUF, socket.SO_RCVBUF):
+                try:
+                    s.setsockopt(socket.SOL_SOCKET, opt, 2 * 1024 * 1024)
+                except OSError:
+                    pass
+            hello = json.dumps({"w": L.W, "h": L.H, "fps": self.fps, "block": self.block, "pid": os.getpid()}).encode("utf-8")
+            s.sendall(hdr.pack(b"HELO", len(hello)) + hello)
+            log("relay: connected to %s" % self.relay_sock)
+            while True:
+                v = self.vq.get()
+                if v is None:
+                    while True:                     # drain the audio side too, or shutdown waits 2 s on a full aq
+                        try:
+                            self.aq.get_nowait()
+                        except queue.Empty:
+                            break
+                    return
+                a = b""
+                if self.audio_fifo:
+                    a = self.aq.get()
+                    if a is None:
+                        return
+                s.sendall(hdr.pack(b"FRM0", 4 + len(v) + len(a)) + struct.pack(">I", len(a)))
+                s.sendall(v)
+                if a:
+                    s.sendall(a)
+        except Exception as e:
+            self.writer_error = "relay writer: %r" % (e,)
+            self.running = False
+        finally:
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+    def _start_writers(self) -> None:
+        if self.relay_sock:
+            threading.Thread(target=self._relay_writer, daemon=True).start()
+            return
+        threading.Thread(target=self._writer, args=(lambda: os.fdopen(os.dup(1), "wb", buffering=0), self.vq, "video"), daemon=True).start()
+        if self.audio_fifo:
+            threading.Thread(target=self._writer, args=(lambda: open(self.audio_fifo, "wb", buffering=0), self.aq, "audio"), daemon=True).start()
+
+    # ------------------------------------------------------------------ scene
+    def _scene(self, ctx) -> str:
+        rnd = ctx.round or {}
+        if rnd.get("phase") == "ship":
+            return "SHIP"
+        ag = ctx.agent or {}
+        hb = iso_to_epoch(ag.get("heartbeat_ts"))
+        fresh = hb is not None and ctx.now - hb < 120
+        if (ctx.macro or {}).get("active") and fresh:
+            return "BUILDING"
+        last_chat = self.bridge.messages[-1].get("t") if self.bridge.messages else None
+        if not fresh and (last_chat is None or ctx.now - last_chat > 300) and not ag.get("on_duty"):
+            return "ATTRACT"
+        return "STATUS"
+
+    # ------------------------------------------------------------------ frame
+    def _ctx(self, now: float, frame: int, audio_block=None):
+        extras = dict(
+            tallies=self.bridge.tallies(), vote_count=self.bridge.vote_count(), recent_votes=self.bridge.recent_votes(5),
+            chat=self.bridge.visible(now, 10), notice=self.bridge.notice(now), help_until=self.bridge.help_until,
+            stats_until=self.bridge.stats_until, chat_display=self.bridge.display, mod_paused=self.bridge.paused,
+            builders=self.bridge.builders, new_builders=self.bridge.new_builders, audio_block=audio_block,
+            audio_level=(self.audio.level_dbfs if self.audio else None), audio_source=self.audio_source,
+            compositor_live=self.counters, scene=self.counters.get("scene"),
+        )
+        ctx = self.store.ctx(now, frame, self.fps, **extras)
+        if self.bridge.founders:
+            ctx.founders = list(self.bridge.founders)
+        return ctx
+
+    def render_frame(self, now: float, frame: int) -> Image.Image:
+        self.store.refresh(now)
+        new_msgs = self.store.drain_chat()
+        ctx0 = self._ctx(now, frame)
+        classified = self.bridge.ingest(new_msgs, now, ctx0) if new_msgs else []
+        if self._boot_chat:
+            classified = self._boot_chat + classified
+            self._boot_chat = []
+        try:
+            self.engine.tick(now, ctx0, classified)
+        except Exception:
+            log("round engine tick failed:\n" + traceback.format_exc())
+        self.bridge.flush(now)
+        blk = None
+        if self.audio is not None:
+            blk = self.audio.block(frame, self._ctx(now, frame))
+        ctx = self._ctx(now, frame, blk)
+        self.counters["scene"] = self._scene(ctx)
+        ctx.scene = self.counters["scene"]
+
+        for slot in self.slots:
+            self._render_slot(slot, ctx, frame)
+        # state.json compositor.scene = what the stage chip actually shows (QA: a forced ATTRACT run wrote "STATUS")
+        st = sys.modules.get("stream.panels.stage")
+        if st is not None and hasattr(st, "current_scene"):
+            try:
+                self.counters["scene"] = str(st.current_scene())
+            except Exception:
+                pass
+        votes = [m for m in classified if m.get("kind") == "vote" and m.get("accepted") and not m.get("history")]
+        if votes:
+            self._log_vote_ack(votes, frame)
+        return self.canvas
+
+    def _log_vote_ack(self, votes: List[Dict], frame: int) -> None:
+        """Prove CONCEPT 2 'name on screen within one second': the pinned strip's cache key (its text) on the SAME
+        frame the vote was ingested must read `@name voted X`. Counted in self.vote_acks, one log line per vote."""
+        slot = self.slot_for("chat_pinned")
+        key = getattr(slot, "last_inputs", None) if slot is not None else None
+        txt = key[0] if isinstance(key, tuple) and key else None
+        for m in votes:
+            want = "@%s voted %s" % (m.get("display_name"), m.get("letter"))
+            ok = bool(txt) and want in str(txt)          # several votes in one frame share the strip
+            self.vote_acks[1] += 1
+            self.vote_acks[0] += 1 if ok else 0
+            log("vote ack: frame %d %s -> pinned strip reads %r (%s)" % (frame, want, txt, "same frame" if ok else "NOT shown"))
+
+    def _paste(self, slot: Slot, img: Image.Image) -> None:
+        tile = Image.new("RGB", slot.size, L.COLORS["panel"])
+        if img.size != slot.size:
+            fixed = Image.new("RGBA", slot.size, (0, 0, 0, 0))
+            fixed.paste(img, (0, 0))
+            img = fixed
+        if img.mode == "RGBA":
+            tile.paste(img, (0, 0), img)
+        else:
+            tile.paste(img.convert("RGB"), (0, 0))
+        slot.img = tile
+        self.canvas.paste(tile, (slot.box[0], slot.box[1]))
+
+    def _fail(self, slot: Slot, frame: int, note: str, exc: bool) -> None:
+        if not slot.error_logged:
+            slot.error_logged = True
+            tb = traceback.format_exc().strip().splitlines()[-1] if exc else note
+            log("panel %s failed: %s (placeholder shown, retry in %d frames)" % (slot.key, tb, PANEL_RETRY_FRAMES))
+            self._activity("%s panel restarting after an error (%s)" % (slot.key.replace("_", " "), tb.split(":", 1)[0][:40]))
+        slot.retry_at = frame + PANEL_RETRY_FRAMES
+        slot.last_inputs = object()
+        self._paste(slot, placeholder(slot.size, slot.key, note))
+
+    def _rollback(self, slot: Slot, ctx, frame: int, why: str) -> None:
+        """A hot-reloaded panel raised during probation: restore the previous panel and module objects."""
+        old_panel, mods = slot.prev
+        slot.prev = None
+        slot.probation = 0
+        for name, mod in mods:
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+        self.reloader.stats["rollbacks"] += 1
+        if old_panel is None:                       # the reload had ADDED this panel: drop it again
+            PANEL_REGISTRY.pop(slot.key, None)
+            self.slots = [s for s in self.slots if s is not slot]
+            msg = "hot reload ROLLBACK %s: %s; new panel removed, previous modules restored" % (slot.key, why)
+            log(msg)
+            self._activity(msg)
+            return
+        PANEL_REGISTRY[slot.key] = old_panel
+        slot.panel = old_panel
+        slot.rebox()
+        slot.reset()
+        msg = "hot reload ROLLBACK %s: %s; previous panel + module restored" % (slot.key, why)
+        log(msg)
+        self._activity(msg)
+        self._render_slot(slot, ctx, frame)         # prev is None now: a second raise takes the placeholder path
+
+    def _render_slot(self, slot: Slot, ctx, frame: int) -> None:
+        if frame < slot.retry_at or frame < slot.disabled_until:
+            return
+        if slot.disabled_until >= 0 and frame == slot.disabled_until:
+            slot.disabled_until = -1
+            slot.strikes = 0
+            log("panel %s re-enabled for a retry" % slot.key)
+        try:
+            key = slot.panel.inputs(ctx)
+        except Exception:
+            if slot.prev is not None and slot.probation > 0:
+                self._rollback(slot, ctx, frame, "inputs() raised: " + traceback.format_exc().strip().splitlines()[-1][:120])
+                return
+            self._fail(slot, frame, "inputs() raised", True)
+            return
+        if slot.img is not None and key == slot.last_inputs:
+            return
+        t0 = time.perf_counter()
+        try:
+            img = slot.panel.render(ctx, slot.size)
+            if not isinstance(img, Image.Image):
+                raise TypeError("render() returned %r, not a PIL Image" % type(img))
+        except Exception:
+            if slot.prev is not None and slot.probation > 0:
+                self._rollback(slot, ctx, frame, "render() raised: " + traceback.format_exc().strip().splitlines()[-1][:120])
+                return
+            self._fail(slot, frame, "render() raised", True)
+            return
+        dt = (time.perf_counter() - t0) * 1000.0
+        slot.renders += 1
+        slot.render_ms_total += dt
+        slot.render_ms_max = max(slot.render_ms_max, dt)
+        slot.last_inputs = key
+        if slot.probation > 0:
+            slot.probation -= 1
+            if slot.probation == 0 and slot.prev is not None:
+                slot.prev = None                    # committed: the new module is now the fallback
+                log("hot reload: panel %s committed after %d clean renders" % (slot.key, HOT_RELOAD_PROBATION))
+        if slot.error_logged:
+            slot.error_logged = False
+            log("panel %s recovered" % slot.key)
+        self._paste(slot, img)
+        budget = getattr(slot.panel, "budget_ms", PANEL_BUDGET_MS) or PANEL_BUDGET_MS
+        if dt > budget:
+            slot.strikes += 1
+            if slot.strikes >= PANEL_STRIKES:
+                slot.disabled_until = frame + PANEL_RETRY_FRAMES
+                msg = "panel %s disabled: %d consecutive renders over %.0f ms (last %.1f ms); placeholder for %d frames" % (
+                    slot.key, slot.strikes, budget, dt, PANEL_RETRY_FRAMES)
+                log(msg)
+                self._activity(msg)
+                self.counters["panels_disabled"] = sorted(set(self.counters.get("panels_disabled", []) + [slot.key]))
+                self._paste(slot, placeholder(slot.size, slot.key, "over budget, disabled"))
+        else:
+            slot.strikes = 0
+
+    # ------------------------------------------------------------------ stats
+    def _update_counters(self, t_start: float, now_pc: float) -> None:
+        ms = self.frame_ms[-300:]
+        if ms:
+            srt = sorted(ms)
+            self.counters["frame_ms_avg"] = round(sum(ms) / len(ms), 1)
+            self.counters["frame_ms_p95"] = round(srt[min(len(srt) - 1, int(len(srt) * 0.95))], 1)
+        el = max(1e-6, now_pc - t_start)
+        self.counters["fps_actual"] = round(self.frames / el, 1) if self.frames else 0.0
+        self.counters["dropped_frames"] = self.dropped
+        self.counters["uptime_s"] = int(el)
+
+    def _report(self, tag: str) -> str:
+        ms = self.frame_ms
+        if not ms:
+            return tag + ": no frames"
+        srt = sorted(ms)
+        p95 = srt[min(len(srt) - 1, int(len(srt) * 0.95))]
+        over = sum(1 for m in ms if m > 1000.0 / self.fps)
+        heavy = sorted(self.slots, key=lambda s: -s.render_ms_max)[:4]
+        return "%s: %d frames, render ms avg %.1f p95 %.1f max %.1f, %d over %.1f ms budget, %d dup/dropped, panels(max ms): %s" % (
+            tag, len(ms), sum(ms) / len(ms), p95, max(ms), over, 1000.0 / self.fps, self.dropped,
+            ", ".join("%s %.1f/%d" % (s.key, s.render_ms_max, s.renders) for s in heavy))
+
+    # ------------------------------------------------------------------ loops
+    def _prime(self, now: float) -> None:
+        self.store.ensure_state_file(now)
+        self.store.refresh(now, force=True)
+        # boot: everything already in chat.jsonl is history -> ingest without triggering blips
+        hist = self.store.drain_chat()
+        if hist:
+            classified = self.bridge.ingest(hist, now, self._ctx(now, 0))
+            # Records younger than the bridge's HISTORY window (60 s) are treated as live by the bridge (blips,
+            # theme/idea accepted) but the previous compositor may not have processed them: a relay deploy restarts
+            # this process in ~0.5 s. Hand them to the RoundEngine on the first tick so no !idea / !theme is lost
+            # across a deploy (ideas de-duplicate on text; an older record is boot history and is NOT re-applied).
+            cur_preset = (self.store.state.get("theme") or {}).get("preset")
+            self._boot_chat = [m for m in classified if not m.get("history") and m.get("kind") in ("idea", "theme")
+                               and not (m.get("kind") == "theme" and m.get("arg") == cur_preset)]   # already applied
+            log("ingested %d historical chat messages (%d recent commands handed to the round engine)" % (
+                len(hist), len(self._boot_chat)))
+        self._activity("compositor start fps=%g audio=%s run_dir=%s" % (self.fps, self.audio_source, self.run_dir))
+
+    def run_selftest(self, n: int) -> int:
+        out_dir = os.path.join(self.run_dir, "selftest")
+        os.makedirs(out_dir, exist_ok=True)
+        t_wall = time.time()
+        self._prime(t_wall)
+        # Warm-up (same as run_stream): fonts + every panel's first strip cost 120-170 ms on frame 0 and were the only
+        # over-budget frame of every run. Rendered untimed here so the 120 timed frames measure steady state.
+        t0 = time.perf_counter()
+        try:
+            self.render_frame(t_wall - self.frame_dt, 0)
+        except Exception:
+            log("warm-up render failed (ignored):\n" + traceback.format_exc())
+        log("self-test warm-up render: %.1f ms (fonts + panel caches primed before frame 0)" % ((time.perf_counter() - t0) * 1000.0))
+        try:
+            import numpy as _np
+        except Exception:
+            _np = None
+        hdr_min = None
+        t_start = time.perf_counter()
+        realtime = os.environ.get("KL_SELFTEST_REALTIME") == "1"
+        if realtime:
+            log("TEST HOOK: KL_SELFTEST_REALTIME=1 (self-test paced at %g fps)" % self.fps)
+        for i in range(n):
+            if realtime:
+                lag = t_start + i * self.frame_dt - time.perf_counter()
+                if lag > 0:
+                    time.sleep(lag)
+            self.reloader.poll(time.time(), i)     # wallclock: the watched files change in real time
+            now = t_wall + i * self.frame_dt        # virtual clock: deterministic, one frame apart
+            t0 = time.perf_counter()
+            img = self.render_frame(now, i)
+            ms = (time.perf_counter() - t0) * 1000.0
+            self.frame_ms.append(ms)
+            if ms > 1000.0 / self.fps:
+                slow = sorted(self.slots, key=lambda s: -s.render_ms_max)[:3]
+                log("self-test frame %d over budget: %.1f ms (scene %s, round %s; heaviest so far: %s)" % (
+                    i, ms, self.counters.get("scene"), ((self.store.state.get("round") or {}).get("phase")),
+                    ", ".join("%s %.1f" % (s.key, s.render_ms_max) for s in slow)))
+            self.frames += 1
+            b = img.tobytes()
+            self.same_frames = self.same_frames + 1 if b == self.last_bytes else 0
+            self.last_bytes = b
+            if _np is not None:
+                # header over every scene, proven per frame: the 0-66 band must have contrast (std of luminance > 8)
+                band = _np.frombuffer(b, dtype=_np.uint8)[:L.W * 66 * 3].reshape(66, L.W, 3)
+                sd = float(band.astype(_np.float32).mean(axis=2).std())
+                hdr_min = sd if hdr_min is None else min(hdr_min, sd)
+                if sd <= HEADER_MIN_STD:
+                    self.header_blank += 1
+            img.save(os.path.join(out_dir, "frame_%04d.png" % i))
+            if i % 30 == 0:
+                self._update_counters(t_start, time.perf_counter())
+        self._update_counters(t_start, time.perf_counter())
+        log(self._report("self-test"))
+        log("static-frame watchdog: longest identical run %d frames (limit %d)" % (self.same_frames, STATIC_WATCHDOG_FRAMES))
+        log("header band check: %d/%d frames non-blank (min luminance std %.1f, threshold %.0f) -> %s" % (
+            n - self.header_blank, n, hdr_min if hdr_min is not None else -1.0, HEADER_MIN_STD, "PASS" if not self.header_blank else "FAIL"))
+        log("vote ack check: %d/%d live votes acknowledged on the pinned strip in the same frame" % (self.vote_acks[0], self.vote_acks[1]))
+        log("wrote %d PNGs to %s" % (n, out_dir))
+        self.bridge.flush(time.time(), force=True)
+        return 0
+
+    def run_stream(self, max_frames: int = 0) -> int:
+        self._start_writers()
+        t_wall0 = time.time()
+        self._prime(t_wall0)
+        # Warm-up: frame 0 costs ~170 ms (font loading, first text strips). Rendered before the clock starts so a
+        # (re)start does not begin 5 frames behind and log 3 catch-up dups as "dropped" on the readout.
+        try:
+            self.render_frame(t_wall0, 0)
+        except Exception:
+            log("warm-up render failed (ignored):\n" + traceback.format_exc())
+        self.frame_ms = []
+        t_start = time.perf_counter()
+        i = 0
+        last_log = t_start
+        static_logged = False
+
+        def emit(frame_bytes: bytes, idx: int, ctx=None):
+            """Duplicate frame: same pixels, but a FRESH audio block so the pad keeps its phase (no click)."""
+            self._put(self.vq, frame_bytes)
+            if self.audio_fifo:
+                blk = self.audio.block(idx, ctx) if self.audio is not None else None
+                if blk is None:
+                    import numpy as np
+                    blk = np.zeros((self.block, 2), np.int16)
+                self._put(self.aq, blk.tobytes())
+
+        while self.running:
+            target = t_start + i * self.frame_dt
+            now_pc = time.perf_counter()
+            if now_pc < target:
+                time.sleep(target - now_pc)
+            now = time.time()
+            self.reloader.poll(now, i)
+            t0 = time.perf_counter()
+            img = self.render_frame(now, i)
+            b = img.tobytes()
+            self.frame_ms.append((time.perf_counter() - t0) * 1000.0)
+            if len(self.frame_ms) > 3000:
+                del self.frame_ms[:-3000]
+            self.frames += 1
+            self.same_frames = self.same_frames + 1 if b == self.last_bytes else 0
+            if self.same_frames >= STATIC_WATCHDOG_FRAMES and not static_logged:
+                static_logged = True
+                self._activity("watchdog: %d identical frames, nothing is moving" % self.same_frames)
+            self.last_bytes = b
+            # the audio block for THIS frame was already rendered inside render_frame (scope shows it)
+            self._put(self.vq, b)
+            if self.audio_fifo:
+                blk = self.audio.last_block if self.audio is not None else None
+                if blk is None:
+                    import numpy as np
+                    blk = np.zeros((self.block, 2), np.int16)
+                self._put(self.aq, blk.tobytes())
+            i += 1
+            # catch-up: duplicate the last frame (fresh audio block) rather than drift
+            behind = (time.perf_counter() - t_start) / self.frame_dt - i
+            dups = 0
+            while behind >= 1.0 and dups < 3 and self.running:
+                emit(b, i, None)
+                i += 1; dups += 1; behind -= 1.0; self.dropped += 1
+            if now_pc - last_log >= 10.0:
+                last_log = now_pc
+                self._update_counters(t_start, now_pc)
+                log(self._report("running"))
+            elif i % 30 == 0:
+                self._update_counters(t_start, time.perf_counter())
+            if max_frames and i >= max_frames:
+                break
+        for q in (self.vq, self.aq):
+            try:
+                q.put(None, timeout=0.5)
+            except queue.Full:
+                pass
+        deadline = time.time() + 2.0
+        while (not self.vq.empty() or not self.aq.empty()) and time.time() < deadline:
+            time.sleep(0.02)
+        self.bridge.flush(time.time(), force=True)
+        log(self._report("exit"))
+        if self.writer_error:
+            log("stopped: %s" % self.writer_error)
+        self._activity("compositor stop after %d frames (%s)" % (self.frames, self.writer_error or "clean"))
+        return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--self-test", type=int, default=0, metavar="N", help="render N PNG frames to $RUN_DIR/selftest and exit")
+    ap.add_argument("--audio-fifo", default=None, help="s16le FIFO path (default from AUDIO_SOURCE=pipe:PATH)")
+    ap.add_argument("--no-audio", action="store_true", help="do not run the AudioEngine at all")
+    ap.add_argument("--run-dir", default=None, help="override $RUN_DIR")
+    ap.add_argument("--fps", type=float, default=None, help="override $STREAM_FPS (30; 24 fallback)")
+    ap.add_argument("--frames", type=int, default=0, help="stream mode: stop after N frames")
+    a = ap.parse_args(argv)
+
+    run_dir = a.run_dir or os.environ.get("RUN_DIR") or os.path.join(ROOT, "run")
+    # Run-dir guard BEFORE anything touches the directory (Compositor() writes activity + default state).
+    refusal = run_dir_guard(run_dir, a.run_dir is not None, test_mode_reasons(a.self_test, a.frames))
+    if refusal:
+        log(refusal)
+        return 2
+    fps = a.fps or float(os.environ.get("STREAM_FPS") or 30)
+    fifo = a.audio_fifo
+    if fifo is None and not a.self_test:
+        src = os.environ.get("AUDIO_SOURCE") or ""
+        if src.startswith("pipe:"):
+            fifo = src[len("pipe:"):]
+    if fifo and not os.path.exists(fifo):
+        log("audio fifo %s does not exist; running without the audio FIFO" % fifo)
+        fifo = None
+    if a.self_test:
+        fifo = None
+
+    comp = Compositor(run_dir, fps, fifo, a.no_audio, selftest=a.self_test)
+
+    def _stop(signum, _frame):
+        log("signal %d, stopping" % signum)
+        comp.running = False
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    # SIGPIPE stays ignored (Python's default): when ffmpeg closes the pipe the writer thread gets a
+    # BrokenPipeError, sets running=False, and the loop exits through the normal report path.
+
+    log("start run_dir=%s fps=%g block=%d audio=%s selftest=%d relay=%s" % (run_dir, fps, comp.block, comp.audio_source, a.self_test,
+                                                                            comp.relay_sock or "no (stdout)"))
+    if a.self_test:
+        return comp.run_selftest(a.self_test)
+    return comp.run_stream(a.frames)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
