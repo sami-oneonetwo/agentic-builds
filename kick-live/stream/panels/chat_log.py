@@ -51,13 +51,20 @@ def _names_on(ctx) -> bool:
 
 
 def _shown(raw) -> Optional[str]:
+    """The filtered display name of a chatter who HAS a pip record (a record exists only past the 3 s hold, so this can
+    never leak a name inside the hold); None otherwise. The blocklist-only path (shown_name) is not used here."""
     m = sys.modules.get("stream.panels.world")
-    if m is None or not hasattr(m, "shown_name"):
+    if m is None or not hasattr(m, "shown_name_cleared"):
         return None
     try:
-        return m.shown_name(raw)
+        return m.shown_name_cleared(raw)
     except Exception:
         return None
+
+
+MOD_WORDS = {"hide": "hid a user", "unhide": "unhid a user", "banish": "banished a user", "unbanish": "unbanished a user",
+             "rename": "cleared a nickname", "pause": "paused chat", "resume": "resumed chat", "kill": "hid chat",
+             "unkill": "showed chat", "clear": "cleared the backlog"}
 
 
 class ChatLog(Panel):
@@ -65,11 +72,15 @@ class ChatLog(Panel):
 
     @staticmethod
     def _msgs(ctx) -> List[Dict]:
-        return [m for m in (ctx.chat or []) if isinstance(m, dict) and not m.get("dropped")][-MAX_ROWS:]
+        """Last 5 moderated messages of THIS run. Boot / deploy history (records older than HISTORY_S when first seen,
+        flagged `history` by the bridge) is not shown: a 2-day-old line under a live cave reads as live chat."""
+        return [m for m in (ctx.chat or []) if isinstance(m, dict) and not m.get("dropped") and not m.get("history")][-MAX_ROWS:]
 
     @staticmethod
     def _mod_row(ctx) -> Optional[Tuple[str, str, str]]:
-        """(by, action, target) for the newest mod action inside MOD_SHOW_S, names filtered; None otherwise."""
+        """(by, action words, "") for the newest mod action inside MOD_SHOW_S. The TARGET is never printed: a human
+        !hide inside the hold exists to keep a name off screen, and this row must not defeat it (WORLD.md 11.1). The
+        mod's own name shows only when the mod has a pip record (= past the hold); else `mod`."""
         acts = (ctx.mod or {}).get("actions") or []
         if not acts:
             return None
@@ -80,8 +91,8 @@ class ChatLog(Panel):
         if t is None or ctx.now - t > MOD_SHOW_S:
             return None
         by = _shown(a.get("by")) or "mod"
-        tgt = _shown(a.get("target")) if a.get("target") else None
-        return (by, str(a.get("action") or "mod action"), tgt or "")
+        act = str(a.get("action") or "")
+        return (by, MOD_WORDS.get(act, "mod action"), "")
 
     def inputs(self, ctx):
         on = _names_on(ctx)

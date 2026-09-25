@@ -89,11 +89,44 @@ def _log(msg: str) -> None:
         pass
 
 
-def _kernel(r: int, power: float = 2.0) -> np.ndarray:
+def _kernel(r: int, power: float = 2.0, hole: float = 0.0) -> np.ndarray:
+    """Radial falloff kernel (2r x 2r). `hole` > 0 makes it a RING: zero within `hole` sim px of the centre (the
+    body's own half-width) with a 1.5 px ramp, so a light name colour never dissolves its own angular outline."""
     ax = np.arange(-r, r, dtype=np.float32) + 0.5
-    d = np.sqrt(ax[None, :] ** 2 + ax[:, None] ** 2) / float(r)
+    dpx = np.sqrt(ax[None, :] ** 2 + ax[:, None] ** 2)
+    d = dpx / float(r)
     k = np.clip(1.0 - d, 0.0, 1.0) ** power
+    if hole > 0:
+        k = k * np.clip((dpx - hole) / 1.5, 0.0, 1.0)
+        k[dpx < hole] = 0.0
     return k.astype(np.float32)
+
+
+_RIM_CACHE: "Dict[Tuple, np.ndarray]" = {}
+_SOIL = (_ROCK.astype(np.int16) * 0.8).astype(np.uint8)         # #0D1017, the soil tone (rock at 80 %)
+SPECKLE_EDGE, SPECKLE_SOIL = 0.04, 0.06                          # rock texture: 4 % hairline tone, 6 % soil tone
+PLATFORM_IDLE, PLATFORM_LIVE = 0.35, 0.60                        # platform top: accent at 35 %, 60 % only while someone stands
+
+
+def sprite_rim(mask: np.ndarray, key: Tuple) -> np.ndarray:
+    """1 sim px outer rim of a sprite mask (8-neighbour dilation minus the mask), padded by 1 on every side: shape
+    (H + 2, W + 2). Painted in the void colour under the sprite so the angular silhouette stays a solid dark line
+    against its own glow (art-rules.md 3). Cached per sprite key."""
+    hit = _RIM_CACHE.get(key)
+    if hit is not None:
+        return hit
+    p = np.pad(mask, 1, mode="constant", constant_values=False)
+    dil = p.copy()
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy or dx:
+                dil |= np.roll(np.roll(p, dy, 0), dx, 1)
+    rim = dil & ~p
+    rim[-1, :] = False                                           # never below the feet row (the floor / platform top)
+    if len(_RIM_CACHE) > 2200:
+        _RIM_CACHE.clear()
+    _RIM_CACHE[key] = rim
+    return rim
 
 
 def daylight(now: float) -> float:
@@ -156,8 +189,9 @@ class CaveScene(object):
         self._static: Optional[np.ndarray] = None
         self._static_key: Optional[Tuple] = None
         self._terrain_ver = 0
-        self._glow_k = _kernel(GLOW_R, 2.2)
+        self._glow_k = _kernel(GLOW_R, 2.2, hole=4.0)       # ring: kernel[r < 4] = 0 (the body's own half-width)
         self._moss_k = _kernel(MOSS_R, 1.8)
+        self._speckle: Optional[np.ndarray] = None            # per-session rock texture (seeded at boot)
         self._protected = protected_mask()
         self._seen_raw: Dict[str, float] = {}
         self._seen_clear: Dict[str, float] = {}
@@ -199,13 +233,39 @@ class CaveScene(object):
             self.world.set_state(key, "asleep", e.x, e.y, e.burrow)
             last = iso_to_epoch(p.get("last_seen_ts"))
             if last is not None and last >= cutoff and self._in_session(last, ctx):
-                self.behaviour.message(key, now)          # chatted within the awake window of THIS session: awake
+                self._restore_awake(e, p, last, now)      # chatted within the awake window of THIS session: awake
         self._stars = None
+        self._speckle = self.rng.random((SIM_H, SIM_W)).astype(np.float32)
         self._next_drip = now + self._u(*DRIP_GAP)
         self.test_pips = test_pips_allowed(self.run_dir, ctx)
         if self.test_pips:
             self._spawn_test_pips(now)
         self.booted = True
+
+    def _restore_awake(self, e, p: Dict[str, Any], last: float, now: float) -> None:
+        """Deploy continuity (journal 011: a relay child restart must be invisible): an owner who chatted inside the
+        awake window resumes where world.json last saw the pip (its x, its platform when it was STANDING), with the
+        sleep timer counting from their real last message, not from this boot. No wake event, no hop: nothing happened
+        to the person. Nothing is invented: x/state/vote were written by _persist from a real entity."""
+        from stream.world.behaviour import WANDER_X
+        e.state = "awake"
+        e.sleep_t = None
+        e.wake_t = last
+        e.last_active_t = last
+        e.last_attention_t = last
+        e.vx = 0.0
+        e.target_x = None
+        e.minutes_tonight = 0.0
+        px = p.get("x")
+        if px is not None:
+            e.x = float(min(WANDER_X[1], max(WANDER_X[0], float(px))))
+        e.y = float(FLOOR_ROWS[0])
+        e.pause_until = now + self._u(0.5, 2.0)
+        if p.get("state") == "voting" and p.get("vote") in PLATFORM_LETTERS:
+            e.platform = p["vote"]
+            e.state = "voting"
+            e.y = float(PLATFORM_TOP)
+        self.world.set_state(e.key, e.state, e.x, e.y, e.burrow, e.platform if e.state == "voting" else None)
 
     def _in_session(self, t: float, ctx) -> bool:
         started = iso_to_epoch((ctx.session or {}).get("started_ts"))
@@ -275,6 +335,8 @@ class CaveScene(object):
                 continue
             if _MOD_CMD_RE.match(str(m.get("text") or "")) and (key == owner or self._is_mod(m)):
                 continue                                          # a mod command is not a message: no seed, no hop (11.9)
+            if w.pip(key) is not None:
+                w.touch_seen(key, t)                              # the owner chatted NOW: presence reference moves with the wake
             e = b.get(key)
             if e is None:
                 if w.pip(key) is None:
@@ -306,8 +368,6 @@ class CaveScene(object):
                 self._ingest_history(m, key, t, now, ctx)
                 continue
             p, created = w.ensure_pip(key, m.get("name") or key, m.get("display_name") or None, m.get("builder_n"), t)
-            if created:
-                w.woke(key, now) if b.awake_count() == 0 else None
             e = b.get(key)
             if e is None or e.state in ("seed", "hatching"):
                 b.hold_cleared(key, now, p.get("display_name") or ("builder #%s" % (p.get("n") or "?")),
@@ -398,7 +458,13 @@ class CaveScene(object):
                                 int((p.get("genome") or {}).get("salt") or 0), p.get("burrow"),
                                 p.get("display_name") or ("builder #%s" % (p.get("n") or "?")), t=now)
             w.set_state(key, "asleep", e.x, e.y, e.burrow)
-        w.record_message(key, t, w.session_for(t) if not self._in_session(t, ctx) else self.session_id, None, history=True)
+        if self._in_session(t, ctx):
+            # only THIS session's records add a (session, owner) pair here; older ones were walked by
+            # recompute_from_chat at boot (chat.jsonl is the source of truth, WORLD.md 3.1), and re-stamping them
+            # with a per-record pseudo-session id inflated sessions_seen (integration finding, the 014.2 pattern)
+            w.record_message(key, t, self.session_id, None, history=True)
+        else:
+            w.touch_seen(key, t)
         visits = (w.data.get("world") or {}).get("visits") or []
         last_v = max([iso_to_epoch(v.get("ts")) or 0.0 for v in visits if v.get("name") == key] or [0.0])
         if t > last_v:
@@ -500,26 +566,36 @@ class CaveScene(object):
             return self._static
         img = np.empty((SIM_H, SIM_W, 3), dtype=np.uint8)
         img[:] = _ROCK
+        rock = ~terrain
+        # rock is texture, not UI fill: seeded speckle (4 % hairline tone, 6 % soil tone) on every solid cell
+        sp = self._speckle if self._speckle is not None else np.zeros((SIM_H, SIM_W), dtype=np.float32)
+        img[rock & (sp < SPECKLE_EDGE)] = _EDGE
+        img[rock & (sp >= SPECKLE_EDGE) & (sp < SPECKLE_EDGE + SPECKLE_SOIL)] = _SOIL
         img[terrain] = _BG
         # hairline edges: rock cells with a carved 4-neighbour
         p = np.pad(terrain, 1, mode="constant", constant_values=False)
         near = p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:]
-        img[(~terrain) & near] = _EDGE
-        # floor band and soil
+        img[rock & near] = _EDGE
+        # floor band and soil (soil speckled back with the rock tone so the lower wall is dug earth, not a fill)
         f0, f1 = FLOOR_ROWS
         img[f0:f1 + 1, :][~terrain[f0:f1 + 1, :]] = _EDGE
         s0 = SOIL_ROWS[0]
-        soil = (_ROCK.astype(np.int16) * 0.8).astype(np.uint8)
-        img[s0:, :][~terrain[s0:, :]] = soil
-        for i in range(BURROW_SLOTS):                              # burrow recess: darker than the void by an edge
+        soil_band = np.zeros((SIM_H, SIM_W), dtype=bool)
+        soil_band[s0:, :] = True
+        img[soil_band & rock] = _SOIL
+        img[soil_band & rock & (sp < 0.05)] = _ROCK
+        img[soil_band & rock & near] = _EDGE                       # the arched recess edge (a 1 px step arch, angular)
+        for i in range(BURROW_SLOTS):                              # burrow floor: darker than the void by an edge
             x, y, w, h = burrow_box(i)
             img[y + h - 1, x:x + w] = _EDGE
-        # platforms: preset accent at 60 %
+        # platforms: preset accent at 35 % idle with hairline end caps; 60 % is painted in _dynamic while someone stands
         acc = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.float32)
-        top = (acc * 0.6).astype(np.uint8)
-        side = (acc * 0.3).astype(np.uint8)
+        top = (acc * PLATFORM_IDLE).astype(np.uint8)
+        side = (acc * 0.2).astype(np.uint8)
         for x, w in PLATFORMS:
             img[PLATFORM_TOP, x:x + w] = top
+            img[PLATFORM_TOP, x] = _EDGE
+            img[PLATFORM_TOP, x + w - 1] = _EDGE
             img[PLATFORM_TOP + 1:PLATFORM_TOP + 3, x:x + w] = side
         # sky in the mouth (real local hour): 3-stop gradient over rows 0-13 of the open columns
         d = daylight(now)
@@ -592,7 +668,10 @@ class CaveScene(object):
             x = int(self._u(LEDGE_X[1] + 4, SIM_W - 30))
             if MOUTH_X[0] - 2 <= x <= MOUTH_X[1] + 2:
                 x = MOUTH_X[1] + 6
-            self.drips.append([float(x), float(VOID_ROWS[0]), 0.0])
+            col = self.world.terrain()[VOID_ROWS[0]:VOID_ROWS[0] + 6, x]      # the stepped ceiling: first carved row
+            open_rows = np.nonzero(col)[0]
+            y0 = float(VOID_ROWS[0] + (int(open_rows[0]) if len(open_rows) else 0))
+            self.drips.append([float(x), y0, 0.0])
             self._next_drip = now + self._u(*DRIP_GAP)
         floor = float(FLOOR_ROWS[0])
         drip_c = (_TEXT2.astype(np.float32) * 0.55).astype(np.uint8)
@@ -616,8 +695,13 @@ class CaveScene(object):
                 img[int(y2) - 1:int(y2) + 1, int(x)] = drip_c
                 keep.append(dr)
         self.drips = keep[-12:]
-        # moss body pixels (accent, pulsing at 0.25 Hz; glow added in _glow)
+        # platform tops: the 60 % accent only while a pip stands there (the tally you can see from the tile)
         acc = np.array(L.hex_rgb(L.preset(ctx.preset)["accent"]), dtype=np.float32)
+        counts = self.behaviour.platform_counts()
+        for letter, (x, w) in zip(PLATFORM_LETTERS, PLATFORMS):
+            if counts.get(letter):
+                img[PLATFORM_TOP, x + 1:x + w - 1] = (acc * PLATFORM_LIVE).astype(np.uint8)
+        # moss body pixels (accent, pulsing at 0.25 Hz; glow added in _glow)
         for m in self.world.moss:
             pulse = 0.7 + 0.3 * math.sin(2 * math.pi * 0.25 * now + (m.get("x", 0) % 7))
             size = int(m.get("size") or 0)
@@ -687,13 +771,24 @@ class CaveScene(object):
                 w = mask.shape[1]
                 x0 = int(e.x) - w // 2
                 y1 = int(e.seed_y)
+                rim_key = ("egg", fr)
             else:
                 rgb, mask = P.sprite(e.key, e.salt, e.tier, fr, ctx.preset, e.facing)
                 w = mask.shape[1]
                 x0 = int(e.x) - w // 2
                 y1 = int(round(e.draw_y(now))) + 1
+                rim_key = (e.key, e.salt, e.tier, fr, e.facing)
             h = mask.shape[0]
             y0 = y1 - h
+            # 1 sim px void rim around the silhouette (art-rules.md 3: the angular outline stays visible inside the glow)
+            rim = sprite_rim(mask, rim_key)
+            rx0, ry0 = x0 - 1, y0 - 1
+            rsx0, rsy0 = max(0, -rx0), max(0, -ry0)
+            rx0c, ry0c = max(0, rx0), max(0, ry0)
+            rx1c, ry1c = min(SIM_W, rx0 + w + 2), min(SIM_H, ry0 + h + 2)
+            if rx1c > rx0c and ry1c > ry0c:
+                rm = rim[rsy0:rsy0 + (ry1c - ry0c), rsx0:rsx0 + (rx1c - rx0c)]
+                img[ry0c:ry1c, rx0c:rx1c][rm] = _BG
             sx0, sy0 = max(0, -x0), max(0, -y0)
             x0c, y0c = max(0, x0), max(0, y0)
             x1c, y1c = min(SIM_W, x0 + w), min(SIM_H, y1)
@@ -903,7 +998,10 @@ class CaveScene(object):
             w.care(tgt, actor, verb, t)
             if other is not None and other.is_awake():
                 b.care_received(tgt, t, actor)
-                b.walk_to(actor, other.x + (-8 if other.x > me.x else 8), t)
+                if me.platform is None and tgt != actor:
+                    b.walk_to(actor, other.x + (-8 if other.x > me.x else 8), t)
+                else:
+                    b.hop(actor, t)          # heading to / standing on a platform: the embodied vote is never cancelled by a verb
                 b.events.append({"type": verb, "pip": tgt, "by": actor, "asleep": False})
             else:
                 b.events.append({"type": verb, "pip": tgt, "by": actor, "asleep": True})
@@ -918,11 +1016,26 @@ class CaveScene(object):
             b.events.append({"type": "gift", "pip": tgt, "by": actor})
             return True, "ok"
         if verb == "dig":
-            n, why = w.dig(actor, int(me.x + 4 * me.facing), int(me.y) + 2, self._protected)
-            if n:
-                self._terrain_ver += 1
-                b.events.append({"type": "dig", "pip": actor, "cells": n})
-                return True, "ok"
+            # `dig` at your feet always finds rock: beside, then below, then the other side, then deeper; a pip standing on
+            # a platform (protected footing) may reach the floor just past the footing (radius 16 instead of 8)
+            x, y, f = int(me.x), int(me.y), int(me.facing or 1)
+            cands = [((x + 4 * f, y + 2), 8), ((x, y + 3), 8), ((x - 4 * f, y + 2), 8), ((x + 6 * f, y + 3), 8),
+                     ((x, y + 5), 8), ((x - 6 * f, y + 3), 8)]
+            if me.state == "voting" and me.platform in PLATFORM_LETTERS:
+                px, pw = PLATFORMS[PLATFORM_LETTERS.index(me.platform)]
+                cands += [((px + pw + 3, FLOOR_ROWS[0] + 2), 16), ((px - 4, FLOOR_ROWS[0] + 2), 16),
+                          ((px + pw + 3, FLOOR_ROWS[0] + 4), 16), ((px - 4, FLOOR_ROWS[0] + 4), 16)]
+            why = "nothing to dig there"
+            for (cx, cy), radius in cands:
+                if w.dig_cells(cx, cy, self._protected) <= 0:
+                    continue
+                n, why = w.dig(actor, cx, cy, self._protected, radius=radius)
+                if n:
+                    self._terrain_ver += 1
+                    b.events.append({"type": "dig", "pip": actor, "cells": n})
+                    return True, "ok"
+                if why == "dig cap reached tonight":
+                    return False, why
             return False, why
         if verb == "plant":
             m = w.plant_moss(actor, int(me.x), int(me.y), t)

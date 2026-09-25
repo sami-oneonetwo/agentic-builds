@@ -140,10 +140,14 @@ def _outline(mask: np.ndarray) -> np.ndarray:
 def _eye_pos(g: Dict[str, int], bm: np.ndarray) -> Tuple[int, int]:
     """(row, col) of the eye's FRONT pixel inside the body mask (facing right), relative to the body's own
     front edge on that row, so every stencil (including the low-nosed ramp) carries its eye on its head.
-    Placements: 0 high and forward, 1 a row lower and further back, 2 mid-height forward, 3 high and back."""
+    Placements: 0 high and forward, 1 a row lower and further back, 2 mid-height forward, 3 high and back.
+    The column is clamped so the 2 px eye (col-1, col) always lies inside the row's body span: no eyeless sprite
+    at any tier (integration finding: 49 tier-3 slabs had no eye)."""
     bh, bw = bm.shape
-    rows = np.where(bm.any(axis=1))[0]
-    top = int(rows[0]) if len(rows) else 0
+    wide = np.where(bm.sum(axis=1) >= 2)[0]              # rows that can hold a 2 px eye
+    if not len(wide):
+        return (0, 1)
+    top = int(wide[0])
     e = g["eyes"]
     if e == 0:
         r, back = top + 1, 1
@@ -154,9 +158,11 @@ def _eye_pos(g: Dict[str, int], bm: np.ndarray) -> Tuple[int, int]:
     else:
         r, back = top + 1, 3
     r = min(bh - 1, max(0, r))
+    if bm[r].sum() < 2:
+        r = int(wide[np.argmin(np.abs(wide - r))])       # nearest row wide enough
     cols = np.where(bm[r])[0]
-    front = int(cols[-1]) if len(cols) else bw - 1
-    return (r, front - back)
+    front, first = int(cols[-1]), int(cols[0])
+    return (r, max(first + 1, front - back))
 
 
 # ----------------------------------------------------------------------------- assembly
@@ -205,7 +211,7 @@ def _assemble(g: Dict[str, int], tier: int, frame: str, colour: Tuple[int, int, 
     if not frame.startswith("duck"):
         _paint_antenna(rgb, mask, g["antenna"], top, tail_w, bw, ant_rows, fill, line, frame)
     if tier >= 3:
-        _paint_crest(rgb, mask, top, tail_w, bw, line)
+        _paint_crest(rgb, mask, top, tail_w, bw, fill)
     if not frame.startswith("sit"):
         _paint_legs(rgb, mask, legs_row, tail_w, bw, line, frame)
     # eye: 2 px dark (outline colour) with a 1 px highlight on the front pixel; closed = body colour
@@ -218,11 +224,17 @@ def _assemble(g: Dict[str, int], tier: int, frame: str, colour: Tuple[int, int, 
             rgb[r, c - 1] = line
             rgb[r, c] = _EYE_HI
         mask[r, c - 1:c + 1] = True
-    if frame == "speak":                          # mouth notch: one void pixel at the front, below the eye
-        mr, mc = min(H - 2, top + bh - 2), w - 1
-        if mask[mr, mc]:
-            mask[mr, mc] = False
-            rgb[mr, mc] = 0
+    if frame == "speak":                          # mouth notch: one void pixel on the body's REAL front column of a
+        mr = min(H - 2, top + bh - 2)             # low row (a ramp's nose is not at w-1; integration: 80/200 speak frames = idle)
+        br = mr - top
+        for cand in (br, br + 1, br - 1):
+            if 0 <= cand < bh and bm[cand].any():
+                cols_r = np.where(bm[cand])[0]
+                mrr, mc = top + cand, int(cols_r[-1]) + tail_w
+                if (mrr, mc) != (r, c) and (mrr, mc) != (r, c - 1) and 0 <= mrr < H and 0 <= mc < w and mask[mrr, mc]:
+                    mask[mrr, mc] = False
+                    rgb[mrr, mc] = 0
+                    break
     if frame.startswith("wave"):                  # a raised front limb, alternating 2 rows
         lift = 2 if frame == "wave0" else 3
         r = top + bh - lift
@@ -287,16 +299,18 @@ def _paint_antenna(rgb, mask, kind, top, x0, bw, rows, fill, line, frame) -> Non
                 mask[r, c] = True
 
 
-def _paint_crest(rgb, mask, top, x0, bw, line) -> None:
-    """Elder crest: a 3 px zigzag on the back half of the body top."""
-    r = top - 1
-    if r < 0:
+def _paint_crest(rgb, mask, top, x0, bw, fill) -> None:
+    """Elder crest: a 2-row stepped zigzag in the fill colour across 5 columns of the back half of the body top
+    (row top-1 on every column, row top-2 on the odd columns), so tier 3 reads as a crest, not a dotted line."""
+    if top - 1 < 0:
         return
+    W = mask.shape[1]
     for i, c in enumerate(range(x0 + 1, x0 + 1 + min(5, bw // 2))):
-        rr = r if i % 2 == 0 else r + 0
-        if i % 2 == 0 and 0 <= c < mask.shape[1] and not mask[rr, c]:
-            rgb[rr, c] = line
-            mask[rr, c] = True
+        rows = (top - 1,) if i % 2 == 0 else (top - 1, top - 2)
+        for rr in rows:
+            if 0 <= rr and 0 <= c < W and not mask[rr, c]:
+                rgb[rr, c] = fill
+                mask[rr, c] = True
 
 
 def _paint_legs(rgb, mask, row, x0, bw, line, frame) -> None:
@@ -341,7 +355,7 @@ def resolve_genome(name_lower: str, start_salt: int = 0, preset: Optional[str] =
     salt = int(start_salt)
     for _ in range(MAX_SALT_TRIES):
         g = genome(key, salt)
-        if check_genome(g, 1, preset, key) is None:
+        if all(check_genome(g, tier, preset, key) is None for tier in TIER_BOX):     # every tier the pip will ever reach
             return g, salt
         salt += 1
     return genome(key, salt), salt
@@ -420,20 +434,22 @@ def sheet(path: str, names: Optional[List[str]] = None, preset: Optional[str] = 
     frames = ("idle0", "idle1", "walk0", "walk1", "blink", "speak", "curled", "asleep", "wave0", "sit0", "duck0")
     tiers = (0, 1, 2, 3)
     cw, ch = 16 * scale, 14 * scale
-    cols = len(frames) * len(tiers) + 3
+    LABEL_CELLS, EGG_CELL, FIRST = 4, 4, 5           # legend gets 4 cells (256 px at 4x) so the genome columns stay readable
+    cols = len(frames) * len(tiers) + FIRST
     W, Hh = cw * cols, ch * (len(names) + 1) + 2 * scale
     img = Image.new("RGB", (W, Hh), L.COLORS["bg"])
     d = ImageDraw.Draw(img)
     f = L.font("Menlo", 20)
+    d.text((2, 2), "name  s=salt b=body e=eyes a=ant t=tail"[:cw * LABEL_CELLS // 12], font=f, fill=L.COLORS["text2"])
     for c, (fr, tr) in enumerate([(fr, tr) for tr in tiers for fr in frames]):
-        d.text((cw * (c + 3) + 2, 2), "%s%d" % (fr[:3], tr), font=f, fill=L.COLORS["text2"])
+        d.text((cw * (c + FIRST) + 2, 2), "%s%d" % (fr[:3], tr), font=f, fill=L.COLORS["text2"])
     for r, nm in enumerate(names):
         key = nm.lower()
         g, salt = resolve_genome(key, 0, preset)
         y = ch * (r + 1) + 2 * scale
-        d.text((2, y + 2), "%s s%d b%d e%d a%d t%d" % (nm[:10], salt, g["body"], g["eyes"], g["antenna"], g["tail"]),
-               font=f, fill=colour_hex(key, preset))
-        c = 3
+        d.text((2, y + 2), L.truncate("Menlo", 20, "%-9s s%db%de%da%dt%d" % (nm[:9], salt, g["body"], g["eyes"], g["antenna"], g["tail"]),
+                                      cw * LABEL_CELLS - 4), font=f, fill=colour_hex(key, preset))
+        c = FIRST
         for tr in tiers:
             for fr in frames:
                 rgb, mask = sprite(key, salt, tr, fr, preset, 1)
@@ -451,7 +467,7 @@ def sheet(path: str, names: Optional[List[str]] = None, preset: Optional[str] = 
         tile[:] = L.hex_rgb(L.COLORS["bg"])
         sub = tile[tile.shape[0] - EGG_H - 1: tile.shape[0] - 1, 1:1 + EGG_W]
         sub[em] = eg[em]
-        img.paste(Image.fromarray(np.repeat(np.repeat(tile, scale, 0), scale, 1), "RGB"), (cw * 2, y))
+        img.paste(Image.fromarray(np.repeat(np.repeat(tile, scale, 0), scale, 1), "RGB"), (cw * EGG_CELL, y))
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     img.save(path)
     return path

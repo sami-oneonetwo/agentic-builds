@@ -3,9 +3,10 @@
 Items, separated by ` · `:
   * the last 10 patch notes from ships.jsonl  ->  `v0.3.11 @sam: palette ember` (agent picks: `v0.3.12 agent pick:
     tempo 100 bpm`; failed ships: `v0.3.12 FAILED: ...` in red; kill switch on: names become `[chat hidden by mod]`)
-  * the honesty line   `no camera, no mic, no fake viewers, every number on screen is real`
-  * the command legend (`!ask` only when ask.enabled)
-  * the rule           `this stream rebuilds itself. you pick what changes.`
+  * a chamber carve    `SHIPPED v0.5.0 · the Ledge opened · by @kai's hatch` for 30 s (stream/world/keepers.py)
+  * the honesty line   `no camera, no mic, no fake viewers. every light in this cave is a real person.` (WORLD.md 5)
+  * the command legend `feed · pet · dig · plant   A / B / C   !idea` (`!ask` only when ask.enabled)
+  * the rule           `the keepers are AI agents. they build this cave live, from your !ideas, and you watch it land.`
 
 The whole strip (opaque, panel fill, coloured segments) is rendered ONCE per content change; every frame is a
 crop (or two crops when the seam is on screen) of that strip, so a frame costs well under 1 ms. The crawl
@@ -21,8 +22,9 @@ from stream.panels import Panel, register
 
 FONT, SIZE = "HN Medium", 24
 SEP = "  ·  "
-HONESTY = "no camera, no mic, no fake viewers, every number on screen is real"
-RULE = "this stream rebuilds itself. you pick what changes."
+HONESTY = "no camera, no mic, no fake viewers. every light in this cave is a real person."     # WORLD.md 5 row 9
+RULE = "the keepers are AI agents. they build this cave live, from your !ideas, and you watch it land."   # WORLD.md 9
+KEEPER_TICKER_S = 30.0          # a chamber carve rides the ticker this long (stream/world/keepers.py last_ticker)
 DEFAULT_SPEED = 120.0
 MIN_SPEED, MAX_SPEED = 20.0, 400.0
 
@@ -48,11 +50,25 @@ class Ticker(Panel):
         return max(MIN_SPEED, min(MAX_SPEED, v))
 
     @staticmethod
-    def _content_key(ctx):
+    def _keeper_line(ctx):
+        """`SHIPPED v0.5.0 · the Ledge opened · by @kai's hatch` for 30 s after a milestone carve (names already
+        filtered by the keepers module), read through the world panel module so a hot reload is followed."""
+        import sys as _sys
+        m = _sys.modules.get("stream.panels.world")
+        try:
+            kp = m.keepers() if (m is not None and hasattr(m, "keepers")) else None
+            if kp is not None and kp.last_ticker and (ctx.now - float(kp.last_ticker_t)) < KEEPER_TICKER_S:
+                return L.strip_non_bmp(str(kp.last_ticker))
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _content_key(cls, ctx):
         """Cheap hashable summary of everything that changes the strip's pixels."""
         ships = tuple((str(s.get("version")), str(s.get("picked_by")), str(s.get("title")), bool(s.get("agent_pick")),
                        s.get("ok") is not False) for s in (ctx.ships or [])[-10:])
-        return (ships, ctx.chat_display is not False, bool((ctx.ask or {}).get("enabled")), ctx.preset)
+        return (ships, ctx.chat_display is not False, bool((ctx.ask or {}).get("enabled")), ctx.preset, cls._keeper_line(ctx))
 
     def _items(self, ctx):
         """-> list of items; each item is a list of (text, colour) segments."""
@@ -76,12 +92,17 @@ class Ticker(Panel):
             else:
                 items.append([(ver + " ", accent), (who, who_col), (": " + title, text)])
         if not items:
-            items.append([("no ships yet: ", text2), ("the first one lands in under 3 minutes", text)])
+            items.append([("no events yet: ", text2), ("the first one lands in under 3 minutes", text)])
+        kl = self._keeper_line(ctx)
+        if kl:
+            items.append([(kl, accent)])
         items.append([(HONESTY, text)])
-        legend = [("type ", text2), ("A", accent), (", ", text2), ("B", accent), (" or ", text2), ("C", accent),
-                  (" to vote", text2), ("   ", text2), ("!idea <what should change>", accent),
-                  ("   ", text2), ("!theme ember", accent), ("   ", text2), ("!stats", accent),
-                  ("   ", text2), ("!help", accent)]
+        # WORLD.md 5 row 9 legend: the world verbs (exact word), the letters, !idea (sing is a later carving)
+        legend = [("say anything: a pip hatches with your name", text), ("   ", text2),
+                  ("feed", accent), (" · ", text2), ("pet", accent), (" · ", text2), ("dig", accent), (" · ", text2),
+                  ("plant", accent), ("   ", text2), ("A", accent), (" / ", text2), ("B", accent), (" / ", text2), ("C", accent),
+                  (" walks your pip to a platform", text2), ("   ", text2), ("!idea <what to carve>", accent),
+                  ("   ", text2), ("!theme ember", accent), ("   ", text2), ("!stats", accent), ("   ", text2), ("!help", accent)]
         if (ctx.ask or {}).get("enabled"):
             legend += [("   ", text2), ("!ask <anything>", accent)]
         items.append(legend)

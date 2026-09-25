@@ -73,6 +73,8 @@ ws.terrain() -> np.bool_ (110, 320) carved mask ; ws.set_terrain(mask) ; ws.dig(
 ws.moss -> [{x, y, planter, ts, size}] ; ws.plant_moss(key, x, y, t) ; ws.grow_moss(now)
 ws.milestone_check() -> int | None ; ws.mark_milestone(m, by, t) ; ws.woke(key, t) ; ws.visit(key, t) ; ws.log_event(text, t)
 ws.banish(key, t) ; ws.unbanish(key) ; ws.top_words(pip, n=8) -> [str]
+ws.quarantine(key, t, reason) ; ws.quarantine_orphans(t, chat_names) -> [keys]   # world.json rows with no chat.jsonl chatter (fix 2026-09-25)
+ws.dig_cells(cx, cy, protected) -> int ; ws.dig(key, cx, cy, protected, cap=40, radius=8)
 ws.save(now, force=False) ; ws.backup(now) ; ws.recompute_from_chat(now, session_id) -> {records, new_pips, pairs, skipped}
 ws.data -> the whole document (schema 1, WORLD.md §3.2 shape) ; ws.builders -> builders.json (read-only join for #N)
 ```
@@ -82,6 +84,9 @@ energy, state, x, y, burrow, vote, words{}, learned[], bonds{}, nickname, care_l
 digs, votes_cast, events_picked, raised_in_nest, strikes`. `world`: `terrain_b64, moss, nests, chambers, milestones,
 milestones_reached, hatched_ever, woke_log, visits, board{session_id, fed, dug, hatched}, last_board, event_log`.
 `sessions`: every session id this module has seen with `started_ts`/`last_ts`. `cursor`: chat.jsonl byte offset + last id.
+`quarantine`: `{key: {record, reason, ts}}`, pip rows whose name has no chatter in chat.jsonl (moved there by
+`recompute_from_chat` at boot or by the HonestyMonitor after a 5 s grace); never placed, counted or drawn; restored by
+`ensure_pip` when a real record for that name arrives. `hatched_ever` = real rows whose `state` is not seed/hatching.
 
 Writes are atomic (`tmp + os.replace`), flushed at most every 5 s and on `force`; `world.json.bak-YYYYMMDD` once per
 session start, 7 kept. A missing or corrupt `world.json` loads defaults (then the newest `.bak`). Counts come from
@@ -168,8 +173,11 @@ panel should set `budget_ms = 24`.
 
 ## 9. Hot reload note
 
-`stream/scenes/hollow.py` is watched by the compositor's HotReloader. `stream/world/*.py` is NOT on its watch list:
-after editing a world module, touch `stream/scenes/hollow.py` (or ship the change through it) so the scene re-executes
-and re-imports. A re-executed scene module creates a fresh `CaveScene` in the panel that holds it; the panel should
-keep the instance on the module (e.g. `SCENE = CaveScene()` at import) so entities survive an unrelated panel reload,
-and the world re-boots from `world.json` (sleepers in burrows, awake ones re-woken from `last_seen`) when it does not.
+`stream/scenes/hollow.py`, `stream/panels/*.py` AND `stream/world/*.py` are watched by the compositor's HotReloader
+(integration 2026-09-25). A changed world module is executed fresh under its name, the `stream.world` package attribute is
+rebound, then `stream.scenes.hollow` is re-executed and every panel module that mentions `stream.scenes` (the world panel)
+re-executes too, so `from stream.world import pips as P` and `from stream.scenes import hollow as H` see the new objects.
+A re-executed scene module creates a fresh `CaveScene` in the world panel (`stream.panels._WORLD_SCENE` is replaced when
+the class object changed): the world re-boots from `world.json`, sleepers in their burrows, and an owner who chatted inside
+the awake window resumes at the saved x / platform with the sleep timer counting from their real last message
+(`CaveScene._restore_awake`, no wake event). A panel-only reload keeps the scene instance and the colony.

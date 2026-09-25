@@ -84,6 +84,7 @@ def _default_data() -> Dict[str, Any]:
         },
         "sessions": [],           # [{id, started_ts, last_ts}] every session this module has seen (live or inferred)
         "banished": {},
+        "quarantine": {},         # {key: {record, reason, ts}}: world.json pips with NO chat.jsonl chatter (WORLD.md 1, 11)
     }
 
 
@@ -274,8 +275,10 @@ class WorldState(object):
 
     @property
     def hatched_ever(self) -> int:
-        """len() over REAL pips: synthetic test pips (KL_TEST_PIPS, `_test: true`) are never counted."""
-        return sum(1 for p in self.data["pips"].values() if not p.get("_test"))
+        """len() over REAL, HATCHED pips: synthetic test pips (KL_TEST_PIPS, `_test: true`) are never counted, and a
+        record whose creature is still a seed / cracking egg (state seed|hatching) counts from the hatch frame, so the
+        header tick and the egg pop land in the same frame (WORLD.md 2.2 T+3 s). Quarantined orphans are not pips."""
+        return sum(1 for p in self.data["pips"].values() if not p.get("_test") and p.get("state") not in ("seed", "hatching"))
 
     def pip(self, key: str) -> Optional[Dict]:
         return self.data["pips"].get((key or "").lower())
@@ -285,6 +288,14 @@ class WorldState(object):
         key = (key or "").lower()
         if key in self.data.get("banished", {}):
             return self.data["banished"][key], False
+        q = self.data.get("quarantine") or {}
+        if key in q and key not in self.data["pips"]:
+            # ensure_pip is reached only from a chat record (ingest / recompute), so the orphan now HAS a chatter: restore
+            rec = q.pop(key)
+            if isinstance(rec, dict) and isinstance(rec.get("record"), dict):
+                self.data["pips"][key] = rec["record"]
+                self.log("quarantine: %s restored (a chat.jsonl record arrived)" % key)
+                self.dirty = True
         p = self.data["pips"].get(key)
         if p is not None:
             if not p.get("display_name") and display_name:
@@ -354,6 +365,17 @@ class WorldState(object):
     def top_words(p: Dict, n: int = WORDS_TOP) -> List[str]:
         words = p.get("words") or {}
         return [w for w, _ in sorted(words.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
+
+    def touch_seen(self, key: str, t: float) -> None:
+        """A RAW record from this pip's owner landed (pre-hold): last_seen_ts moves to t at once, so `awake` (which
+        flips on the raw record) and the honesty reference (distinct chatters by last_seen) agree in the same frame.
+        Counts (own_messages, words, energy) still wait for the moderated record in record_message()."""
+        p = self.pip(key)
+        if p is None:
+            return
+        if not p.get("last_seen_ts") or (iso_to_epoch(p.get("last_seen_ts")) or 0) < t:
+            p["last_seen_ts"] = _iso(t)
+            self.dirty = True
 
     def presence(self, key: str, dt_s: float) -> None:
         p = self.pip(key)
@@ -487,15 +509,29 @@ class WorldState(object):
         self._terrain = mask.astype(bool).copy()
         self.dirty = True
 
-    def dig(self, key: str, cx: int, cy: int, protected: Optional[np.ndarray] = None, cap: int = 40) -> Tuple[int, str]:
-        """Carve a 3x3 around (cx, cy) if inside the digger's own 8 px radius of their pip. Returns (cells, reason)."""
+    def dig_cells(self, cx: int, cy: int, protected: Optional[np.ndarray] = None) -> int:
+        """Dry probe: how many of the 3x3 cells around (cx, cy) a dig there would carve (solid and unprotected)."""
+        m = self.terrain()
+        y0, y1 = max(0, cy - 1), min(SIM_H, cy + 2)
+        x0, x1 = max(0, cx - 1), min(SIM_W, cx + 2)
+        if y1 <= y0 or x1 <= x0:
+            return 0
+        allowed = ~m[y0:y1, x0:x1]
+        if protected is not None:
+            allowed = allowed & ~protected[y0:y1, x0:x1]
+        return int(allowed.sum())
+
+    def dig(self, key: str, cx: int, cy: int, protected: Optional[np.ndarray] = None, cap: int = 40,
+            radius: int = 8) -> Tuple[int, str]:
+        """Carve a 3x3 around (cx, cy) if inside the digger's own `radius` (8 sim px; the scene passes more for a pip
+        standing on a platform, whose footing is protected). Returns (cells, reason)."""
         p = self.pip(key)
         if p is None:
             return 0, "no pip"
         if int(p.get("digs") or 0) >= cap:
             return 0, "dig cap reached tonight"
         px, py = p.get("x"), p.get("y")
-        if px is not None and py is not None and (abs(int(px) - cx) > 8 or abs(int(py) - cy) > 8):
+        if px is not None and py is not None and (abs(int(px) - cx) > radius or abs(int(py) - cy) > radius):
             return 0, "too far from your pip"
         m = self.terrain().copy()
         y0, y1 = max(0, cy - 1), min(SIM_H, cy + 2)
@@ -586,6 +622,42 @@ class WorldState(object):
             del ev[:-EVENT_LOG_MAX]
         self.dirty = True
 
+    # ------------------------------------------------------------------ quarantine (WORLD.md 1, 11: no fake names, ever)
+    def quarantine(self, key: str, now: float, reason: str = "no chat.jsonl record") -> bool:
+        """Move a pip record OUT of `pips` into `quarantine` (kept for audit, never placed, never counted, never drawn).
+        Used at boot for world.json rows with no chatter in chat.jsonl and by the HonestyMonitor's enforce path."""
+        key = (key or "").lower()
+        p = self.data["pips"].pop(key, None)
+        if p is None:
+            return False
+        self.data.setdefault("quarantine", {})[key] = {"record": p, "reason": reason, "ts": _iso(now)}
+        self.data["world"]["moss"] = [m for m in self.moss if m.get("planter") != key]
+        self.data["world"]["hatched_ever"] = self.hatched_ever
+        self.dirty = True
+        return True
+
+    def quarantine_orphans(self, now: float, chat_names: Optional[Set[str]]) -> List[str]:
+        """Every real pip whose name_lower is not a chatter in chat.jsonl (the same scan honesty.py uses) goes to
+        quarantine. `chat_names` None = the file could not be read: unverifiable, nothing moves. One activity line."""
+        if chat_names is None:
+            return []
+        moved = [k for k, p in list(self.data["pips"].items()) if not p.get("_test") and k not in chat_names]
+        for k in moved:
+            self.quarantine(k, now)
+        if moved:
+            line = "quarantined %d world.json pip(s) with no chat.jsonl record: %s" % (len(moved), ", ".join(sorted(moved)[:5]))
+            self.log(line)
+            self._activity(line, now)
+        return moved
+
+    def _activity(self, text: str, now: float) -> None:
+        try:
+            path = run_path(self.run_dir, "ACTIVITY_FILE", "activity.jsonl")
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"ts": epoch_to_iso(now, ms=False), "actor": "world", "text": text}) + "\n")
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ chat.jsonl recompute
     def recompute_from_chat(self, now: float, session_id: Optional[str] = None, max_bytes: int = 64 * 1024 * 1024) -> Dict[str, int]:
         """Walk chat.jsonl from the stored cursor: every distinct real chatter gets a pip record (born at their first
@@ -612,6 +684,7 @@ class WorldState(object):
             return out
         last_nl = data.rfind(b"\n")
         if last_nl < 0:
+            self._quarantine_scan(now, out)       # an existing but empty chat.jsonl: nobody chatted, so nobody is a pip
             return out
         for line in data[: last_nl + 1].splitlines():
             line = line.strip()
@@ -626,6 +699,9 @@ class WorldState(object):
                 out["skipped"] += 1
                 continue
             seen_ids.add(m["id"])
+            if m.get("type") not in (None, "message"):
+                out["skipped"] += 1               # webhook test / system lines never create a pip (WORLD.md 11.9)
+                continue
             recs.append(m)
         recs.sort(key=lambda r: r["t"])
         hist_sid, prev_t = None, None
@@ -667,9 +743,17 @@ class WorldState(object):
             out["records"] += 1
             cur["last_id"] = m["id"]
         cur["chat_jsonl_offset"] = offset + last_nl + 1
+        self._quarantine_scan(now, out)
         self.data["world"]["hatched_ever"] = self.hatched_ever
         self.dirty = True
         return out
+
+    def _quarantine_scan(self, now: float, out: Dict[str, int]) -> None:
+        try:
+            from stream.world.honesty import chat_names as _chat_names
+            out["quarantined"] = len(self.quarantine_orphans(now, _chat_names(self.chat_path)))
+        except Exception as e:
+            self.log("quarantine scan failed (%r): nothing moved" % (e,))
 
     # ------------------------------------------------------------------ banish
     def banish(self, key: str, t: float) -> bool:
@@ -711,25 +795,64 @@ BURROW_W, BURROW_H = 14, 8
 LANTERN_X = 300
 
 
+TERRAIN_SEED = 41370704          # the default cavern is deterministic (terrain persists in world.json; only speckle is per session)
+
+
 def burrow_box(i: int) -> Tuple[int, int, int, int]:
-    """(x, y, w, h) of burrow slot i in sim px (16 slots spaced across the soil band)."""
+    """(x, y, w, h) of burrow slot i in sim px: 16 slots along the soil band, UNEVEN on purpose (widths 12-16, staggered
+    x, y offset 0-2) so the lower wall reads as dug earth, not a row of UI cells. Deterministic per slot."""
     i = int(i) % BURROW_SLOTS
-    x = 4 + i * 20
-    y = 96 if i % 2 == 0 else 100
-    return (x, y, BURROW_W, BURROW_H)
+    w = 12 + (i * 5) % 5                       # 12..16
+    x = 3 + i * 20 + (i * 7) % 3               # stagger 0..2
+    x = min(x, SIM_W - w - 1)
+    y = (96 if i % 2 == 0 else 100) + (i * 3) % 3   # offset 0..2; y + 8 <= 110
+    return (x, y, w, BURROW_H)
+
+
+def _runs(rng, x0: int, x1: int, lo: int, hi: int):
+    """Yield (a, b) column runs of length lo..hi covering x0..x1."""
+    x = x0
+    while x < x1:
+        n = int(rng.integers(lo, hi + 1))
+        yield x, min(x1, x + n)
+        x += n
 
 
 def default_terrain() -> np.ndarray:
-    """True = carved (void). The cavern minus the Ledge, plus the cave mouth and the 16 burrow recesses."""
+    """True = carved (void). The cavern minus the Ledge, the jagged mouth, 16 arched burrow recesses, plus a stepped
+    ceiling (stalactite steps of 0-3 px hanging into rows 14-16) and a stepped floor (stalagmite steps of 0-2 px rising
+    into rows 86-87), in seeded runs of 6-20 columns. The mouth pillars, the lantern column and the platform footings
+    are left flat; protected cells (dig) are never carved here."""
     m = np.zeros((SIM_H, SIM_W), dtype=bool)
     m[VOID_ROWS[0]:VOID_ROWS[1] + 1, LEDGE_X[1]:SIM_W] = True
     for r in range(0, 14):                                    # jagged mouth
         jl = (r * 7) % 4
         jr = (r * 5 + 2) % 4
         m[r, MOUTH_X[0] + jl:MOUTH_X[1] - jr] = True
-    for i in range(BURROW_SLOTS):
+    rng = np.random.default_rng(TERRAIN_SEED)
+    keep_flat = np.zeros(SIM_W, dtype=bool)                   # columns whose ceiling / floor stay straight
+    keep_flat[MOUTH_X[0] - 6:MOUTH_X[1] + 6] = True
+    keep_flat[LANTERN_X - 2:LANTERN_X + 3] = True
+    for a, b in _runs(rng, LEDGE_X[1], SIM_W, 6, 20):         # ceiling: rock steps hang 0-3 px into the void
+        k = int(rng.integers(0, 4))
+        if k:
+            cols = np.arange(a, b)
+            cols = cols[~keep_flat[cols]]
+            m[VOID_ROWS[0]:VOID_ROWS[0] + k, cols] = False
+    plat_flat = keep_flat.copy()
+    for px, pw in PLATFORMS:
+        plat_flat[max(0, px - 3):px + pw + 3] = True
+    for a, b in _runs(rng, LEDGE_X[1], SIM_W, 6, 20):         # floor: stalagmite steps rise 0-2 px behind the feet row
+        k = int(rng.integers(0, 3))
+        if k:
+            cols = np.arange(a, b)
+            cols = cols[~plat_flat[cols]]
+            m[FLOOR_ROWS[0] - k:FLOOR_ROWS[0], cols] = False
+    for i in range(BURROW_SLOTS):                             # arched recess: a 1 px step arch, angular
         x, y, w, h = burrow_box(i)
-        m[y:y + h, x:x + w] = True
+        m[y, x + 2:x + w - 2] = True
+        m[y + 1, x + 1:x + w - 1] = True
+        m[y + 2:y + h, x:x + w] = True
     return m
 
 

@@ -83,7 +83,7 @@ PRESETS = {
     "ember":   {"accent": "#FF6A2B", "names": ["#FF6A2B", "#FFB020", "#FDE68A", "#FCA5A5", "#F9A8D4", "#FDBA74"]},
     "ice":     {"accent": "#5AD1FF", "names": ["#5AD1FF", "#93C5FD", "#A5F3FC", "#C4B5FD", "#E0F2FE", "#BAE6FD"]},
     "violet":  {"accent": "#A78BFA", "names": ["#A78BFA", "#C4B5FD", "#F9A8D4", "#7DD3FC", "#FCD34D", "#DDD6FE"]},
-    "gold":    {"accent": "#FFC53D", "names": ["#FFC53D", "#FDE68A", "#FDBA74", "#FCD34D", "#FFE8A3", "#FBBF24"]},
+    "gold":    {"accent": "#FFC53D", "names": ["#FFC53D", "#FDE68A", "#7DD3FC", "#FCD34D", "#C4B5FD", "#FBBF24"]},   # two non-yellow accents: a gold colony is never six yellow blobs (art-rules.md 3)
     "magenta": {"accent": "#FF5CA8", "names": ["#FF5CA8", "#F9A8D4", "#FBCFE8", "#C4B5FD", "#FCA5A5", "#FDA4AF"]},
     "cyan":    {"accent": "#22D3EE", "names": ["#22D3EE", "#67E8F9", "#A5F3FC", "#7DD3FC", "#5EEAD4", "#99F6E4"]},
     "paper":   {"accent": "#E8E2D0", "names": ["#E8E2D0", "#D6D3C4", "#FDE68A", "#BAE6FD", "#FBCFE8", "#C7D2FE"]},

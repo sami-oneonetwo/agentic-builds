@@ -104,29 +104,27 @@ Rules:
 
 ### Regions (`L.LAYOUT[key]["box"]` = (x, y, w, h); font/size = the region's primary text)
 
-| key | box | font | spine panel |
-|---|---|---|---|
-| `header_left` | 0,0,300,66 | HN Medium 22 | wordmark + chat-link dot |
-| `header_center` | 300,0,620,66 | AB 56 + AB 56 + Menlo 20 | version, countdown digits mm:ss (accent / amber < 30 s / red < 10 s), `NEXT SHIP` + `round N` or `MACRO in mm:ss` label stack |
-| `header_right` | 920,0,360,66 | Menlo 22 | SHIPPED n · FAILED m, LIVE dot + real viewers or `--` |
-| `countdown` | 0,66,1280,6 | none | bar shrinking right-to-left; amber < 30 s, red < 10 s |
-| `stage_title` | 0,72,840,48 | HN Bold 28 + Menlo 20 chip | BUILDING vX: option, picked by @name + scene chip |
-| `stage_step` | 0,120,840,16 | none | 5-segment rail, active segment 1 Hz pulse |
-| `stage_body` | 0,136,840,236 | Menlo 22 / HN 24-34 | typewriter status, SHIP result card, STATS card, ATTRACT |
-| `activity_feed` | 0,372,840,120 | Menlo 22, 28 px lines | last 4 lines of activity.jsonl, actor coloured, 8-frame slide |
-| `ballot` | 0,492,840,164 | AB 56 / HN 22 / Menlo 22/20 | 3 cards 264x140 at x 16/288/560, y+2; instruction at y+141 |
-| `chat_pinned` | 840,72,440,40 | HN Medium 22 | 20 s rotation, notices (`theme cooldown 41 s`) for 4 s |
-| `chat_pane` | 840,112,440,272 | Menlo 22, 26 px lines | last 10 moderated messages, chips, 1 s highlight |
-| `founders` | 840,384,440,28 | Menlo 20 | first 10 chatters of the session |
-| `ask_card` | 840,412,440,124 | HN 24 / Menlo 20 | ask/answer, or LAST SHIP card when `ask.enabled=false` |
-| `next_up` | 840,536,440,120 | HN Medium 22 / Menlo 20 | top 3 ideas, `declined: reason` in grey |
-| `ticker` | 0,656,880,64 | HN Medium 24 | crawl at `micro.ticker_speed` px/s |
-| `scope` | 880,656,160,64 | none | polyline of `ctx.audio_block[:,0]`, 144 px wide |
-| `readout` | 1040,656,240,64 | Menlo 20 | `chat 0.4/m · 2 ppl` / `30fps 11ms 01:23`; `state: stale` / `audio: fallback` |
+PIP HOLLOW layout (WORLD.md 5). The header and footer kept their CONCEPT 3 geometry; the middle of the frame is the world.
 
-Composite keys `header` (0,0,1280,66) and `stage` (0,72,840,300) exist for a panel that wants a whole strip.
-Geometry note: CONCEPT 3 puts the ballot instruction at canvas y 644; a 20 px line there overruns the
-656 edge, so the spine draws cards at region y 2 and the instruction at y 141 (canvas 633).
+| key | box | font | panel (stream/panels/) |
+|---|---|---|---|
+| `header_left` | 0,0,300,66 | HN Medium 22 | header.py: `atleastonce` / `PIP HOLLOW` wordmark + chat-link dot |
+| `header_center` | 300,0,620,66 | AB 56 / AB 40 / Menlo 24-20 | header.py: `3 AWAKE` (`NOBODY AWAKE`, `-- AWAKE` before the world boots), `· N HATCHED`, `NEXT EVENT mm:ss`, keeper carving line |
+| `header_right` | 920,0,360,66 | Menlo 22 | header.py: version string, LIVE dot + real viewers or `--` |
+| `countdown` | 0,66,1280,6 | none | countdown.py: bar shrinking right-to-left; amber < 30 s, red < 10 s |
+| `world` | 0,72,1280,440 | Menlo 20/22, HN Medium 22, AB 56 | world.py: the CaveScene (320x110 sim at 4x) + the screen-scale text layer (plank, labels, bubbles, platform letters/counts) |
+| `colony` | 0,512,420,144 | HN Medium 22/20, Menlo 22/20 | colony.py: hatched count + milestone bar, `N awake · M asleep`, 8 s rotation |
+| `keeper` | 420,512,420,144 | HN Medium 22, Menlo 22/20 | keeper.py: `keeper on duty` / off duty, carving or last carved line, failure lines only on failure |
+| `chat_log` | 840,512,440,144 | Menlo 22, 26 px lines | chat_log.py: last 5 moderated messages past the hold, letter chip, shield chip |
+| `ticker` | 0,656,880,64 | HN Medium 24 | ticker.py: crawl of events / ships, chamber carves, the honesty line, the verb legend |
+| `scope` | 880,656,160,64 | none | scope.py: polyline of `ctx.audio_block[:,0]`, 144 px wide |
+| `readout` | 1040,656,240,64 | Menlo 20 | readout.py: `chat 0.4/m · 2 ppl` / `30fps 11ms 01:23`; `state: stale`, `audio: fallback`, `world: glow off`, honesty violations |
+
+Removed with the pivot (`L.REMOVED_REGIONS`, a panel registering one is refused): `stage`, `stage_title`, `stage_step`,
+`stage_body`, `activity_feed`, `ballot`, `chat_pinned`, `chat_pane`, `founders`, `ask_card`, `next_up`. The composite key
+`header` (0,0,1280,66) remains for a panel that wants the whole strip. World geometry constants: `L.WORLD_PLANK_XY`,
+`L.WORLD_BUBBLE_MAX_W`, `L.WORLD_DENSITY_FALLBACK`. The world contract (scene, entities, events, commands) is
+`stream/WORLD_API.md`.
 
 ### Worked example panel
 
@@ -412,8 +410,8 @@ from `$RUN_DIR` at `source` time, so `source env.sh; RUN_DIR=/tmp/cp-x python st
 `state.json` into the OLD dir. A file variable is now honoured only when it lives inside the resolved run dir;
 the guard also refuses if any derived file would land in a canonical dir.
 
-**Hot reload** (`HotReloader`, on by default, `KL_HOT_RELOAD=0` disables): `stream/panels/*.py` and
-`stream/scenes/*.py` are stat'ed every 2 s (wallclock). A changed file (settled >= 0.3 s) is
+**Hot reload** (`HotReloader`, on by default, `KL_HOT_RELOAD=0` disables): `stream/panels/*.py`,
+`stream/scenes/*.py` and `stream/world/*.py` are stat'ed every 2 s (wallclock). A changed file (settled >= 0.3 s) is
 1. `py_compile`d into `$RUN_DIR/.hotreload/` — syntax error -> `hot reload REJECTED <file>: SyntaxError ... (line N); old module kept`
    (stderr + activity), nothing else happens;
 2. executed as a NEW module object under its dotted name (the old object is kept for rollback); an import-time
@@ -423,7 +421,10 @@ the guard also refuses if any derived file would land in a canonical dir.
 4. a raise in `inputs()`/`render()` during those 30 renders -> `hot reload ROLLBACK <key>: ...; previous panel + module
    restored` (activity line) and the old panel renders the same frame; 30 clean renders -> `committed`.
 A scene file re-executes the scene module, then every loaded panel module whose source mentions `stream.scenes`
-(so the stage rebinds; its rollback list carries the scene module too). Counters: `ctx.compositor_live["hot_reload"]`
+(so the world panel rebinds to a fresh CaveScene, re-booted from world.json; its rollback list carries the scene module too).
+A `stream/world/*.py` file is executed fresh under its name, the parent package attribute is rebound (so
+`from stream.world import pips` sees the new module), then `stream.scenes.hollow` is re-executed as above.
+`KL_TEST_PIPS` counts as a test hook for the run-dir guard. Counters: `ctx.compositor_live["hot_reload"]`
 = `{reloads, rejected, rollbacks, last}`. Nothing here touches ffmpeg or the FIFO: a reload is invisible to the encoder.
 Proven 2026-09-25 (isolated copy, `--self-test 500` paced with `KL_SELFTEST_REALTIME=1`): colour edit live at frame 121,
 syntax error rejected, render-raise rolled back on the same frame, scene edit rebound `stage_*` and committed.

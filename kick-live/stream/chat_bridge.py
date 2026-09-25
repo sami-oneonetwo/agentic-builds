@@ -1064,7 +1064,7 @@ class ChatBridge(object):
         elif cmd == "unhide" and target:
             if target in self.banished:
                 if not history:
-                    self._set_notice("%s is banished · !unbanish lifts it" % self._at(target, now), "warn", now)
+                    self._set_notice("that user is banished · !unbanish lifts it", "warn", now)
                 return
             self._hidden.discard(target)
             self.burrowed.pop(target, None)
@@ -1123,7 +1123,11 @@ class ChatBridge(object):
         if history or already:
             return                                      # re-applied silently after a restart
         self.mod_actions.append({"ts": epoch_to_iso(now), "by": by, "action": cmd, "target": target or None})
-        if note:
+        # The plank is the person-facing slot (WORLD.md 2.2). Per-user mod ops (hide/unhide/banish/unbanish/rename) are
+        # NOT announced there: naming a hidden user is a leak and `mod action: hid @builder #6` is jargon to a stranger.
+        # They stay on the record (state.mod.actions -> chat log shield row, activity.jsonl). Chat-wide state changes
+        # (pause/resume/kill/unkill/clear) still get the 4 s line, because every viewer is affected.
+        if note and cmd in ("pause", "resume", "kill", "unkill", "clear"):
             self._set_notice(note, "warn", now)
         self.log("mod %s %s by %s" % (cmd, target or "", by))
 

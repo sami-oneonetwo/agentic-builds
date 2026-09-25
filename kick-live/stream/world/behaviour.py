@@ -57,6 +57,7 @@ SEED_FALL_PX_PER_FRAME = 2.0
 SEED_TIMEOUT_S = HOLD_S + 4.0
 CREDITS_GAP_S = 1.5
 PLATFORM_STAND_SPACING = 3
+VOTE_WALK_S = 2.0                        # a vote walk ARRIVES within 1-3 s (WORLD.md 4): speed = max(wander max, dist / 2 s)
 
 
 def hashed_x(key: str, lo: int = WANDER_X[0], hi: int = WANDER_X[1]) -> float:
@@ -173,6 +174,8 @@ class Behaviour(object):
         self.newest_speaker: Optional[str] = None
         self.newest_speaker_t = -1e9
         self.first_light_done = False
+        self.first_light_pending: Optional[str] = None   # the session's FIRST message came from a stranger's seed: first
+                                                         # light waits for that hatch (a sleeper waking meanwhile does not take it)
         self.credits_active = False
         self._credits_queue: List[str] = []
         self._credits_next_t = 0.0
@@ -236,6 +239,8 @@ class Behaviour(object):
         e.seed_t = t
         e.seed_y = 14.0
         self.entities[key] = e
+        if not self.first_light_done and self.first_light_pending is None and self.awake_count() == 0:
+            self.first_light_pending = key           # WORLD.md 2.2: the session's first MESSAGE is first light, credited at hatch
         self._ev("seed", key=key, x=e.x)
         return e
 
@@ -266,6 +271,13 @@ class Behaviour(object):
             return False
         del self.entities[key]
         self._ev("sink", key=key)
+        if self.first_light_pending == key:
+            self.first_light_pending = None          # the seed never hatched: first light goes to whoever is awake first
+            if not self.first_light_done:
+                awake = sorted(self.awake(), key=lambda o: (o.wake_t if o.wake_t is not None else o.born_t))
+                if awake:
+                    self.first_light_done = True
+                    self._ev("first_light", pip=awake[0].key)
         return True
 
     def place_sleeper(self, key: str, tier: int, energy: float, salt: int, slot: Optional[int], display_name: Optional[str],
@@ -317,7 +329,11 @@ class Behaviour(object):
         e.on_arrive = "idle"
         e.minutes_tonight = 0.0
         e.credits_done = False
-        self._ev("wake", pip=e.key, burrow=e.burrow)
+        self._ev("wake", pip=e.key, burrow=e.burrow, only_light=(self.awake_count() == 1))
+        if not self.first_light_done and self.first_light_pending is None and self.awake_count() == 1:
+            # the session's first message came from a RETURNING chatter: that is first light too (WORLD.md 2.2)
+            self.first_light_done = True
+            self._ev("first_light", pip=e.key)
 
     def speak(self, key: str, t: float, text: str, learned_from: Optional[str] = None) -> Optional[Entity]:
         """After the hold: the owner's own words in a bubble for SPEAK_S; every awake pip turns to the speaker."""
@@ -391,7 +407,10 @@ class Behaviour(object):
         e.state = "walking"
         if e.y != float(FLOOR_Y) and e.target_y != e.y:
             e.y = float(FLOOR_Y)                       # step down off a platform first
-        e.speed_max = self._u(SPEED_MIN, SPEED_MAX)
+        if e.on_arrive == "vote":                      # purposeful: the voter sees the tally count them within 1-3 s
+            e.speed_max = max(SPEED_MAX, abs(e.target_x - e.x) / VOTE_WALK_S)
+        else:
+            e.speed_max = self._u(SPEED_MIN, SPEED_MAX)
         e.last_active_t = t
         self._ev("walk", pip=e.key, to=e.platform or int(e.target_x))
         return True
@@ -460,11 +479,13 @@ class Behaviour(object):
         e.pause_until = t + self._u(1.0, 2.5)
         e.next_blink_t = t + self._u(BLINK_MIN, BLINK_MAX)
         e.minutes_tonight = 0.0
-        first_light = not self.first_light_done and self.awake_count() == 1
+        first_light = not self.first_light_done and (self.first_light_pending == e.key or
+                                                     (self.first_light_pending is None and self.awake_count() == 1))
         ev = self._ev("hatch", pip=e.key, display_name=e.display_name, first_ever=e.first_ever, x=e.x,
                       only_light=(self.awake_count() == 1))
         if first_light:
             self.first_light_done = True
+            self.first_light_pending = None
             self._ev("first_light", pip=e.key)
         for o in self.entities.values():
             if o is not e and o.is_awake():

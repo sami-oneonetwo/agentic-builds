@@ -31,8 +31,10 @@ Every rule is a `len()` over real records, never a sample string. The rules:
   scene       the scene's own _honesty_check removed something (stats()["honesty_violations"] grew)
 
 `enforce=True` (default) also REMOVES an animate entity that has no real record and clears a bubble whose text the
-owner never typed, so a bug upstream cannot put a fake creature or invented words on screen. Counts and records are
-never "fixed": a padded count or a pip with no chat record stays a reported violation (the readout shows it).
+owner never typed, so a bug upstream cannot put a fake creature or invented words on screen. A pip RECORD with no
+chat.jsonl chatter (a tampered world.json) is quarantined (WorldState.quarantine: out of `pips`, kept for audit,
+never drawn, never counted) once it has been missing from the file for ORPHAN_GRACE_S; the boot path already does
+this in WorldState.recompute_from_chat. Padded COUNTS are never "fixed": they stay a reported violation.
 Python 3.9: from __future__ import annotations; stdlib + numpy only.
 """
 from __future__ import annotations
@@ -54,6 +56,7 @@ SEED_STATES = ("seed", "hatching")
 SLEEP_STATES = ("asleep", "burrowed")
 CHAT_RESCAN_S = 2.0
 TEXT_MEMORY = 20
+ORPHAN_GRACE_S = 5.0          # a real pip is created from a record the listener already appended; the names scan lags <= 2 s
 
 
 class Report(object):
@@ -129,6 +132,8 @@ class HonestyMonitor(object):
         self._scene_hv = None
         self._drift_since: Optional[float] = None
         self._logged = 0
+        self._missing_since: Dict[str, float] = {}
+        self.quarantined = 0
 
     # ------------------------------------------------------------------ helpers
     def _name_filter(self):
@@ -298,12 +303,28 @@ class HonestyMonitor(object):
             missing = [k for k in real_pips if k not in self._chat_names]
             if missing:
                 rep.add("chat_jsonl", "%d pip(s) with no chat.jsonl record: %s" % (len(missing), ", ".join(sorted(missing)[:5])))
+            for k in list(self._missing_since):
+                if k not in missing:
+                    self._missing_since.pop(k, None)
+            for k in missing:
+                since = self._missing_since.setdefault(k, t)
+                if self.enforce and t - since >= ORPHAN_GRACE_S:
+                    # a record with no chatter: never drawn, never counted. Entity gone, record to quarantine (audit).
+                    if k in b.entities:
+                        del b.entities[k]
+                        self.removed += 1
+                    if hasattr(w, "quarantine") and w.quarantine(k, t, "no chat.jsonl record (honesty monitor)"):
+                        self.quarantined += 1
+                        self.log("quarantined %s: no chat.jsonl record for %.1fs" % (k, t - since))
+                    self._missing_since.pop(k, None)
+            real_pips = [k for k, p in w.pips.items() if not p.get("_test")]
         try:
             he = int(scene.hatched_ever())
         except Exception:
             he = -1
-        if he != len(real_pips):
-            rep.add("counts", "hatched_ever() %d != len(real pips) %d" % (he, len(real_pips)))
+        hatched_real = sum(1 for k in real_pips if (w.pips.get(k) or {}).get("state") not in SEED_STATES)
+        if he != hatched_real:
+            rep.add("counts", "hatched_ever() %d != len(real hatched pips) %d" % (he, hatched_real))
         # -- counts: awake / asleep / platforms are len() over the entities they claim (test pips included, as drawn)
         live = b.entities
         n_awake = sum(1 for e in live.values() if e.is_awake())
@@ -357,14 +378,14 @@ class HonestyMonitor(object):
     def summary(self) -> Dict[str, Any]:
         return {"frames": self.frames, "failed_frames": self.failed_frames, "violations": self.violations_total,
                 "by_rule": {k: v for k, v in self.by_rule.items() if v}, "presence_drift_frames": self.drift_frames,
-                "removed": self.removed, "last": None if self.last is None else
+                "removed": self.removed, "quarantined": self.quarantined, "last": None if self.last is None else
                 {"ok": self.last.ok, "violations": list(self.last.violations), "counts": dict(self.last.counts),
                  "unverified": list(self.last.unverified)}}
 
     def line(self) -> str:
-        """One readout line (Menlo 20 fits ~22 chars): honest about what it checked."""
+        """One readout line (Menlo 20 in 240 px fits ~19 chars): the NUMBER must survive, so `honesty: 199 bad`."""
         if self.violations_total:
-            return "honesty: %d violation%s" % (self.violations_total, "" if self.violations_total == 1 else "s")
+            return "honesty: %d bad" % self.violations_total
         return "honesty: %d frames ok" % self.frames
 
 
@@ -533,6 +554,44 @@ def _selftest(run_dir: str) -> int:
     scene.world.data["pips"].pop(key, None)
     scene.world.data["world"]["hatched_ever"] = scene.world.hatched_ever
     run_frames(1)
+
+    # 2b. the same tamper under enforce=True: after ORPHAN_GRACE_S the entity is gone and the record is in quarantine
+    key = "never-chatted-y"
+    scene.world.data["pips"][key] = _default_pip(key, "Never", "Never", None, now, P.genome(key, 0))
+    scene.world.data["pips"][key]["state"] = "asleep"
+    scene.behaviour.place_sleeper(key, 0, 0.6, 0, 4, "Never", t=now)
+    mon_e = HonestyMonitor(scene, enforce=True, log=lambda m: None)
+    padded = scene.hatched_ever()
+    for _ in range(int((ORPHAN_GRACE_S + 1.0) * fps)):
+        now += 1.0 / fps
+        ctx = mkctx(now, 0, raw[-20:], clear[-10:], [(names[0], "B", t0 + 180 / fps)])
+        scene.frame(ctx, size)
+        mon_e.check(ctx, now)
+    gone = key not in scene.behaviour.entities and key not in scene.world.pips
+    quarantined = key in (scene.world.data.get("quarantine") or {})
+    caught["enforce (orphan record quarantined, entity removed)"] = gone and quarantined and scene.hatched_ever() == padded - 1
+    print("[fake 2b] enforce=True orphan: entity gone=%s quarantined=%s hatched_ever %d -> %d monitor=%r" % (
+        gone, quarantined, padded, scene.hatched_ever(), {k: mon_e.summary()[k] for k in ("removed", "quarantined", "by_rule")}))
+    run_frames(1)
+
+    # 2c. a world.json tampered on disk (a pip row for someone who never chatted) is quarantined AT BOOT, never placed
+    from stream.world.state import WorldState
+    scene.world.save(now, force=True)
+    with open(scene.world.path) as fh:
+        doc = json.load(fh)
+    doc["pips"]["phantom-nobody"] = _default_pip("phantom-nobody", "Phantom", "Phantom", 99, now, P.genome("phantom-nobody", 0))
+    doc["pips"]["phantom-nobody"]["state"] = "asleep"
+    doc["world"]["hatched_ever"] = len(doc["pips"])
+    with open(scene.world.path, "w") as fh:
+        json.dump(doc, fh)
+    ws2 = WorldState(run_dir, log=lambda m: None)
+    before = "phantom-nobody" in ws2.pips
+    rec = ws2.recompute_from_chat(now, session["id"])
+    q2 = ws2.data.get("quarantine") or {}
+    caught["boot (world.json orphan quarantined by recompute_from_chat)"] = before and "phantom-nobody" not in ws2.pips and "phantom-nobody" in q2 and ws2.hatched_ever == len(ws2.pips)
+    print("[fake 2c] tampered world.json at boot: loaded=%s after recompute in pips=%s in quarantine=%s hatched_ever=%d recompute=%r" % (
+        before, "phantom-nobody" in ws2.pips, "phantom-nobody" in q2, ws2.hatched_ever, rec))
+    scene.world.save(now, force=True)                        # put the live scene's (clean) document back on disk
 
     # 3. a name on a seed before the hold cleared
     early = scene.behaviour.seed_drop("early-name", now)

@@ -134,7 +134,15 @@ class HeaderCenter(Panel):
             role = "danger"
         elif secs is not None and rem < 30:
             role = "warn"
-        return ("NEXT EVENT", _mmss(secs), role)
+        # the leading option's title replaces `NEXT EVENT` once someone has voted (the tally is len(pips standing); the
+        # title is the platform's own string from state.round.options), so the thumbnail says what is about to happen
+        votes = sorted([int(o.get("votes") or 0) for o in rnd.get("options") or [] if isinstance(o, dict)], reverse=True)
+        lead = None
+        if votes and votes[0] > 0 and (len(votes) == 1 or votes[0] > votes[1]):        # a UNIQUE leader, never a tie-break
+            for o in rnd.get("options") or []:
+                if isinstance(o, dict) and int(o.get("votes") or 0) == votes[0] and o.get("title"):
+                    lead = L.strip_non_bmp(str(o.get("title")))
+        return (lead or "NEXT EVENT", _mmss(secs), role)
 
     @staticmethod
     def _count(ctx):
@@ -210,6 +218,9 @@ class HeaderCenter(Panel):
             fs = cand
             if max(L.text_width("Menlo", cand, hatched_txt), L.text_width("Menlo", cand, clock_txt)) <= avail:
                 break
+        if L.text_width("Menlo", fs, clock_txt) > avail:            # a long option title: keep the digits, shorten the title
+            tail = " " + digits
+            clock_txt = L.truncate("Menlo", fs, label, max(20, avail - L.text_width("Menlo", fs, tail))) + tail
         f = L.font("Menlo", fs)
         d.text((lx, 7), L.truncate("Menlo", fs, hatched_txt, avail), font=f, fill=L.COLORS["text2"])
         d.text((lx, 36), L.truncate("Menlo", fs, clock_txt, avail), font=f, fill=clock_col)

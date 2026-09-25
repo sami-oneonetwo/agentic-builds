@@ -68,7 +68,7 @@ HEADER_MIN_STD = 8.0             # self-test: luminance std of the 0-66 header b
 HOT_RELOAD_S = 2.0               # file watch interval (wallclock)
 HOT_RELOAD_SETTLE_S = 0.3        # a file modified less than this long ago may still be half-written: next poll
 HOT_RELOAD_PROBATION = 30        # renders during which a raise rolls back to the previous panel + module
-TEST_ENV_HOOKS = ("KL_ROUND_S", "KL_FAULT_PANELS", "KL_SLOW_PANELS", "KL_CHANGELOG", "KL_SELFTEST_REALTIME")
+TEST_ENV_HOOKS = ("KL_ROUND_S", "KL_FAULT_PANELS", "KL_SLOW_PANELS", "KL_CHANGELOG", "KL_SELFTEST_REALTIME", "KL_TEST_PIPS")
 
 
 def log(msg: str) -> None:
@@ -176,7 +176,8 @@ class HotReloader(object):
     """
 
     WATCH = (("stream.panels", os.path.join(ROOT, "stream", "panels")),
-             ("stream.scenes", os.path.join(ROOT, "stream", "scenes")))
+             ("stream.scenes", os.path.join(ROOT, "stream", "scenes")),
+             ("stream.world", os.path.join(ROOT, "stream", "world")))     # world core: re-exec, then the scene rebinds
 
     def __init__(self, comp: "Compositor"):
         self.comp = comp
@@ -263,6 +264,8 @@ class HotReloader(object):
             return
         if pkg == "stream.scenes":
             self._reload_scene(modname, path, frame)
+        elif pkg == "stream.world":
+            self._reload_world_module(modname, path, frame)
         else:
             self._reload_panel_module(modname, path, frame, [])
 
@@ -276,13 +279,27 @@ class HotReloader(object):
             mod.__package__ = modname.rpartition(".")[0]
             sys.modules[modname] = mod
             spec.loader.exec_module(mod)
+            # `from stream.scenes import hollow as H` reads the PARENT PACKAGE attribute, not sys.modules: without this
+            # rebind a re-executed panel would keep the old scene / world module object (integration finding).
+            HotReloader._rebind_parent(modname, mod)
             return mod, None
         except Exception:
             if old is not None:
                 sys.modules[modname] = old
+                HotReloader._rebind_parent(modname, old)
             else:
                 sys.modules.pop(modname, None)
             return None, traceback.format_exc().strip().splitlines()[-1]
+
+    @staticmethod
+    def _rebind_parent(modname: str, mod) -> None:
+        pkg, _, child = modname.rpartition(".")
+        parent = sys.modules.get(pkg) if pkg else None
+        if parent is not None:
+            try:
+                setattr(parent, child, mod)
+            except Exception:
+                pass
 
     def _reload_panel_module(self, modname: str, path: str, frame: int, cascade: List[Tuple[str, object]]) -> bool:
         old_mod = sys.modules.get(modname)
@@ -322,7 +339,30 @@ class HotReloader(object):
         self.comp._activity(msg)
         return True
 
-    def _reload_scene(self, modname: str, path: str, frame: int) -> None:
+    def _reload_world_module(self, modname: str, path: str, frame: int) -> None:
+        """stream/world/*.py changed (WORLD_API.md 9): execute it fresh under its name, then re-execute the scene module
+        (stream.scenes.hollow) so `from stream.world... import` rebinds, which in turn re-executes the world panel."""
+        if modname not in sys.modules:
+            log("hot reload: %s changed but was never imported; nothing to swap" % modname)
+            return
+        old_mod = sys.modules.get(modname)
+        _mod, err = self._exec_fresh(modname, path)
+        if err:
+            self.stats["rejected"] += 1
+            msg = "hot reload FAILED %s at import: %s; old module kept" % (modname, err)
+            log(msg)
+            self.comp._activity(msg)
+            return
+        self.stats["reloads"] += 1
+        self.stats["last"] = modname
+        hollow = os.path.join(ROOT, "stream", "scenes", "hollow.py")
+        if "stream.scenes.hollow" in sys.modules and os.path.exists(hollow):
+            log("hot reload: %s re-executed; rebinding the scene" % modname)
+            self._reload_scene("stream.scenes.hollow", hollow, frame, cascade=[(modname, old_mod)])
+        else:
+            log("hot reload: %s re-executed (no scene loaded to rebind)" % modname)
+
+    def _reload_scene(self, modname: str, path: str, frame: int, cascade: Optional[List[Tuple[str, object]]] = None) -> None:
         old_mod = sys.modules.get(modname)
         _mod, err = self._exec_fresh(modname, path)
         if err:
@@ -353,7 +393,7 @@ class HotReloader(object):
         log(msg)
         self.comp._activity(msg)
         for dep_mod, dep_path in deps:
-            self._reload_panel_module(dep_mod, dep_path, frame, [(modname, old_mod)])
+            self._reload_panel_module(dep_mod, dep_path, frame, [(modname, old_mod)] + list(cascade or []))
 
 
 class Compositor(object):
@@ -401,7 +441,7 @@ class Compositor(object):
         log("%d panels: %s" % (len(self.slots), " ".join(s.key for s in self.slots)))
         self.reloader = HotReloader(self)
         if self.reloader.enabled:
-            log("hot reload: watching %d files under stream/panels + stream/scenes every %g s" % (len(self.reloader.sig), HOT_RELOAD_S))
+            log("hot reload: watching %d files under stream/panels + stream/scenes + stream/world every %g s" % (len(self.reloader.sig), HOT_RELOAD_S))
 
         self.canvas = Image.new("RGB", (L.W, L.H), L.COLORS["bg"])
         self.frame_ms: List[float] = []
@@ -882,6 +922,12 @@ class Compositor(object):
                     st.get("avg_ms"), st.get("max_ms"), sc_st.get("avg_ms"), json.dumps(st.get("degrade")), json.dumps(st.get("keepers"))))
             except Exception:
                 log("honesty summary failed:\n" + traceback.format_exc())
+        try:                                            # WORLD.md 6.2: the art-review sheet rides along with every self-test
+            from stream.world import pips as _P
+            sheet = _P.sheet(os.path.join(out_dir, "pips_sheet.png"), None, None)
+            log("wrote the pip review sheet (48 sample looks x 4 tiers x 11 frames) to %s" % sheet)
+        except Exception:
+            log("pips_sheet.png failed:\n" + traceback.format_exc())
         log("wrote %d PNGs to %s" % (n, out_dir))
         self.bridge.flush(time.time(), force=True)
         return rc
