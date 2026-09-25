@@ -1,6 +1,6 @@
-"""layout.py - single source of geometry, fonts and palette for the SHIP IT LIVE compositor.
+"""layout.py - single source of geometry, fonts and palette for the PIP HOLLOW compositor.
 
-Every region from docs/CONCEPT.md section 3 is here as LAYOUT[key] = {
+Every region from docs/WORLD.md section 5 (header/footer kept from CONCEPT.md section 3) is here as LAYOUT[key] = {
     "box":  (x, y, w, h)      pixel rectangle on the 1280x720 canvas
     "font": "<face name>"     one of FONT_FILES keys (AB, HN, HN Medium, HN Bold, Menlo, Menlo Bold)
     "size": <px>              primary text size for the region (never under 20)
@@ -25,40 +25,33 @@ MIN_TEXT_PX = 20         # nothing on screen is under 20 px
 LAYOUT: Dict[str, Dict] = {
     # header strip (the thumbnail: only this survives at 320x180)
     "header":        {"box": (0, 0, 1280, 66),   "font": "HN Medium", "size": 22, "role": "composite header strip"},
-    "header_left":   {"box": (0, 0, 300, 66),    "font": "HN Medium", "size": 22, "role": "wordmark + chat-link dot"},
-    "header_center": {"box": (300, 0, 620, 66),  "font": "AB",        "size": 56, "role": "version number 56px + NEXT SHIP mm:ss (Menlo 24)"},
-    "header_right":  {"box": (920, 0, 360, 66),  "font": "Menlo",     "size": 22, "role": "SHIPPED n · FAILED m, LIVE dot + N watching"},
+    "header_left":   {"box": (0, 0, 300, 66),    "font": "HN Medium", "size": 22, "role": "`atleastonce` / `PIP HOLLOW` wordmark + chat-link dot"},
+    "header_center": {"box": (300, 0, 620, 66),  "font": "AB",        "size": 56, "role": "`3 AWAKE` AB 56 (`NOBODY AWAKE` AB 40) + `· 17 HATCHED` / `NEXT EVENT mm:ss` Menlo 24 (+ keeper carving line Menlo 20)"},
+    "header_right":  {"box": (920, 0, 360, 66),  "font": "Menlo",     "size": 22, "role": "version string; red LIVE dot + real `N watching` or `--`"},
     "countdown":     {"box": (0, 66, 1280, 6),   "font": "none",      "size": 0,  "role": "full-width bar shrinking right-to-left over the 180 s round"},
-    # stage (left column, top)
-    "stage":         {"box": (0, 72, 840, 300),  "font": "HN Bold",   "size": 28, "role": "composite stage (title + step + body)"},
-    "stage_title":   {"box": (0, 72, 840, 48),   "font": "HN Bold",   "size": 28, "role": "BUILDING vX: option, picked by @name + scene chip (Menlo 20)"},
-    "stage_step":    {"box": (0, 120, 840, 16),  "font": "none",      "size": 0,  "role": "5-segment PLAN EDIT TEST SHIP LIVE rail, active segment pulses 1 Hz"},
-    "stage_body":    {"box": (0, 136, 840, 236), "font": "Menlo",     "size": 22, "role": "mode-switching body: diff/status/canvas/answer/result/attract"},
-    "activity_feed": {"box": (0, 372, 840, 120), "font": "Menlo",     "size": 22, "role": "last 4 lines of activity.jsonl, actor coloured, 28 px line height"},
-    "ballot":        {"box": (0, 492, 840, 164), "font": "AB",        "size": 56, "role": "three 264x140 cards at x 16/288/560 y+8, tallies, voters, instruction line"},
-    # right column
-    "chat_pinned":   {"box": (840, 72, 440, 40),  "font": "HN Medium", "size": 22, "role": "rotating instruction strip / cooldown notices"},
-    "chat_pane":     {"box": (840, 112, 440, 272), "font": "Menlo",    "size": 22, "role": "last 10 real chat messages, newest at bottom, 26 px line height"},
-    "founders":      {"box": (840, 384, 440, 28),  "font": "Menlo",    "size": 20, "role": "first 10 real chatters of the session"},
-    "ask_card":      {"box": (840, 412, 440, 124), "font": "HN",       "size": 24, "role": "ask/answer card, or last shipped version card when ask.enabled=false"},
-    "next_up":       {"box": (840, 536, 440, 120), "font": "HN Medium", "size": 22, "role": "NEXT UP (macro): top 3 !idea entries"},
+    # the world (WORLD.md 5, region 5): the 320x110 sim at 4x plus the screen-scale text layer
+    "world":         {"box": (0, 72, 1280, 440), "font": "Menlo",     "size": 22, "role": "the cave: sim 320x110 at 4x; plank HN Medium 22, pip labels Menlo 20, bubbles Menlo 22, platform letters AB 56"},
+    # the three strips under the world (WORLD.md 5, regions 6-8)
+    "colony":        {"box": (0, 512, 420, 144),   "font": "HN Medium", "size": 22, "role": "colony bar (hatched / next milestone), awake · asleep line, 8 s rotation (last event, nightly board, !stats)"},
+    "keeper":        {"box": (420, 512, 420, 144), "font": "HN Medium", "size": 22, "role": "keeper on duty / off duty; carving or last carved line; traceback lines only on failure"},
+    "chat_log":      {"box": (840, 512, 440, 144), "font": "Menlo",     "size": 22, "role": "last 5 moderated messages past the hold, 26 px lines, letter chip on votes, shield chip on mod actions"},
     # footer
-    "ticker":        {"box": (0, 656, 880, 64),    "font": "HN Medium", "size": 24, "role": "right-to-left crawl: patch notes, honesty line, command legend"},
+    "ticker":        {"box": (0, 656, 880, 64),    "font": "HN Medium", "size": 24, "role": "right-to-left crawl: events / ships, honesty line, command legend"},
     "scope":         {"box": (880, 656, 160, 64),  "font": "none",      "size": 0,  "role": "oscilloscope of this frame's 1600-sample audio block (left channel)"},
-    "readout":       {"box": (1040, 656, 240, 64), "font": "Menlo",     "size": 20, "role": "chat rate / chatters; fps · frame ms · uptime; stale/fallback flags"},
+    "readout":       {"box": (1040, 656, 240, 64), "font": "Menlo",     "size": 20, "role": "chat rate / chatters; fps · frame ms · uptime; stale/fallback flags; `world: glow off`"},
 }
 
-# Ballot card geometry (inside the ballot region, region-relative)
-BALLOT_CARD_W, BALLOT_CARD_H = 264, 140
-BALLOT_CARD_X = (16, 288, 560)
-BALLOT_CARD_Y = 0            # cards span region y 0-139 (canvas 492-631); the card border doubles as the region's top edge
-BALLOT_INSTRUCTION_Y = 133   # region-relative y of the instruction line: HN Bold 26 (bbox y 7..30) -> glyphs at 140-163,
-                             # under the cards and inside the 164 px box
-BALLOT_INSTRUCTION_FONT, BALLOT_INSTRUCTION_SIZE = "HN Bold", 26
-# NOTE: CONCEPT 3 puts the instruction at canvas y 644 in 20 px Menlo, which overruns the 656 region edge by 12 px, and
-# CONCEPT 2 promises the instruction "in 40 px type". QA (2026-09-25) found the default scene had no legible CTA above
-# 20 px. The cards keep their 264x140 size and x positions; they sit 2 px higher than before (y 0) so a 26 px HN Bold
-# accent instruction fits below them with no overlap and no clipping. 40 px would need a card-height change (forbidden).
+# Removed with the living-world pivot (WORLD.md 5): stage_title, stage_step, stage_body, activity_feed, ballot,
+# chat_pinned, chat_pane, founders, ask_card, next_up (and the composite `stage`). Their information moved: stage ->
+# lantern + keeper strip; activity feed -> keeper line 2 + ticker; ballot -> the three stone platforms; pinned strip ->
+# the plank; chat -> bubbles + chat_log; founders -> plank `woke the Hollow` + nightly board; next up -> wall scrolls.
+REMOVED_REGIONS = ("stage", "stage_title", "stage_step", "stage_body", "activity_feed", "ballot", "chat_pinned",
+                   "chat_pane", "founders", "ask_card", "next_up")
+
+# World text-layer geometry (region-relative px inside `world`; WORLD.md 5 row 5)
+WORLD_PLANK_XY = (16, 12)        # canvas (16, 84): the plank's top-left
+WORLD_BUBBLE_MAX_W = 408         # bubble box max width, 3 lines of Menlo 22
+WORLD_DENSITY_FALLBACK = 40      # above this many awake pips: labels only while speaking, sleepers stop rotating labels
 
 
 def region_box(key: str) -> Tuple[int, int, int, int]:
