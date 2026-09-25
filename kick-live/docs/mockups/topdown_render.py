@@ -154,7 +154,7 @@ class World:
         self.M_t = moisture(tu + 0.5, tv + 0.5)
         self._sea_fields()
         su, sv = self._pick_site_world()
-        self.cam = (int(np.clip(su - 18, 0, MAP_T - VTW)), int(np.clip(sv - 12, 0, MAP_T - VTH)))
+        self.cam = (int(np.clip(su - 17, 0, MAP_T - VTW)), int(np.clip(sv - 13, 0, MAP_T - VTH)))
         self._pixel_fields()
         self.site = (su + 0.5 - self.cam[0], sv + 0.5 - self.cam[1])
         self.river = self._trace_river()
@@ -261,52 +261,22 @@ class World:
         self.M = moisture(self.U, self.V)
 
     def _trace_river(self):
+        """Concept-render river: a meander designed for the frame (enters from the highlands off-frame at the
+        top-right, winds down the east side of the settlement, ends where it meets the sea). The terrain is
+        carved to it in _carve_river so it reads as the valley floor. The product traces rivers downhill."""
         cx0, cy0 = self.cam
-        su, sv = self.site[0] + cx0, self.site[1] + cy0
-        E = self.E_t
-        tu, tv = self.tu, self.tv
-        dd = np.hypot(tu - su, tv - sv)
-        cand = (dd > 7) & (dd < 17) & (tu <= su + 2) & (tv <= sv + 1)
-        if not cand.any():
-            cand = (dd > 7) & (dd < 20)
-        score = np.where(cand, E, -1)
-        sy, sx = np.unravel_index(np.argmax(score), score.shape)
-        u, v = sx + 0.5, sy + 0.5
-        # target: the sea that is actually in frame (fallback: the global sea-distance field)
-        e_view = E[cy0:cy0 + VTH, cx0:cx0 + VTW]
-        ys, xs = np.nonzero(e_view < SEA)
-        in_view_sea = len(xs) > 40
-        if in_view_sea:
-            sea_u, sea_v = cx0 + xs.mean(), cy0 + ys.mean()
-        pts = [(u, v)]
-        du, dv = 0.0, 0.0
-        step = 0.5
-        for _ in range(900):
-            angs = np.linspace(0, 2 * math.pi, 24, endpoint=False)
-            cu = u + step * np.cos(angs)
-            cv = v + step * np.sin(angs)
-            e = elevation(cu, cv) + 0.02 * vnoise(cu, cv, 0.7, SEED + 99)
-            ti = np.clip(cv.astype(int), 0, MAP_T - 1)
-            tj = np.clip(cu.astype(int), 0, MAP_T - 1)
-            dsea = np.hypot(cu - sea_u, cv - sea_v) / 40.0 if in_view_sea else self.D_t[ti, tj] / 40.0
-            align = np.cos(angs) * du + np.sin(angs) * dv
-            dsite = np.hypot(cu - su, cv - sv)
-            prev = np.array(pts[:-1]) if len(pts) > 1 else None
-            revisit = np.zeros_like(cu)
-            if prev is not None:
-                dmin = np.min(np.hypot(cu[:, None] - prev[None, :, 0], cv[:, None] - prev[None, :, 1]), axis=1)
-                revisit = np.clip(1 - dmin / 1.4, 0, 1)
-            cost = e + 0.08 * dsea - 0.015 * align + 1.2 * np.clip(1 - dsite / 8.5, 0, 1) + 0.5 * revisit
-            k = int(np.argmin(cost))
-            nu, nv = float(cu[k]), float(cv[k])
-            du, dv = (nu - u) / step, (nv - v) / step
-            u, v = nu, nv
+        rng = np.random.RandomState(SEED + 404)
+        ph1, ph2 = rng.uniform(0, 6.3), rng.uniform(0, 6.3)
+        pts = []
+        r = -1.5
+        while r < VTH + 1:
+            c = 30.8 + 1.9 * math.sin(r * 0.52 + ph1) + 0.8 * math.sin(r * 1.35 + ph2)
+            u, v = cx0 + c, cy0 + r
             pts.append((u, v))
-            if elevation(np.array([u]), np.array([v]))[0] < SEA - 0.012:
+            if r > 11 and elevation(np.array([u]), np.array([v]))[0] < SEA - 0.01:
                 break
-            if not (1 < u < MAP_T - 1 and 1 < v < MAP_T - 1):
-                break
-        return pts[6:] if len(pts) > 12 else pts
+            r += 0.5
+        return pts
 
     def to_px(self, u, v):
         cx0, cy0 = self.cam
@@ -320,7 +290,7 @@ class World:
             a = self.to_px(*self.river[i])
             b = self.to_px(*self.river[i + 1])
             t = i / max(1, n - 1)
-            wdt = int(7 + 13 * t)
+            wdt = int(10 + 9 * t)
             d.line([a, b], fill=255, width=wdt)
             d.ellipse([a[0] - wdt / 2, a[1] - wdt / 2, a[0] + wdt / 2, a[1] + wdt / 2], fill=255)
         field = np.asarray(mask.filter(ImageFilter.GaussianBlur(4)), dtype=np.float32) / 255.0
@@ -507,6 +477,29 @@ class Scene:
         self.items = []     # (sort_y, callable)
         self.rng = np.random.RandomState(SEED + 77)
         self.shadow_dx, self.shadow_dy = (1.7, 0.6) if not w.evening else (1.5, 0.6)
+        self.occupied = []      # huts, monument label (world px)
+        self.label_rects = []   # placed creature label+sprite rects
+
+    def free_spot(self, x, y, half_w, h):
+        """Nudge (x, y) along a small spiral until the label+sprite rect is clear of huts, water and other creatures."""
+        offsets = [(0, 0)]
+        for rr in (40, 80, 120, 160, 200, 250, 300, 360):
+            for k in range(12):
+                a = k * math.pi / 6
+                offsets.append((rr * math.cos(a), rr * 0.7 * math.sin(a)))
+        for dx, dy in offsets:
+            nx, ny = x + dx, y + dy
+            if nx - half_w < 8 or nx + half_w > W - 8 or ny - h < 100 or ny > HUD_Y0 - WY0 - 10:
+                continue
+            if self.w.px_water(nx, ny) or self.w.river_field[int(np.clip(ny, 0, WH - 1)), int(np.clip(nx, 0, W - 1))] > 0.3:
+                continue
+            rect = (nx - half_w, ny - h, nx + half_w, ny + 6)
+            if any(not (rect[2] < r[0] or rect[0] > r[2] or rect[3] < r[1] or rect[1] > r[3]) for r in self.occupied + self.label_rects):
+                continue
+            self.label_rects.append(rect)
+            return nx, ny
+        self.label_rects.append((x - half_w, y - h, x + half_w, y + 6))
+        return x, y
 
     def add(self, y, fn):
         self.items.append((y, fn))
@@ -720,8 +713,12 @@ def vote_stones(sc: Scene, x, y, counts, voters):
     sc.add(y, fn)
 
 
-def creature(sc: Scene, x, y, name, frame="idle0", facing=1, tier=1, carry=None, label=True, dim=False):
+def creature(sc: Scene, x, y, name, frame="idle0", facing=1, tier=1, carry=None, label=True, dim=False, fixed=False):
     nl = name.lower()
+    if not fixed:
+        x, y = sc.free_spot(x, y, half_w=len(name) * 6 + 10, h=70 if carry else 58)
+    else:
+        sc.label_rects.append((x - len(name) * 6 - 60, y - 50, x + len(name) * 6 + 60, y + 6))
     g, salt = pips.resolve_genome(nl, preset="kick")
     rgb, mask = pips.sprite(nl, salt, tier=tier, frame=frame, preset="kick", facing=facing)
     col = hex_rgb(pips.colour_hex(nl, "kick"))
@@ -764,16 +761,18 @@ def text_stroke(d, xy, txt, f, fill, stroke=2, anchor="la", stroke_fill=(28, 20,
 
 _BUBBLE_RECTS = []      # placed bubbles
 _KEEP_OUT = []          # huts, plaza, stones: bubbles never cover these
+_LABEL_RECTS = []       # creature labels: bubbles avoid these even in fallback
+_HUD_RECTS = [(0, 0, 830, 112), (0, 0, 300, 190), (W - 200, 0, W, 200)]   # chips, dial, minimap (world px)
 
 
-def _hits(x0, y0, x1, y1):
+def _hits(x0, y0, x1, y1, pad=12):
     for r in _BUBBLE_RECTS + _KEEP_OUT:
-        if not (x1 < r[0] or x0 > r[2] or y1 < r[1] or y0 > r[3]):
+        if not (x1 + pad < r[0] or x0 - pad > r[2] or y1 + pad < r[1] or y0 - pad > r[3]):
             return True
     return False
 
 
-def bubble(img, anchor_xy, txt, maxw=330):
+def bubble(img, anchor_xy, txt, maxw=290):
     d = ImageDraw.Draw(img, "RGBA")
     f = font("menlo", 22)
     words = txt.split()
@@ -790,8 +789,8 @@ def bubble(img, anchor_xy, txt, maxw=330):
     bw, bh = lw + 24, len(lines) * 27 + 14
     ax, ay = anchor_xy
     cands = []
-    for dy in (6, -30, -66, 60, -100, 100, -140, -190):
-        for dx in (18, 60, 110, 170):
+    for dy in (6, -30, -66, 60, -100, 100, -140, -190, -240):
+        for dx in (18, 60, 110, 170, 240, 320):
             cands.append((ax + dx, max(16, ay - bh + dy), True))
             cands.append((ax - bw - dx, max(16, ay - bh + dy), False))
         cands.append((ax - bw / 2, max(16, ay - bh + dy - 30), True))
@@ -802,6 +801,20 @@ def bubble(img, anchor_xy, txt, maxw=330):
         if not _hits(x0, y0, x0 + bw, y0 + bh):
             pick = (x0, y0, right)
             break
+    if pick is None:
+        for x0, y0, right in cands:
+            if x0 < 8 or x0 + bw > W - 8 or y0 + bh > HUD_Y0 - WY0 - 8:
+                continue
+            if not any(not (x0 + bw + 12 < r[0] or x0 - 12 > r[2] or y0 + bh + 12 < r[1] or y0 - 12 > r[3]) for r in _BUBBLE_RECTS + _LABEL_RECTS + _HUD_RECTS):
+                pick = (x0, y0, right)
+                break
+    if pick is None:
+        for x0, y0, right in cands:
+            if x0 < 8 or x0 + bw > W - 8 or y0 + bh > HUD_Y0 - WY0 - 8:
+                continue
+            if not any(not (x0 + bw + 12 < r[0] or x0 - 12 > r[2] or y0 + bh + 12 < r[1] or y0 - 12 > r[3]) for r in _BUBBLE_RECTS + _HUD_RECTS):
+                pick = (x0, y0, right)
+                break
     if pick is None:
         x0 = ax + 18 if ax + 18 + bw < W - 8 else ax - bw - 18
         pick = (x0, max(16, ay - bh + 6), x0 > ax)
@@ -1036,23 +1049,25 @@ def build_frame(frame: str):
     sc = Scene(w)
     occupied = [(sx - 70, sy - 70, sx + 70, sy + 40),      # plaza core
                 (0, 0, 830, 112), (0, 0, 300, 190), (W - 200, 0, W, 200)]   # chips, dial, minimap
+    sc.occupied.extend(occupied[1:])
 
     # ---- village ring (same site both frames; B is day 5)
     hut_pos = []
     rng = np.random.RandomState(SEED + 88)
-    ring_names = NAMES[:2] if frame == "A" else NAMES[:8] + ["luca_99"]
+    ring_names = NAMES[:2] if frame == "A" else ["luca_99"] + NAMES[:8]
     for i, nm in enumerate(ring_names):
         slot = (0, 4)[i] if frame == "A" else i
-        a = -math.pi / 2 + slot * (2 * math.pi / 9) + rng.uniform(-0.15, 0.15)
+        a = math.radians(130 + slot * 35) + rng.uniform(-0.12, 0.12)     # ring opens to the south
         r = 6.6 + rng.uniform(-0.3, 0.4)
-        hx, hy = sx + r * TW * math.cos(a), sy + r * TH * 0.72 * math.sin(a)
+        hx, hy = sx + r * TW * math.cos(a), sy + r * TH * 0.62 * math.sin(a)
         for _ in range(8):
             if w.dry_box(hx - 40, hy - 50, hx + 40, hy + 12, margin=10):
                 break
             r -= 0.45
-            hx, hy = sx + r * TW * math.cos(a), sy + r * TH * 0.72 * math.sin(a)
+            hx, hy = sx + r * TW * math.cos(a), sy + r * TH * 0.62 * math.sin(a)
         hut_pos.append((hx, hy, nm))
         occupied.append((hx - 48, hy - 78, hx + 48, hy + 16))
+        sc.occupied.append((hx - 50, hy - 80, hx + 50, hy + 12))
 
     # nearest river point (for the water trail) and the sea direction
     rp = np.array(w.river_pts_px)
@@ -1095,8 +1110,14 @@ def build_frame(frame: str):
         company = (dm < 70).sum(axis=1) >= 4
         dsite = np.hypot(ta[:, 0] - sx, ta[:, 1] - sy)
         dsite = np.where(company & (dsite > 9.5 * TW), dsite, 1e9)
-        kk = int(np.argmin(dsite))
-        forest_pt = (ta[kk, 0] - 30, ta[kk, 1] + 14)
+        forest_pt = None
+        for kk in np.argsort(dsite)[:40]:
+            cand = (ta[kk, 0] - 30, ta[kk, 1] + 14)
+            if dsite[kk] < 1e9 and w.dry_segment(sx, sy, cand[0], cand[1]) and 60 < cand[0] < W - 60 and 110 < cand[1] < WH - 140:
+                forest_pt = cand
+                break
+        if forest_pt is None:
+            forest_pt = (ta[int(np.argmin(dsite)), 0] - 30, ta[int(np.argmin(dsite)), 1] + 14)
     else:
         forest_pt = (sx + 300, sy - 200)
     for _ in range(90):
@@ -1114,7 +1135,8 @@ def build_frame(frame: str):
         paths = [([(hx, hy + 4), (sx, sy)], 0.45) for hx, hy, _ in hut_pos]
         paths.append(([(sx, sy), water_pt], 1.0))
         paths.append(([(sx, sy), forest_pt], 0.7))
-        for nm, pref in (("holly_hz", sea_deg + 12), ("noor.wav", sea_deg - 70)):
+        occupied.append((sx - 190, sy + 6.0 * TH - 50, sx + 190, sy + 6.0 * TH + 60))
+        for nm, pref in (("noor.wav", 0), ("holly_hz", 40)):
             spot = find_spot(w, sx, sy, 8.0, 56, 56, 6, pref, occupied)
             if spot is None:
                 spot = find_spot(w, sx, sy, 8.0, 56, 56, 6, pref, occupied[:1])
@@ -1124,12 +1146,7 @@ def build_frame(frame: str):
             farm_pts.append((fx, fy, nm))
             occupied.append((fx - 70, fy - 70, fx + 70, fy + 12))
             paths.append(([(sx, sy), (fx, fy)], 0.6))
-        stone_pt = find_spot(w, sx, sy, 9.5, 180, 40, 40, 180, occupied)
-        if stone_pt is None:
-            stone_pt = find_spot(w, sx, sy, 9.5, 180, 40, 40, 180, occupied[:1])
-        if stone_pt is None:
-            stone_pt = (sx - 9 * TW, sy)
-        occupied.append((stone_pt[0] - 190, stone_pt[1] - 50, stone_pt[0] + 190, stone_pt[1] + 50))
+        stone_pt = (sx, sy + 6.0 * TH)
         paths.append(([(sx, sy), stone_pt], 0.5))
         draw_trails(img, w, paths, plaza=(sx, sy), plaza_r=58)
         for fx, fy, nm in farm_pts:
@@ -1153,7 +1170,7 @@ def build_frame(frame: str):
         for hx, hy, nm in hut_pos:
             hut(sc, hx, hy, nm, awake=False)
             side = -1 if hx > sx else 1
-            creature(sc, hx + side * 30, hy + 30, nm, frame="asleep", facing=side, tier=1)
+            creature(sc, hx + side * 30, hy + 30, nm, frame="asleep", facing=side, tier=1, fixed=True)
 
         def stake(img_):
             d = ImageDraw.Draw(img_, "RGBA")
@@ -1167,18 +1184,20 @@ def build_frame(frame: str):
         for hx, hy, nm in hut_pos:
             if nm in ("mira_9", "gav1n"):
                 side = -1 if hx > sx else 1
-                creature(sc, hx + side * 30, hy + 30, nm, frame="asleep", facing=side, tier=2)
+                creature(sc, hx + side * 30, hy + 30, nm, frame="asleep", facing=side, tier=2, fixed=True)
         monument(sc, sx, sy - 6, raised_by=9)
         occupied.append((sx - 160, sy - 80, sx + 160, sy + 34))
+        sc.occupied.append((sx - 165, sy - 80, sx + 165, sy + 40))
         vx_, vy_ = stone_pt
         voters = (["sami.exe", "pixelpaul", "dev_rin", "zed_ttv"],
                   ["kai_dnb", "noor.wav", "holly_hz", "lowkeyjord", "tinytash", "bigmarcus", "xX_tobi_Xx"],
                   ["luca_99"])
         vote_stones(sc, vx_, vy_, (4, 7, 1), voters)
+        sc.occupied.append((vx_ - 200, vy_ - 40, vx_ + 200, vy_ + 14))
         # builders at the unfinished hut
         lh = [h for h in hut_pos if h[2] == "luca_99"][0]
-        creature(sc, lh[0] - 50, lh[1] + 10, "luca_99", frame="walk0", facing=1, tier=1, carry="hammer")
-        creature(sc, lh[0] + 78, lh[1] + 30, "xX_tobi_Xx", frame="idle1", facing=-1, tier=1, carry="log")
+        creature(sc, lh[0] - 56, lh[1] + 12, "luca_99", frame="walk0", facing=1, tier=1, carry="hammer")
+        creature(sc, lh[0] + 30, lh[1] + 44, "xX_tobi_Xx", frame="idle1", facing=-1, tier=1, carry="log")
         # gatherers at the forest edge
         a1 = creature(sc, forest_pt[0] - 10, forest_pt[1] + 8, "pixelpaul", frame="walk1", facing=-1, tier=2, carry="log")
         bubbles.append((a1, "3 more logs and the mill stands"))
@@ -1191,15 +1210,18 @@ def build_frame(frame: str):
             if nm == "noor.wav":
                 bubbles.append((a3, "planting by the water, who's with me"))
         # voters at the stones
-        a4 = creature(sc, vx_ + 30, vy_ + 40, "kai_dnb", frame="wave0", facing=-1, tier=2)
+        a4 = creature(sc, vx_ + 196, vy_ + 30, "kai_dnb", frame="wave0", facing=-1, tier=2)
         bubbles.append((a4, "B! the well goes by the plaza"))
-        creature(sc, vx_ - 118 - 62, vy_ + 24, "zed_ttv", frame="idle1", facing=1, tier=1)
+        creature(sc, vx_ - 196, vy_ + 34, "zed_ttv", frame="idle1", facing=1, tier=1)
         # on the trails and at the stone
-        mid = ((sx * 0.35 + water_pt[0] * 0.65), (sy * 0.35 + water_pt[1] * 0.65))
-        creature(sc, mid[0], mid[1] + 10, "lowkeyjord", frame="walk1", facing=-1, tier=2)
-        creature(sc, sx - 20, sy + 72, "tinytash", frame="sit0", facing=1, tier=2)
-        fm = (sx * 0.3 + forest_pt[0] * 0.7, sy * 0.3 + forest_pt[1] * 0.7)
-        creature(sc, fm[0], fm[1] + 12, "bigmarcus", frame="walk0", facing=1, tier=2)
+        creature(sc, sx - 70, sy + 104, "lowkeyjord", frame="walk1", facing=-1, tier=2)
+        creature(sc, sx - 150, sy + 66, "tinytash", frame="sit0", facing=1, tier=2)
+        if farm_pts:
+            fx0, fy0, _ = farm_pts[-1]
+            fm = (sx * 0.5 + fx0 * 0.5, sy * 0.5 + fy0 * 0.5)
+        else:
+            fm = (sx - 200, sy - 40)
+        creature(sc, fm[0], fm[1] + 12, "bigmarcus", frame="walk0", facing=-1, tier=2)
 
     sc.draw_all(img)
 
@@ -1211,6 +1233,9 @@ def build_frame(frame: str):
     _BUBBLE_RECTS.clear()
     _KEEP_OUT.clear()
     _KEEP_OUT.extend(occupied)
+    _KEEP_OUT.extend(sc.label_rects)              # creature labels
+    _LABEL_RECTS.clear()
+    _LABEL_RECTS.extend(sc.label_rects)
     _KEEP_OUT.append((0, 0, 820, 100))            # the plank chips
     for anchor, txt in bubbles:
         bubble(img, anchor, txt)
