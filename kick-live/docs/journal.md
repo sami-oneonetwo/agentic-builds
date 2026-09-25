@@ -625,3 +625,15 @@ re-project LONGGRASS's judged mechanics (nature-is-alive rule, chat-rate wind, r
 seasons as ground light, damped never-cut camera, camp ladder, path wear, cairns, keeper raisings,
 leading-verb rule, tile QA gate) onto a top-down open map with a 2-D camera and an honest minimap.
 Art comes from the separate settlement-art workflow (stream/world/art, docs/ART.md).
+
+---
+
+## 021 — 2026-09-25 18:50 — Cave QA fixes hot-deployed; cave polish stopped; top-down pipeline
+
+Cave QA round 1 fix pass (pass_with_fixes) synced into live-snapshot-v3: hot-reload re-executed
+world/state, scenes/hollow and the world/ticker panels live (committed after 30 clean renders each);
+compositor.py change applied with `scripts/deploy.sh` — compositor child restarted under the relay,
+ffmpeg and relay pids unchanged, encoder never interrupted. Round 2 of that workflow was stopped: no
+more effort on the cave; the honesty/label/sprite/verb-feedback fixes carry into the settlement.
+Committed 63b9832. Remaining cave items (tile lit% gate, A/B/C letter height, hatch-frame 27 ms
+warm-up) are moot after the swap.
