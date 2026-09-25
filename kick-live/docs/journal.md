@@ -555,3 +555,13 @@ may live: wind, water, sun, seasons, growth. No animate non-person creatures sti
 village chat raises over days), Migration (side-scrolling herd journey, votes pick the route),
 Island (one living island, tides, explore/mark). Lean: Settlement + Migration's moving camera.
 Design workflow launched with this brief. Cave stays live until the redesign is ready.
+
+Addendum to 020 (18:22): owner picked **Settlement** and asked for renders first, plus: is it fully
+procedural, and can a huge number of chatters build their own spaces? Answers given: yes, seed →
+elevation/moisture → biomes, rivers downhill, deterministic and persistent; chat changes are deltas
+(trails, farms, huts, monuments); creature and building sprites procedural from the username.
+Scale: chunked map that grows outward; render cost is per visible region, not per chatter; camera
+tours neighbourhoods; a rate-limited `home` verb pans to your plot; labels go show-on-speak in
+crowds. Mockup workflow launched: three camera styles (top-down AoE-like, isometric, side-scroll
+parallax), each at empty dawn and busy evening, into docs/mockups/. Design pass (open-world spec)
+still running; if its winner is not a settlement, the spec step re-runs with the owner's choice.
