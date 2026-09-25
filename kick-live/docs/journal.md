@@ -511,3 +511,23 @@ stream is an always-on host (Linux VM or a Mac mini); the day-1 plan was written
 
 World build resumed from cache (core + 5 modules cached; Integrate → QA → Fix run live). Module
 outputs checkpointed as b3f8fd6.
+
+---
+
+## 019 — 2026-09-25 17:58 — PIP HOLLOW is on air
+
+Owner chose the early path ("earlier I can see it the better"). Gates I ran by hand before the swap:
+honesty self-test PASS; a phantom pip planted in world.json was quarantined at boot, never drawn;
+a user who spoke and was `!hide`-den 1.2 s later (inside the 3 s hold) appeared only as a nameless
+seed, then vanished, chat log showed `mod hid a user` with no target; compositor honesty check
+0 violations over 330 frames. World build committed as 9421c81.
+
+`scripts/swap-build.sh live-snapshot-v3`: froze the tree (73 files), compiled, honesty gate PASS,
+title → "Say anything in chat. A creature hatches with your name", stop.sh → start.sh in 15 s
+(same VOD 2), relay/compositor/ffmpeg now carry **0 secrets in env** (the 017 fix applied), Kick
+`is_live` true with 3 viewers, HLS probe PASS. Battery 75%, still not on power.
+
+Known remaining (from the fix pass): the 320x180 tile is under the 10% lit-pixel gate at 0 awake
+(3.9%); `sing` is refused pending the audio chorus (v1.1); carving edge marquee; metrics fields for
+verbs/votes not yet emitted; world.json from this run gets the stepped terrain (fresh). Round-2 QA
+(`agents/workflows/world-qa-round.js`) runs against the live build next and lands as keeper carvings.
