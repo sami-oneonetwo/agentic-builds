@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import os
+import re
 import sys
 import time as _time
 import traceback
@@ -69,6 +70,8 @@ NEW_MOON_EPOCH = 947182440.0         # 2000-01-06 18:14 UTC
 HEARTBEAT_FRESH_S = 120.0
 SAVE_S = 5.0
 SEED_SINK_S = HOLD_S + 4.0
+HISTORY_S = 60.0                     # a record older than this when first seen is boot/deploy history (ChatBridge.HISTORY_S)
+_MOD_CMD_RE = re.compile(r"^\s*!(hide|unhide|pause|resume|kill|unkill|clear|banish|unbanish|rename)\b", re.IGNORECASE)
 _BG = np.array(L.hex_rgb(L.COLORS["bg"]), dtype=np.uint8)
 _ROCK = np.array(L.hex_rgb(L.COLORS["panel"]), dtype=np.uint8)
 _EDGE = np.array(L.hex_rgb(L.COLORS["hairline"]), dtype=np.uint8)
@@ -252,7 +255,11 @@ class CaveScene(object):
             self.session_id = sid
             w.begin_session(sid, now)
         hidden = set(str(u).lower() for u in ((ctx.mod or {}).get("hidden_users") or []))
+        owner = (os.environ.get("KICK_CHANNEL") or "atleastonce").strip().lower()
         # 1. raw records: within one frame a seed drops (nameless) or the owner's pip hops. Names are hashed, never drawn.
+        #    Age gate (integration finding, three modules hit it): at boot ctx.chat_raw is the last 20 records of
+        #    chat.jsonl, hours old. Those never seed, hop or wake anyone; a record older than HISTORY_S but inside this
+        #    session's awake window (a relay deploy restart) may still wake its sleeper, silently.
         for m in (ctx.chat_raw or []):
             mid = m.get("id")
             if not mid or mid in self._seen_raw:
@@ -261,9 +268,18 @@ class CaveScene(object):
             key = (m.get("name") or "").lower()
             if not key or key in hidden or m.get("type") not in (None, "message"):
                 continue
+            t = float(m.get("t") or now)
+            aged = (now - t) > HISTORY_S
+            in_window = t >= now - self.sleep_after_s and self._in_session(t, ctx)
+            if aged and not in_window:
+                continue
+            if _MOD_CMD_RE.match(str(m.get("text") or "")) and (key == owner or self._is_mod(m)):
+                continue                                          # a mod command is not a message: no seed, no hop (11.9)
             e = b.get(key)
             if e is None:
                 if w.pip(key) is None:
+                    if aged:
+                        continue                                  # the moderated copy (history) places it asleep
                     b.seed_drop(key, now)
                     self._seed_t[key] = now
                 else:                                             # known pip missing an entity (banish undo etc.)
@@ -271,6 +287,9 @@ class CaveScene(object):
                     b.place_sleeper(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
                                     int((p.get("genome") or {}).get("salt") or 0), p.get("burrow"), p.get("display_name"), t=now)
                     b.message(key, now)
+            elif aged:
+                if e.state in ("asleep", "burrowed") and e.key not in hidden:
+                    b.message(key, now)                           # wake only; no hop for an old record
             else:
                 b.message(key, now)
         # 2. moderated records past the hold: hatch with the FILTERED display name, speak the owner's words, count.
@@ -283,6 +302,9 @@ class CaveScene(object):
             if not key or key in hidden:
                 continue
             t = float(m.get("t") or now)
+            if m.get("history") or (now - t) > HISTORY_S:
+                self._ingest_history(m, key, t, now, ctx)
+                continue
             p, created = w.ensure_pip(key, m.get("name") or key, m.get("display_name") or None, m.get("builder_n"), t)
             if created:
                 w.woke(key, now) if b.awake_count() == 0 else None
@@ -352,6 +374,43 @@ class CaveScene(object):
             if len(d) > 4000:
                 for k in sorted(d, key=d.get)[:2000]:
                     d.pop(k, None)
+
+    @staticmethod
+    def _is_mod(m: Dict[str, Any]) -> bool:
+        for bdg in (m.get("badges") or []):
+            s = str(bdg).lower()
+            if "broadcaster" in s or "moderator" in s or s == "mod":
+                return True
+        return False
+
+    def _ingest_history(self, m: Dict[str, Any], key: str, t: float, now: float, ctx) -> None:
+        """A moderated record the previous compositor instance already showed (boot / relay-deploy history): it
+        adds the (session, owner) pair, last_seen and the tier, and wakes the pip only when the record is inside this
+        session's awake window. It never bubbles, never hops, never counts own_messages again (014.2), never
+        writes woke_log."""
+        b, w = self.behaviour, self.world
+        p, created = w.ensure_pip(key, m.get("name") or key, m.get("display_name") or None, m.get("builder_n"), t)
+        e = b.get(key)
+        if e is None or e.state in ("seed", "hatching"):
+            if e is not None:
+                b.sink(key, now)                                  # a stray seed for a history record never hatches
+            e = b.place_sleeper(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
+                                int((p.get("genome") or {}).get("salt") or 0), p.get("burrow"),
+                                p.get("display_name") or ("builder #%s" % (p.get("n") or "?")), t=now)
+            w.set_state(key, "asleep", e.x, e.y, e.burrow)
+        w.record_message(key, t, w.session_for(t) if not self._in_session(t, ctx) else self.session_id, None, history=True)
+        visits = (w.data.get("world") or {}).get("visits") or []
+        last_v = max([iso_to_epoch(v.get("ts")) or 0.0 for v in visits if v.get("name") == key] or [0.0])
+        if t > last_v:
+            w.visit(key, t)
+        newt = w.update_tier(p)
+        if newt is not None:
+            b.set_tier(key, newt, now)
+        if e.state in ("asleep", "burrowed") and t >= now - self.sleep_after_s and self._in_session(t, ctx):
+            b.message(key, now)                                   # awake = chatted in the last 20 min of this session
+        if e.is_awake() and e.display_name is None:
+            e.display_name = p.get("display_name")
+        self._chat_ids_seen += 1
 
     def _key_for_display(self, shown: str) -> Optional[str]:
         s = (shown or "").lower()
@@ -810,6 +869,31 @@ class CaveScene(object):
         tgt = (target or actor).lower().lstrip("@")
         me = b.get(actor)
         verb = (verb or "").lower()
+        # mod ops and the nickname need a RECORD, not an awake actor (integration: the bridge's fallbacks go away)
+        if verb == "banish":
+            b.entities.pop(tgt, None)
+            if w.banish(tgt, t):
+                self._terrain_ver += 1
+                b.events.append({"type": "banish", "pip": tgt, "by": actor})
+                return True, "ok"
+            return False, "no such pip"
+        if verb == "unbanish":
+            if w.unbanish(tgt):
+                b.events.append({"type": "unbanish", "pip": tgt, "by": actor})
+                return True, "ok"
+            return False, "not banished"
+        if verb in ("name", "rename"):
+            who = tgt if verb == "rename" else actor
+            p = w.pip(who)
+            if p is None:
+                return False, "your pip is not awake yet" if verb == "name" else "no such pip"
+            nick = None
+            if verb == "name" and arg:
+                nick = L.strip_non_bmp(str(arg))[:12] or None
+            p["nickname"] = nick
+            w.dirty = True
+            b.events.append({"type": "nickname" if nick else "rename", "pip": who, "nickname": nick, "by": actor})
+            return True, "ok"
         if me is None or not me.is_awake():
             return False, "your pip is not awake yet"
         if verb in ("feed", "pet"):
@@ -863,14 +947,11 @@ class CaveScene(object):
         if verb == "credits":
             b.start_credits(t)
             return True, "ok"
-        if verb == "banish":
-            e = b.entities.pop(tgt, None)
-            if w.banish(tgt, t):
-                self._terrain_ver += 1
-                b.events.append({"type": "banish", "pip": tgt})
-                return True, "ok"
-            return False, "no such pip"
         return False, "unknown verb"
+
+    def protected(self) -> np.ndarray:
+        """Cells `dig` may never carve (platform footings, mouth pillars, lantern column); public for the rounds engine."""
+        return self._protected
 
 
 def get_scene(**kw) -> CaveScene:

@@ -83,11 +83,16 @@ def register(panel: Panel) -> Panel:
 # Viewer-facing words for a failed / disabled panel. The traceback stays in the compositor log; nothing on screen says
 # "render() raised" (QA 2026-09-25: internal jargon leaked into viewer-facing text).
 PLACEHOLDER_WORDS = {
+    # PIP HOLLOW regions (WORLD.md 5)
+    "world": "the cave is waking…", "colony": "colony strip restarting…", "keeper": "keeper strip restarting…",
+    "chat_log": "chat is catching up…",
+    "ticker": "ticker restarting…", "scope": "", "readout": "readout restarting…",
+    "countdown": "", "header_left": "PIP HOLLOW", "header_center": "clock restarting…", "header_right": "",
+    # legacy keys (regions removed with the pivot; kept so an old module that still registers one degrades in words)
     "chat_pane": "chat is catching up…", "chat_pinned": "chat is catching up…", "founders": "founders list is catching up…",
-    "ticker": "ticker restarting…", "ballot": "ballot restarting…", "activity_feed": "activity feed restarting…",
+    "ballot": "ballot restarting…", "activity_feed": "activity feed restarting…",
     "stage_body": "stage restarting…", "stage_title": "stage restarting…", "stage_step": "",
-    "ask_card": "last ship card restarting…", "next_up": "next up restarting…", "scope": "", "readout": "readout restarting…",
-    "countdown": "", "header_left": "SHIP IT LIVE", "header_center": "clock restarting…", "header_right": "",
+    "ask_card": "last ship card restarting…", "next_up": "next up restarting…",
 }
 
 

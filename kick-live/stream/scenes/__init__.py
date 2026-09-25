@@ -1,9 +1,15 @@
-"""stream/scenes - stage-body scenes that are NOT panels.
+"""stream/scenes - renderers that are NOT panels.
 
-A scene is a renderer the stage-body panel (stream/panels/stage.py) delegates to when the stage
-is in a mode that needs its own drawing (CANVAS, ATTRACT background, ...). Scenes never register
-with the panel registry and never own a region: the stage panel owns `stage_body`, asks a scene
-for an RGBA image of the region's size and pastes / overlays on top of it.
+A scene is a renderer a panel delegates to for a region's picture. Scenes never register with the
+panel registry and never own a region. Today: `hollow.py` (CaveScene, PIP HOLLOW: the 320x110 cave
+sim the `world` panel in stream/panels/world.py draws its text layer over; contract in
+stream/WORLD_API.md) and `canvas.py` (the legacy reaction-diffusion / flow-field canvas the old
+stage_body panel used; kept for `micro.canvas_scene` history, no panel draws it now).
+The hot reloader re-executes a changed scene module and then every panel module whose source
+mentions `stream.scenes`, so the world panel rebinds to a fresh CaveScene (WORLD_API.md 9).
+
+Legacy contract (canvas): the stage panel owns `stage_body`, asks a scene for an RGBA image of the
+region's size and pastes / overlays on top of it.
 
 Contract (every scene module):
 

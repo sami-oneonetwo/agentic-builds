@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import sys
+
 from PIL import ImageDraw
 
 from stream import layout as L
@@ -90,6 +92,18 @@ class Readout(Panel):
         dropped = int(cl.get("dropped_frames") or 0)
         if dropped:
             out.append(_fit("dropped %d frame%s" % (dropped, "" if dropped == 1 else "s")))
+        # the world's degrade ladder (WORLD.md 6.5) and the honesty monitor (11): read through the world panel module
+        wm = sys.modules.get("stream.panels.world")
+        if wm is not None:
+            try:
+                dg = wm.world_degrade() if hasattr(wm, "world_degrade") else None
+                if dg and not dg.get("glow", True):
+                    out.append("world: glow off")
+                hl = wm.honesty_line() if hasattr(wm, "honesty_line") else None
+                if hl and "violation" in hl:
+                    out.append(_fit(hl))
+            except Exception:
+                pass
         return out
 
     def _lines(self, ctx):

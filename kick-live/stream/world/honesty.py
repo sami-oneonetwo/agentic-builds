@@ -25,8 +25,9 @@ Every rule is a `len()` over real records, never a sample string. The rules:
   counts      awake_count / asleep_count / hatched_ever / platform_counts are len() over the entities they claim
   text        a bubble is the owner's own moderated text (seen in ctx.chat), one of the owner's own words, or a
               learned word carrying a real source; pips never generate text
-  presence    len(awake real entities) == scene.distinct_recent_chatters(ctx, now); a boundary-frame drift is
-              tolerated for `presence_grace_s` (default 2 s) and counted separately as `presence_drift`
+  presence    len(awake real entities) == scene.distinct_recent_chatters(ctx, now). A pip wakes on the RAW record
+              (one frame) while the reference counts the MODERATED one (hold later), so a drift is tolerated for
+              max(presence_grace_s, hold_s + 1 s) and counted separately as `presence_drift`; longer = violation
   scene       the scene's own _honesty_check removed something (stats()["honesty_violations"] grew)
 
 `enforce=True` (default) also REMOVES an animate entity that has no real record and clears a bubble whose text the
@@ -331,7 +332,7 @@ class HonestyMonitor(object):
                 self.drift_frames += 1
                 if self._drift_since is None:
                     self._drift_since = t
-                elif t - self._drift_since > self.presence_grace_s:
+                elif t - self._drift_since > max(self.presence_grace_s, hold_s + 1.0):
                     rep.add("presence", "awake real %d != distinct recent chatters %d for %.1fs" % (awake_real, ref, t - self._drift_since))
             else:
                 self._drift_since = None
@@ -396,17 +397,22 @@ def _selftest(run_dir: str) -> int:
     t0 = _time.time()
     session = {"id": "honesty-" + epoch_to_iso(t0, ms=False), "started_ts": epoch_to_iso(t0 - 30, ms=False), "ending": False}
     # the "real" records: both chat.jsonl shapes, written to $RUN_DIR/chat.jsonl exactly as the listener / receiver do
-    names = ["honesty-chatter-a", "honesty-chatter-b"]
+    names = ["honesty-chatter-a", "honesty-chatter-b", "honesty-chatter-c"]
+    # a and b chatted an hour ago (asleep at boot, real last_seen); c has never chatted and appears live below
     recs_file = [
-        {"id": "h-0001", "ts": epoch_to_iso(t0 + 1.0), "username": names[0], "content": "hello cave", "type": "message"},
-        {"id": "h-0002", "ts": epoch_to_iso(t0 + 2.0), "user": names[1], "text": "hi there", "user_id": 42},
-        {"id": "h-0003", "ts": epoch_to_iso(t0 + 6.0), "username": names[0], "content": "B", "type": "message"},
+        {"id": "h-0001", "ts": epoch_to_iso(t0 - 3600.0), "username": names[0], "content": "hello cave", "type": "message"},
+        {"id": "h-0002", "ts": epoch_to_iso(t0 - 3500.0), "user": names[1], "text": "hi there", "user_id": 42},
     ]
     chat_path = os.path.join(run_dir, "chat.jsonl")
     with open(chat_path, "w") as fh:
         for r in recs_file:
             fh.write(json.dumps(r) + "\n")
-    print("[setup] %s: %d records (pusher + webhook shapes), names %r" % (chat_path, len(recs_file), names))
+    print("[setup] %s: %d history records (pusher + webhook shapes), names %r; %r chats live" % (
+        chat_path, len(recs_file), names[:2], names[2]))
+
+    def append_chat(rec):                                     # what the listener does the moment a message lands
+        with open(chat_path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
 
     def bridge_rec(i, name, text, t, kind="plain", letter=None):
         return {"id": "h-%04d" % i, "ts": epoch_to_iso(t), "t": t, "name": name, "text": text, "text_clean": text,
@@ -429,26 +435,37 @@ def _selftest(run_dir: str) -> int:
     frames_dir = os.path.join(run_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
     n_clean = 240
+    ev_types: Dict[str, int] = {}
+    hatch_frame = seed_frame = None
     for i in range(n_clean):
         now = t0 + i / fps
         votes = []
-        if i == 30:
-            raw.append(bridge_rec(1, names[0], "hello cave", now))
-        if i == 45:
-            raw.append(bridge_rec(2, names[1], "hi there", now))
+        if i == 30:                                           # a stranger: seed drops THIS frame, nameless for 3 s
+            append_chat({"id": "h-0003", "ts": epoch_to_iso(now), "username": names[2], "content": "first time here", "type": "message"})
+            raw.append(bridge_rec(3, names[2], "first time here", now))
+        if i == 45:                                           # a returning sleeper wakes on the raw record
+            append_chat({"id": "h-0004", "ts": epoch_to_iso(now), "user": names[0], "text": "back again", "user_id": 7})
+            raw.append(bridge_rec(4, names[0], "back again", now))
         if i == 120:
-            clear.append(bridge_rec(1, names[0], "hello cave", now - 3.0))
+            clear.append(bridge_rec(3, names[2], "first time here", now - 3.0))
         if i == 135:
-            clear.append(bridge_rec(2, names[1], "hi there", now - 3.0))
+            clear.append(bridge_rec(4, names[0], "back again", now - 3.0))
         if i == 180:
-            raw.append(bridge_rec(3, names[0], "B", now, "vote", "B"))
+            append_chat({"id": "h-0005", "ts": epoch_to_iso(now), "username": names[0], "content": "B", "type": "message"})
+            raw.append(bridge_rec(5, names[0], "B", now, "vote", "B"))
         if i >= 180:
             votes = [(names[0], "B", t0 + 180 / fps)]
         if i == 210:
-            clear.append(bridge_rec(3, names[0], "B", now - 3.0, "vote", "B"))
+            clear.append(bridge_rec(5, names[0], "B", now - 3.0, "vote", "B"))
         ctx = mkctx(now, i, raw[-20:], clear[-10:], votes)
         img = scene.frame(ctx, size)
         rep = mon.check(ctx, now)
+        for ev in scene.events:
+            ev_types[ev["type"]] = ev_types.get(ev["type"], 0) + 1
+            if ev["type"] == "seed" and seed_frame is None:
+                seed_frame = i
+            if ev["type"] == "hatch" and ev.get("pip") == names[2]:
+                hatch_frame = i
         for d in scene.entities(now):
             if d["state"] in SEED_STATES:
                 seed_frames += 1
@@ -460,7 +477,8 @@ def _selftest(run_dir: str) -> int:
     print("[clean] %d frames: failed_frames=%d violations=%d by_rule=%r drift_frames=%d unverified=%r" % (
         n_clean, s["failed_frames"], s["violations"], s["by_rule"], s["presence_drift_frames"], s["last"]["unverified"]))
     print("[clean] last counts: %r" % (s["last"]["counts"],))
-    print("[clean] seed frames seen=%d, nameless (display_name None and key None)=%d" % (seed_frames, seed_frames_nameless))
+    print("[clean] seed frames seen=%d, nameless (display_name None and key None)=%d; seed at frame %s, hatch at frame %s (hold 3 s = 90 frames); events %r" % (
+        seed_frames, seed_frames_nameless, seed_frame, hatch_frame, dict(sorted(ev_types.items()))))
     print("[clean] hatched_ever=%d awake=%d asleep=%d platform_counts=%r stats=%r" % (
         scene.hatched_ever(), scene.awake_count(), scene.asleep_count(), scene.platform_counts(),
         {k: scene.stats()[k] for k in ("frames", "errors", "honesty_violations", "test_pips", "entities")}))
@@ -471,8 +489,11 @@ def _selftest(run_dir: str) -> int:
     if seed_frames == 0 or seed_frames != seed_frames_nameless:
         print("FAIL: a seed carried a name (%d/%d)" % (seed_frames_nameless, seed_frames))
         ok = False
-    if scene.hatched_ever() != 2 or s["last"]["counts"]["awake_real"] != 2:
-        print("FAIL: expected 2 real hatched, 2 awake")
+    if scene.hatched_ever() != 3 or s["last"]["counts"]["awake_real"] != 2 or s["last"]["counts"]["asleep"] != 1:
+        print("FAIL: expected 3 real hatched, 2 awake (a woke, c hatched), 1 asleep (b)")
+        ok = False
+    if "hatch" not in ev_types or ev_types.get("seed", 0) < 1:
+        print("FAIL: no seed/hatch events on the live path: %r" % (ev_types,))
         ok = False
 
     # ---- planted fakes: each must be caught by the named rule

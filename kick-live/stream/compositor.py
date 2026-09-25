@@ -581,7 +581,7 @@ class Compositor(object):
     # ------------------------------------------------------------------ frame
     def _ctx(self, now: float, frame: int, audio_block=None):
         extras = dict(
-            tallies=self.bridge.tallies(), vote_count=self.bridge.vote_count(), recent_votes=self.bridge.recent_votes(5),
+            tallies=self.bridge.tallies(now), vote_count=self.bridge.vote_count(), recent_votes=self.bridge.recent_votes(5, now),
             chat=self.bridge.visible(now, 10), notice=self.bridge.notice(now), help_until=self.bridge.help_until,
             stats_until=self.bridge.stats_until, chat_display=self.bridge.display, mod_paused=self.bridge.paused,
             builders=self.bridge.builders, new_builders=self.bridge.new_builders, audio_block=audio_block,
@@ -628,17 +628,28 @@ class Compositor(object):
         return self.canvas
 
     def _log_vote_ack(self, votes: List[Dict], frame: int) -> None:
-        """Prove CONCEPT 2 'name on screen within one second': the pinned strip's cache key (its text) on the SAME
-        frame the vote was ingested must read `@name voted X`. Counted in self.vote_acks, one log line per vote."""
-        slot = self.slot_for("chat_pinned")
-        key = getattr(slot, "last_inputs", None) if slot is not None else None
-        txt = key[0] if isinstance(key, tuple) and key else None
+        """Prove CONCEPT 2 'name on screen within one second': the world plank (stream/panels/world.py PANEL.last_plank;
+        the legacy pinned strip when no world panel is loaded) on the SAME frame the vote was ingested must read
+        `@name voted X`. The name is the bridge's name_for(): a first-time chatter inside their 3 s hold reads
+        `builder #N` by design (WORLD.md 11.1), so `voted X` is what is asserted, plus the display name when it is
+        already past the hold. Counted in self.vote_acks, one log line per vote."""
+        wm = sys.modules.get("stream.panels.world")
+        pnl = getattr(wm, "PANEL", None) if wm is not None else None
+        txt = getattr(pnl, "last_plank", None) if pnl is not None else None
+        where = "world plank"
+        if txt is None:
+            slot = self.slot_for("chat_pinned")
+            key = getattr(slot, "last_inputs", None) if slot is not None else None
+            txt = key[0] if isinstance(key, tuple) and key else None
+            where = "pinned strip"
         for m in votes:
             want = "@%s voted %s" % (m.get("display_name"), m.get("letter"))
-            ok = bool(txt) and want in str(txt)          # several votes in one frame share the strip
+            held = "voted %s" % m.get("letter")
+            s = str(txt or "")
+            ok = bool(txt) and (want in s or (held in s and "@builder #" in s))   # several votes in one frame share the plank
             self.vote_acks[1] += 1
             self.vote_acks[0] += 1 if ok else 0
-            log("vote ack: frame %d %s -> pinned strip reads %r (%s)" % (frame, want, txt, "same frame" if ok else "NOT shown"))
+            log("vote ack: frame %d %s -> %s reads %r (%s)" % (frame, want, where, txt, "same frame" if ok else "NOT shown"))
 
     def _paste(self, slot: Slot, img: Image.Image) -> None:
         tile = Image.new("RGB", slot.size, L.COLORS["panel"])
@@ -846,10 +857,34 @@ class Compositor(object):
         log("static-frame watchdog: longest identical run %d frames (limit %d)" % (self.same_frames, STATIC_WATCHDOG_FRAMES))
         log("header band check: %d/%d frames non-blank (min luminance std %.1f, threshold %.0f) -> %s" % (
             n - self.header_blank, n, hdr_min if hdr_min is not None else -1.0, HEADER_MIN_STD, "PASS" if not self.header_blank else "FAIL"))
-        log("vote ack check: %d/%d live votes acknowledged on the pinned strip in the same frame" % (self.vote_acks[0], self.vote_acks[1]))
+        log("vote ack check: %d/%d live votes acknowledged on the world plank in the same frame" % (self.vote_acks[0], self.vote_acks[1]))
+        rc = 0
+        # WORLD.md 11: the honesty assertions run every frame inside the world panel (HonestyMonitor); the self-test
+        # fails when any frame had a violation (a planted fake pip must turn this red).
+        wm = sys.modules.get("stream.panels.world")
+        if wm is not None and hasattr(wm, "honesty_summary"):
+            try:
+                hs = wm.honesty_summary()
+                st = wm.PANEL.stats() if hasattr(wm, "PANEL") else {}
+                sc_st = wm.scene().stats() if hasattr(wm, "scene") else {}
+                if hs is not None:
+                    bad = int(hs.get("violations") or 0) + int(sc_st.get("honesty_violations") or 0) + int(st.get("honesty_violations") or 0)
+                    last = (hs.get("last") or {}).get("counts") or {}
+                    log("honesty check: %s (%d frames checked, %d violation(s) %s, scene removed %d, panel unknown-name draws %d; "
+                        "entities %s awake %s asleep %s hatched %s recent chatters %s test pips %s)" % (
+                            "PASS" if bad == 0 else "FAIL", int(hs.get("frames") or 0), int(hs.get("violations") or 0),
+                            json.dumps(hs.get("by_rule") or {}), int(sc_st.get("honesty_violations") or 0), int(st.get("honesty_violations") or 0),
+                            last.get("entities"), last.get("awake"), last.get("asleep"), last.get("hatched_ever"),
+                            last.get("recent_chatters"), last.get("test_pips")))
+                    if bad:
+                        rc = 1
+                log("world panel: avg %s ms max %s ms, scene avg %s ms, degrade %s, keepers %s" % (
+                    st.get("avg_ms"), st.get("max_ms"), sc_st.get("avg_ms"), json.dumps(st.get("degrade")), json.dumps(st.get("keepers"))))
+            except Exception:
+                log("honesty summary failed:\n" + traceback.format_exc())
         log("wrote %d PNGs to %s" % (n, out_dir))
         self.bridge.flush(time.time(), force=True)
-        return 0
+        return rc
 
     def run_stream(self, max_frames: int = 0) -> int:
         self._start_writers()

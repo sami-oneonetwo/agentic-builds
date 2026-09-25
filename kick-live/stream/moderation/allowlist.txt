@@ -1,0 +1,61 @@
+# stream/moderation/allowlist.txt - the dictionary allowlist for words a pip repeats UNPROMPTED (WORLD.md 11.3):
+# a pip's own top `words`, `learned` words and (v2) `teach`. Plain English plus the channel's harmless slang.
+# One or more words per line, lowercase, '#' starts a comment. Hot-reloaded within 5 s (stream/chat_bridge.py,
+# WordLists / word_ok() / filter_words()). A word must be here AND pass blocklist.txt before the text layer draws it.
+# Nicknames (`name <word>`) and a pip's own bubbles (the owner's actual message) do NOT need this list.
+# Nothing here is ever drawn unless a real chatter actually typed it.
+
+# --- the hollow's own words ---
+pip pips hollow cave keeper keepers glowmoss moss seed seeds burrow burrows platform platforms chamber chambers
+ledge lantern drip drips glow berry berries nest nests twig twigs rock stone soil sky moon star stars light dark
+night nights morning day days tonight hatch hatched egg shell colony round rounds vote votes event events feast
+rain fog storm chorus credits milestone tier elder hatchling seedling
+
+# --- stream and chat slang (harmless) ---
+gg ggs wp gl hf ez pog pogchamp poggers pogu kek kekw lul lol lmao rofl omg wow nice cool sick dope fire lit hype
+based cope ratio dub clutch vibe vibes chill sus cap nocap bet fr ngl tbh imo imho brb afk gtg ttyl irl smh idk
+idc yolo goat mvp op nerf buff lag lagging ping fps stream streamer streaming chat chatter chatters vod clip clips
+sub subs follow follower followers raid host lurk lurker lurkers emote emotes kick live hello hi hey yo sup howdy
+welcome thanks thank ty tysm np yw pls please sorry oops rip f w l gm gn bye cya later peace love heart hearts
+hug hugs wave waves dance dancing sing singing song songs music beat beats tempo bass drum drums
+
+# --- everyday english ---
+about above across after again against age ago air all almost alone along already also always among amount
+angry animal another answer any anyone anything anywhere apple area arm around art ask asleep awake away baby
+back bad bag ball band bank base basic beach bear beat beautiful because become bed before begin behind believe
+below best better between big bird bit black blue board boat body book boring born both bottle bottom box boy
+brain bread break breakfast bright bring brother brown build building bus busy but buy call calm camera can car
+card care careful carry cat catch cause chair chance change cheap check cheese child children choice choose city
+class clean clear clever climb clock close cloud coffee cold color colour come comfortable common computer cook
+cool copy corner correct cost count country couple course cover crazy cream cross crowd cry cup cut dad dance
+dark date daughter dead deal dear decide deep desk dig different difficult dinner dirty dog door double down draw
+dream dress drink drive drop dry during each ear early earth east easy eat edge egg eight either else empty end
+enjoy enough enter even evening ever every everyone everything exact example excited eye face fact fair fall
+family famous far fast fat father favorite favourite fear feed feel feet few field fight figure fill film final
+find fine finger finish first fish fit five fix flat floor flower fly follow food foot forget form forward four
+free fresh friend friends front fruit full fun funny future game games garden gentle get gift girl give glad glass
+go goal gold good grass great green grey ground group grow guess guy guys hair half hall hand happen happy hard hat
+hate have head hear heavy help here high hill history hit hold hole holiday home hope horse hot hour house how
+huge human hundred hungry hunt hurry ice idea important inside interesting internet island job join joke jump
+keep key kid kind king kitchen knee know lady lake land language large last late laugh lazy lead leaf learn least
+leave left leg less lesson letter level lie life lift like line lion list listen little live long look lose lost
+lot loud love low luck lucky lunch machine mad magic main make man many map mark market matter maybe meal mean
+meat meet member memory message middle might milk mind mine minute mirror miss mistake mix mom moment money month
+more most mother mountain mouse mouth move movie much music must name narrow nature near need never new news
+next nice night nine nobody noise none noon normal north nose note nothing notice now number ocean odd offer
+office often old once one only open orange order other outside own page pain paint pair paper parent park part
+party pass past path pause pay pen people perfect person pet phone photo pick picture piece pink pizza place
+plan plant plate play player point poor popular possible pot power practice present pretty price problem
+project promise proud pull push put queen question quick quiet quite rabbit race radio read ready real really
+reason red remember rest return rich ride right ring rise river road robot roll roof room rope round rule run
+sad safe salt same sand save say school science screen sea search season seat second secret see seem sell send
+seven shake shape share sharp ship shirt shoe shop short show shut sick side sign silver simple since sing sister
+sit six size skill skin sleep slow small smart smell smile snow soft some someone something sometimes son soon
+sorry sound soup south space speak special speed spell spend spring square stand start state stay step stick
+still stone stop store story straight strange street strong student study stupid sugar summer sun sure surprise
+sweet swim table tail take talk tall taste tea teach team tell ten test text than that then there thing think
+third three through throw tidy tight time tiny tired today together tomorrow tonight tool top touch town toy
+train travel tree trip true try turn twelve twenty two type ugly uncle under understand until use usual very
+video village visit voice wait wake walk wall want warm wash watch water way weak wear weather week weight well
+west wet what wheel when where which while white who whole why wide wife wild win wind window winter wish wonder
+wood word work world worry write wrong year yellow yes yesterday young zero zoo
