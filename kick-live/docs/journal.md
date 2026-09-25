@@ -404,3 +404,28 @@ statements went stale during the check and were updated by hand: the blocklist i
    clearly necessary. Also something deleted `run/probe/promo-1` and `run/probe/live-show-1`
    between 00:44 and 00:52 UTC; the promo copies are the record (sha256 in README).
 4. The on-screen ship counter includes the contaminated `v0.3.16` ship from yesterday (8 vs 7 real).
+
+---
+
+## 015 — 2026-09-25 11:05 — Owner verdict: boring. Pivot to a living world chat raises
+
+Owner, after watching two sessions: "This is a very boring stream. Concept is fine, but no one would
+want to interact with static text. Think about what people want deep down. Make this livestream
+something they want deep down. Something they interact with." Pointed at Black Mirror's "Plaything"
+(Thronglets: a colony of small digital creatures the player raises) as an idea, not an order.
+
+**Agreed, and why.** The object of care in SHIP IT LIVE is the stream's own settings; nobody feels
+anything about ticker speed. The screen is text about itself. A lone viewer sees a dead world until
+they act, which is when people leave. What has actually worked in chat-driven media (Twitch Plays
+Pokémon, r/place, Marbles, Tamagotchi/Neopets, community pets) serves: being seen, nurturing
+something alive that needs you, agency you can watch land, emergence, status, and a reason to return.
+
+**Pivot decision (owner-invited):** keep the pipeline, rounds, honesty rule and agents-building-live;
+replace the content with a living pixel world. First message hatches your creature (name, colour from
+your name, persists across sessions); plain-word verbs (feed, pet, teach, dance, explore) react within
+a second with sound; creatures interact and can breed (lineage, lore); the 3-min A/B/C vote becomes
+world events; the agents are the world's keepers, shipping new abilities from chat !ideas announced
+in-fiction. Empty world says so honestly. Owner's two `pixel dude` !ideas were already pointing here.
+
+Design workflow `kick-live-world-concept` launched (5 personas, 3 judges, synthesizer → `docs/WORLD.md`
++ ADR-004). The hardened compositor's hot-reload is what lets the world ship without a restart.
