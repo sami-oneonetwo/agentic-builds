@@ -488,3 +488,7 @@ pops the same keys from os.environ at startup. Proven in an isolated MODE=test r
 children show NO SECRETS and HLS still renders. The live pipeline still holds them until its next
 full run.sh restart (a deploy.sh child restart inherits the relay's env). Owner's balance recorded:
 chat may influence the world freely but must never be able to break the stream or expose a secret.
+
+Owner decision (12:24): apply the secrets scrub **at the world swap**, not now. So the PIP HOLLOW
+deploy will be a full `run.sh` restart (stop.sh → start.sh within Kick's ~100 s window, same VOD 2),
+not a relay child restart: one brief stall, and the render processes come back with no secrets.
