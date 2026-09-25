@@ -435,3 +435,32 @@ Addendum to 015 (11:12): owner approved restarting the stream to switch builds a
 hardened compositor (relay + hot-reload), stop the snapshot show and start a fresh stream on the
 hardened build (VOD 2); then deploy the living world as a hot-reloaded scene inside that stream, so
 the VOD records the text show turning into the world live, announced by the keepers.
+
+---
+
+## 016 — 2026-09-25 11:45 — VOD 2: hardened build on air; world build launched
+
+**Hardened compositor finished** (18 Fable agents, 0 errors): integrate pass_with_fixes, viewer QAs
+pass, critic fail → fix pass_with_fixes (56 px countdown so the thumbnail hook survives; ballot
+options renamed to visible outcomes; vote acks; placeholder wording). Notable integrate fixes:
+PANEL_BUDGET_MS=28 had been a no-op (Panel.budget_ms defaulted 20); chat commands present at boot
+were dropped across deploys; mod/theme records re-applied on every restart; a false "foreign write"
+drift alias. Remaining: the SHIP frame is still ~50 ms once per round (10 panels re-render together).
+
+**My own pre-swap verification:** compiles; run-dir guard exits 2 against run-live; MODE=test HLS
+with `scripts/deploy.sh` mid-run: ffmpeg pid unchanged, compositor child restarted, relay held the
+last frame 0.67 s (20 repeats), encoder never saw EOF, probe PASS. Committed as 95e5f9e.
+
+**Switch (owner-approved, 015 addendum).** Stopped VOD 1 at 01:39:58Z and started the v2 snapshot
+(`~/.local/share/kick-live/live-snapshot-v2`, RUN_DIR=run-live, KL_LIVE=1). Kick treated the 4 s gap
+as the same broadcast (start_time unchanged), so to get the fresh VOD the owner wants I took the
+pipeline offline at 01:41:03Z, Kick closed the session after 100 s, and restarted: **new broadcast
+started 01:42:54Z** = VOD 2. First probe on VOD 2: PASS ...o.net/api/video/v1/us-west-2.196233775518.channel.Pqz8F6sHKOCE.m3u8 1280x720@30 2139kbps aac/48000/2ch
+Compositor: 11:43:24 compositor: running: 1202 frames, render ms avg 3.3 p95 7.4 max 56.8, 1 over 33.3 ms budget, 1 dup/dropped, pan
+
+**Deploy path from now on:** copy changed files into the v2 snapshot → hot-reload picks up panels/
+scenes; layout/spine changes → `RUN_DIR=run-live bash live-snapshot-v2/scripts/deploy.sh` (compositor
+child restart under the relay; ffmpeg keeps its pid). No ingest drop either way.
+
+**World build launched** (`agents/workflows/world-build.js`, run wf_51f8c6bc-496, Fable): core →
+5 modules → integrate (incl. relay deploy test) → 3 QA → fix. Lands in VOD 2 as a keeper carving.
