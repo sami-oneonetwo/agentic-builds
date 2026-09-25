@@ -492,3 +492,22 @@ chat may influence the world freely but must never be able to break the stream o
 Owner decision (12:24): apply the secrets scrub **at the world swap**, not now. So the PIP HOLLOW
 deploy will be a full `run.sh` restart (stop.sh → start.sh within Kick's ~100 s window, same VOD 2),
 not a relay child restart: one brief stall, and the render processes come back with no secrets.
+
+---
+
+## 018 — 2026-09-25 16:58 — The laptop slept: four hours of fragmented stream, explained
+
+Owner closed the MacBook lid around 12:50 local (02:50Z). Effects, all consistent with sleep, none
+with a Kick or agent fault: the Claude Code process died (world build interrupted at Integrate);
+RTMPS broke (`Broken pipe`, rc=224) and the supervisor reconnected on each brief dark-wake, so
+Kick logged six ~1-minute sessions between 02:50Z and 06:52Z; our API poller produced 6-9 polls an
+hour instead of 240 (process suspended); one watchdog restart (05:20Z) fired on stale liveness.
+The 02:50Z rc=0 exit was ffmpeg losing the network while the relay was still feeding it.
+
+Now: lid open, live since 06:52:04Z (fresh Kick session), 30 fps, 0 drops. Mac is on **battery**
+(85%). Started `caffeinate -ims` (pid in `run-live/pids/caffeinate.pid`): prevents idle/system
+sleep, but a lid close still sleeps a MacBook without an external display. Real fix for a 24/7
+stream is an always-on host (Linux VM or a Mac mini); the day-1 plan was written on such a sandbox.
+
+World build resumed from cache (core + 5 modules cached; Integrate → QA → Fix run live). Module
+outputs checkpointed as b3f8fd6.
