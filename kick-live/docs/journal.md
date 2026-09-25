@@ -574,3 +574,54 @@ Thronglets (small, expressive, alive, warm, instantly lovable creatures with per
 idle/emote animation) while the designs stay ours (no yellow round Thronglet look-alikes; our own
 silhouette language, name-derived colour, procedural but characterful). Tiles, buildings and HUD get
 the same treatment. Art-direction workflow launched; the open-world spec is redirected to top-down.
+
+---
+
+## 020 — 2026-09-25 18:40 — Fix round 1: the alone screen has to breathe
+
+Round-2 QA (journal 019 follow-up) judged the 1-awake and 0-awake frames against the owner's bar (015: "very boring")
+and failed them: a motionless pip in a black box, verbs answered by a plank sentence, dev copy on every strip, label
+overprints. Closed in this tree (not deployed; `/tmp/pipqa-fix1` self-test, no live dir touched):
+
+- **The cave breathes at 0 awake**: the mouth gradient is drawn per frame and drifts ~1 level at 0.5 Hz (day and night;
+  night now ends on `#1D2B4A` so the mouth stays the brightest tile region); sleepers breathe (`asleep`/`asleep1`, 2 s)
+  on top of the 8-15 s twitch; drips every 1-3 s with two columns in flight when nobody is awake, brighter head + splash
+  pair; the raised lantern sways 1 px at 0.25 Hz. World-region change per frame: median 4368 px, minimum 944, zero static
+  frames in 300 + 2400 frames. The compositor's static watchdog now watches rows 72-512 (the cave), not the whole frame.
+- **Rock reads as rock**: speckle 15 % `#1C2130` + 10 % `#0D1017`, four stalactites 4-8 px deep with rubble under them,
+  a torn flared mouth, outcrops on the Ledge face, rounded platform ends. Terrain is versioned (`terrain_ver` 2): a saved
+  cavern upgrades with every dug cell kept, so the live world.json gets the new rock without losing anyone's digs.
+- **Verbs answer with the world**: `feed` carries a 5x5 glow-berry (20 px) for 2.4 s and eats it with a 3-frame flash;
+  `dig` carves a 5x3 pocket (20 px, cap 45 cells) and throws rubble pixels; `plant` grows a 5x2 → 7x4 moss mound under a
+  16x16 glow kernel; care left at a sleeper's burrow shows as a berry mound until they wake.
+- **A lone pip has a life**: standing pips hold slots (x = platform + 4 + 7 i, 3 per row, then a row up), shuffle ±6 px
+  every 3-8 s, face a drip that lands within 30 px and hop under one, blink, and mutter one of their owner's own
+  allowlisted tokens ~20-35 s after hatching and every 45-90 s after (honesty `text` rule sees it in `pip.words`).
+  At 45 s alone the plank says `you're alone tonight. pet @<real sleeper> and they'll see it when they wake.` and that
+  sleeper stirs; `anyone / here / hello / alone` from the lone chatter lights every sleeper's `asleep since HH:MM` label
+  for 5 s and answers with the count. A first-ever hatch also gets `stay ten minutes and your pip grows a row of pixels.`
+- **Copy**: `the keepers are away tonight` + last three real visitors instead of `no keeper on duty · scrolls kept…` and
+  the duplicated milestone line; `the Ledge opens when a keeper is back`; `@name's first night`; the `!command` legend
+  leaves the ticker while awake ≤ 1 and the "keepers are AI agents" line rides only while a keeper is on duty; no
+  `OFFLINE`, no `self-test: no a/v`, no `chat: no listener`; a lantern glyph instead of the padlock.
+- **Labels**: the `#N` hatch tag rides inside the name label (`@quietnoodle #4`), the only-light line goes through the
+  placer above the label, the names row shows up to 3 names untruncated or `N standing`, 16 px gutters, a standing pip's
+  bubble sits beside the letter column, `builder #8 #8` fixed, colony panel renders after the world (no one-frame lag).
+
+Gates after the change: py_compile all; honesty self-test PASS (9/9 planted fakes caught); keepers self-test PASS; 26/26
+titles fit; 300-frame and 2400-frame realtime self-tests: watchdog PASS (world rows), header PASS, vote acks 4/4 and 2/2,
+honesty PASS with the planted `hollowghost` quarantined at boot; world panel avg 2.5 ms (max 6.4 ms steady, 28 ms once
+at the hatch frame), scene avg 1.5 ms.
+
+Still open: the cavern band is still mostly `#0B0E14` by design (85 % of the world region under lum 24, unchanged), so
+the "empty stage" read is softened by texture and motion, not removed; the 320x180 lit>40 fraction is bounded by the
+palette (5.7 % day / 4.1 % night by this tree's own measure, unchanged from the previous build measured the same way);
+A/B/C letters still sit ~70 px above their platforms (moved down 5 px; the letter + count + names stack needs the room).
+
+Addendum to 020 (18:52): open-world design pass returned **LONGGRASS** (154/180) — a side-view meadow
+with a sky band; "seen from above" appeared only as a mood note. The owner had already chosen the
+top-down camera from the mockups, so the spec step was re-run from cache with an owner directive:
+re-project LONGGRASS's judged mechanics (nature-is-alive rule, chat-rate wind, real sun/moon and
+seasons as ground light, damped never-cut camera, camp ladder, path wear, cairns, keeper raisings,
+leading-verb rule, tile QA gate) onto a top-down open map with a 2-D camera and an honest minimap.
+Art comes from the separate settlement-art workflow (stream/world/art, docs/ART.md).
