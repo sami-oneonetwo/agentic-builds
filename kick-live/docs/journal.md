@@ -429,3 +429,9 @@ in-fiction. Empty world says so honestly. Owner's two `pixel dude` !ideas were a
 
 Design workflow `kick-live-world-concept` launched (5 personas, 3 judges, synthesizer → `docs/WORLD.md`
 + ADR-004). The hardened compositor's hot-reload is what lets the world ship without a restart.
+
+Addendum to 015 (11:12): owner approved restarting the stream to switch builds and prefers a
+**new stream per major stage** so the VODs show the progression. Plan: when QA passes on the
+hardened compositor (relay + hot-reload), stop the snapshot show and start a fresh stream on the
+hardened build (VOD 2); then deploy the living world as a hot-reloaded scene inside that stream, so
+the VOD records the text show turning into the world live, announced by the keepers.
