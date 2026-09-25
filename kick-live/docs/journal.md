@@ -338,3 +338,32 @@ subscriptions keep receiving. If the Mac sleeps they die; bring them back with
 `scripts/kick-app.sh up` from `.claude/worktrees/kick-ngrok-tunnel/kick-live` (or from main after the
 merge), then `scripts/kick-app.sh kick subscriptions` to confirm chat.message.sent,
 livestream.status.updated and livestream.metadata.updated are still listed.
+
+---
+
+## 013 — 2026-09-25 10:36 — Day 2 resume: back on air, hardening phase added
+
+The previous Claude Code process died overnight with two workflows mid-flight. Survived: the spine
+and all 8 enrichment modules (uncommitted in `stream/`), the featured-slot page + real frames in
+`docs/promo/`. Lost: the integration step, the promo posts/README. The peer tunnel session is gone,
+so this session now owns the receiver/tunnel too (ngrok had died with the Mac; restarted with the
+peer's `scripts/tunnel.sh start`; all three webhook subscriptions still listed). A stray duty
+heartbeat from last night was still running; killed.
+
+**Back on air from the known-good snapshot**, but in an **isolated run dir**
+`~/.local/share/kick-live/run-live` (history copied over: chat, ships, builders, state) so that no
+test agent writing to the default shared dir can contaminate live state again (finding 012.1). Cost:
+webhook-sourced chat lands in the shared dir, not the live one; the Pusher listener covers chat.
+Title/category re-applied via OAuth. Probe PASS, is_live true within a minute.
+
+**Enrichment workflow resumed** (cached spine + modules) with a new **Harden** phase before
+Integrate, 4 parallel Fable agents: `stream/relay.py` (owns ffmpeg's inputs, repeats the last frame
+while the compositor child restarts → deploys without dropping ingest) + `scripts/deploy.sh`;
+run-dir guard + module hot-reload + state write-ownership; rounds port (chaos option, idea ids,
+CONCEPT §8 version scheme, no adoption of foreign version fields); stage/layout hotfix port + the
+truncation/clipping cosmetics. Integrate then has to prove a deploy mid-HLS-run with an unchanged
+ffmpeg pid and a passing probe.
+
+**One restart still owed:** the snapshot pipeline has no relay, so swapping to the enriched build
+means one visible ingest gap. It happens only with the owner's go-ahead, at a quiet moment, and it
+is the last one. Promo workflow resumed to finish `posts.md` and `README.md` and fact-check.
