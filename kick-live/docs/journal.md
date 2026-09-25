@@ -380,3 +380,27 @@ show had no slur filter for its first ~50 min. The enrichment module's 79-term l
 leet-normalised; verified it does not flag ordinary chat like "strange ass stream") was copied into
 the snapshot. The bridge reloads it inside `ingest()`, i.e. when the next message is processed, so
 it becomes active on the next chat line; the startup log's "0 terms" predates the reload.
+
+---
+
+## 014 — 2026-09-25 10:58 — Promo pack fact-checked; bugs it surfaced
+
+`docs/promo/` is complete: `featured-slot-pack.md` (one page for whoever owns featured placement,
+every number sourced), `posts.md` (Discord/community, X single + 3-tweet thread, internal Slack note
+with disclosure, pinned chat message; all counted), `README.md`, real frames from Kick playback +
+320x180 thumbnail check. Fact-check verdict: pass_with_fixes (18 corrections, all applied). Two
+statements went stale during the check and were updated by hand: the blocklist is now 79 terms
+(00:52 UTC), and the 00:39 ingest drop is diagnosed as Kick-side (addendum to 013).
+
+**Bugs the fact-checker found (carry into Harden/Integrate, or fix before a featured window):**
+1. Voter names under the ballot cards bypass the 3 s hold AND the username blocklist filter
+   (`chat_bridge.tallies()` returns raw names; only `visible()` filters). An offensive username
+   could appear under a card within a second.
+2. `builders.json` double-counts votes/sessions on every compositor start (history re-ingest):
+   26 votes recorded vs 4 real vote messages. Not cited anywhere on screen yet except `#N`.
+3. Shared `run/state.json` was written AGAIN at 00:37 UTC by a Harden-phase test
+   (`run_dir=/tmp/cp-stage-port-baseline` in its own log, yet the shared file changed). The live
+   show is isolated in `run-live/` so nothing was shown on air, but the guard in the Harden phase is
+   clearly necessary. Also something deleted `run/probe/promo-1` and `run/probe/live-show-1`
+   between 00:44 and 00:52 UTC; the promo copies are the record (sha256 in README).
+4. The on-screen ship counter includes the contaminated `v0.3.16` ship from yesterday (8 vs 7 real).

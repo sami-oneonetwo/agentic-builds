@@ -1,0 +1,37 @@
+{
+  "_note": "Excerpt of ~/.local/share/kick-live/run/probe/promo-1/probe.json, transcribed 2026-09-25 00:44 UTC from a read of the original before that directory was removed from the run dir later the same morning. The signed playlist URLs (source, chosen.uri, frame paths) are omitted; every other value is as read.",
+  "source_kind": "channel",
+  "channel": "atleastonce",
+  "fetched_at": "2026-09-24T11:42:51.975Z",
+  "variants": [
+    {"name": "720p30", "bandwidth": 2373000, "resolution": "1280x720", "frame_rate": 30.0, "codecs": "avc1.4D401F,mp4a.40.2"},
+    {"name": "480p30", "bandwidth": 1323000, "resolution": "852x480", "frame_rate": 30.0, "codecs": "avc1.4D401F,mp4a.40.2"},
+    {"name": "360p30", "bandwidth": 700000, "resolution": "640x360", "frame_rate": 30.0, "codecs": "avc1.4D401F,mp4a.40.2"},
+    {"name": "160p30", "bandwidth": 270000, "resolution": "284x160", "frame_rate": 30.0, "codecs": "avc1.4D401F,mp4a.40.2"},
+    {"name": "audio_only", "bandwidth": 160000, "resolution": null, "frame_rate": null, "codecs": "mp4a.40.2"}
+  ],
+  "chosen": {"name": "720p30", "bandwidth": 2373000, "resolution": "1280x720", "frame_rate": 30.0, "codecs": "avc1.4D401F,mp4a.40.2"},
+  "manifest": {"master_fetch_ms": 758.1, "master_http_status": 200, "media_fetch_ms": 448.6, "media_http_status": 200, "segments": 14, "target_duration": 2.0, "live": true, "playlist_type": null, "media_sequence": 45, "has_pdt": true, "fmp4": false},
+  "video": {"codec": "h264", "w": 1280, "h": 720, "fps": 30.0, "bitrate_kbps": 2053.4, "pix_fmt": "yuv420p", "profile": "Main", "duration_s": 8.0, "bitrate_source": "container"},
+  "audio": {"codec": "aac", "rate": 48000, "ch": 2, "mean_volume_db": -31.2, "max_volume_db": -21.4},
+  "checks": {
+    "black": {"pass": true, "detail": "no black intervals (blackdetect d=1 pic_th=0.98)", "black_s": 0},
+    "frozen": {"pass": true, "detail": "no frozen intervals (freezedetect n=-60dB d=2)", "frozen_s": 0},
+    "silent": {"pass": true, "detail": "no silence intervals (silencedetect n=-50dB d=3); mean -31.2 dB, max -21.4 dB", "silent_s": 0},
+    "resolution": {"pass": true, "detail": "1280x720 (min 1280x720)"},
+    "fps": {"pass": true, "detail": "30.00 fps (min 24)"},
+    "download_speed": {"pass": true, "ratio": 4.16, "detail": "8539 kbps download vs 2053 kbps stream = 4.2x (need >= 1.5x)"},
+    "decode": {"pass": true, "detail": "ffmpeg decode ok"},
+    "manifest": {"pass": true, "detail": "14 segments, target 2.0s, live, master fetch 758.1 ms, media fetch 448.6 ms"},
+    "frames": {"pass": true, "detail": "9/9 grid frames, last frame ok"}
+  },
+  "latency_s": 2.7,
+  "verdict": "pass",
+  "reasons": [],
+  "channel_live": true,
+  "channel_viewer_count": 1,
+  "channel_title": "AI rebuilds this stream every 3 min. Chat votes A, B or C",
+  "latency_detail": "now - PROGRAM-DATE-TIME of last segment (2026-09-24T11:42:51.517Z)",
+  "download": {"segments": 4, "seconds_requested": 8.0, "seconds_got": 8.0, "bytes": 2053524, "elapsed_s": 1.924, "speed_kbps": 8538.7},
+  "analysed_duration_s": 8.0
+}
