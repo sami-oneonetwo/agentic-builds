@@ -367,3 +367,16 @@ ffmpeg pid and a passing probe.
 **One restart still owed:** the snapshot pipeline has no relay, so swapping to the enriched build
 means one visible ingest gap. It happens only with the owner's go-ahead, at a quiet moment, and it
 is the last one. Promo workflow resumed to finish `posts.md` and `README.md` and fact-check.
+
+Addendum to 013 (10:47): **ingest drop at 00:39:09Z, ~26 s off air.** ffmpeg's output got
+`tls: Broken pipe` (Kick/IVS closed the RTMPS connection server-side); ffmpeg exited rc=224 after
+flushing. Reconnect attempts 2-3 were refused with `tls: End of file` (ingest still holding the old
+publisher session); attempt 4 at +26 s connected and has been stable since. Supervisor backoff
+2/4/8 s worked as designed. Not caused by anything on our side; a relay would not have helped (this
+was the encoder's output, not its input). A tighter first retry (1 s) is worth considering.
+
+**Word filter installed live.** The spine shipped with a comment-only blocklist (0 terms) — the
+show had no slur filter for its first ~50 min. The enrichment module's 79-term list (whole-token,
+leet-normalised; verified it does not flag ordinary chat like "strange ass stream") was copied into
+the snapshot. The bridge reloads it inside `ingest()`, i.e. when the next message is processed, so
+it becomes active on the next chat line; the startup log's "0 terms" predates the reload.
