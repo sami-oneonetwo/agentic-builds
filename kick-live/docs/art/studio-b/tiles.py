@@ -9,11 +9,11 @@ Tile families and their ids (see index):
     grass.{meadow,grass,lush,dry}.w{0..3}   wind phase 0-3: blades lean and a brightness wave passes
     grass.flowers.{0,1}                      meadow with flower clumps
     forest.floor.{0,1}                       dark mossy floor under the canopy (trees are props)
-    water.{deep,shallow}.{0,1}.r{0..3}       2 variants x ripple phase: arcs drift, glints blink
+    water.{deep,shallow}.{0,1,2}.r{0..3}     3 variants x ripple phase: arcs drift, glints blink
     water.edge.m{0..15}.r{0,1}               shallow water with foam on the land side(s) (bitmask N=1 E=2 S=4 W=8)
     shore.sand.{0,1}                         warm sand with pebbles
     hill.top.{0,1} / hill.edge.s             raised rocky grass; south-facing slope band
-    path.grass.{1,2,3}                       trail wear levels on grass
+    path.m{0..15}.{1,2,3}                    connected trail (bitmask N=1 E=2 S=4 W=8) x wear level
     farm.{bare,sprout,ripe}                  furrows -> green sprouts -> golden crop
 
 Python 3.9, numpy + pillow only. Deterministic (seeded per tile name).
@@ -160,7 +160,7 @@ def tile_water(kind: str, phase: int, edge_mask: int = 0, variant: int = 0) -> n
     rng = _rng("water:%s:%d" % (kind, variant))
     c = Canvas(T, T)
     c.rect(0, 0, T, T, rgba(base))
-    _mottle(c, base, rng, 0.06, n=40, r=(3, 6))
+    _mottle(c, base, rng, 0.022, n=24, r=(4.0, 7.0))
     # ripples: thin bright arcs drifting right with phase; glints blink on phase 1/3
     rr = _rng("ripples:%s:%d" % (kind, variant))
     for i in range(4):
@@ -169,10 +169,10 @@ def tile_water(kind: str, phase: int, edge_mask: int = 0, variant: int = 0) -> n
         w = rr.uniform(5, 10)
         col = mix(base, P["ripple"], 0.75 if kind == "shallow" else 0.55)
         for px, py in _wrap_offsets(x, y, T, T, margin=12):
-            c.arc(px, py, w, 1.8, 205, 335, rgba(col, 220), 0.9)
+            c.arc(px, py, w, 1.8, 205, 335, rgba(col, 235), 1.0)
     gr = _rng("glints:%s:%d" % (kind, variant))
-    for i in range(2):
-        if (i + phase + variant) % 4 in (1, 3):
+    for i in range(1):
+        if variant == 1 and (i + phase) % 4 in (1, 3):
             x, y = gr.uniform(2, T - 2), gr.uniform(2, T - 2)
             c.ellipse(x, y, 1.3, 0.8, rgba((255, 255, 255), 235))
             c.ellipse(x, y, 2.6, 1.4, rgba((255, 255, 255), 70))
@@ -213,15 +213,16 @@ def tile_sand(v: int) -> np.ndarray:
 
 
 def tile_hill(v: int, edge_s=False) -> np.ndarray:
-    base = shade(P["grass"], 1.08)
+    base = mix(shade(P["grass"], 1.20), P["dry"], 0.22)
     rng = _rng("hill:%d:%d" % (v, edge_s))
     c = Canvas(T, T)
     c.rect(0, 0, T, T, rgba(base))
     _mottle(c, base, rng, 0.08)
     _blades(c, base, rng, 0, n=12)
-    for _ in range(4):  # rock speckle
-        x, y = rng.uniform(2, T - 2), rng.uniform(2, T - 2)
-        c.ellipse(x, y, rng.uniform(1.4, 2.6), rng.uniform(1.0, 1.8), rgba(P["rock"]), rgba(P["rock_dark"]), 0.5)
+    for _ in range(2):  # rock speckle
+        x, y = rng.uniform(3, T - 3), rng.uniform(3, T - 3)
+        c.ellipse(x, y, rng.uniform(1.6, 2.6), rng.uniform(1.1, 1.8), rgba(mix(P["rock"], base, 0.25)),
+                  rgba(P["rock_dark"]), 0.5)
     if edge_s:
         # south slope: darker band with a lit lip at the top -> the hill reads as raised
         s = Canvas(T, T)
@@ -236,27 +237,42 @@ def tile_hill(v: int, edge_s=False) -> np.ndarray:
     return c.finish()[..., :3]
 
 
-def tile_path(level: int, phase: int = 0) -> np.ndarray:
-    """Trail wear on grass: level 1 = a few bare patches, 3 = a worn dirt band."""
-    rng = _rng("path:%d" % level)
-    g = tile_grass("grass", phase, fl_seed=0)
+def tile_path(mask: int, level: int) -> np.ndarray:
+    """Trail wear on grass, connected: `mask` bits N=1 E=2 S=4 W=8 say which neighbours are also trail.
+    level 1 = faint, patchy wear; level 2 = a worn dirt band; level 3 = a wide plaza-hard band."""
+    rng = _rng("path:%d:%d" % (mask, level))
+    g = tile_grass("grass", 0, fl_seed=0)
     c = Canvas(T, T)
     c.set_array(np.dstack([np.kron(g, np.ones((SS, SS, 1), np.uint8)), np.full((T * SS, T * SS), 255, np.uint8)]))
     d = Canvas(T, T)
-    cover = (0.35, 0.6, 0.95)[level - 1]
-    for _ in range(int(14 * cover) + 2):
-        x, y = rng.uniform(2, T - 2), rng.uniform(T * 0.2, T * 0.8)
-        rx, ry = rng.uniform(4, 9) * cover + 3, rng.uniform(2.5, 4.5) * cover + 1.5
-        d.ellipse(x, y, rx, ry, rgba(P["dirt"], 230))
-    d.blur(1.0)
-    if level == 3:
-        d.rect(0, T * 0.3, T, T * 0.7, rgba(P["dirt"], 240))
-        d.blur(0.6)
+    wid = (4.5, 7.0, 12.0)[level - 1]
+    alpha = (135, 195, 235)[level - 1]
+    dirt = rgba(P["dirt"], alpha)
+    cx = cy = T / 2
+    arms = [(1, (cx, 0)), (2, (T, cy)), (4, (cx, T)), (8, (0, cy))]
+    drawn = False
+    for bit, (ex, ey) in arms:
+        if mask & bit:
+            d.line([(cx, cy), (ex, ey)], dirt, wid)
+            drawn = True
+    if not drawn or level == 3:
+        d.ellipse(cx, cy, wid * 0.9, wid * 0.7, dirt)
+    d.ellipse(cx, cy, wid * 0.55, wid * 0.55, dirt)
+    d.blur(1.1 if level < 3 else 0.7)
+    if level == 1:  # patchy: punch grass back through
+        a = d.array()
+        holes = Canvas(T, T)
+        for _ in range(5):
+            holes.ellipse(rng.uniform(4, T - 4), rng.uniform(4, T - 4), rng.uniform(2, 4), rng.uniform(1.5, 3), (0, 0, 0, 255))
+        holes.blur(0.8)
+        a[..., 3] = (a[..., 3].astype(np.int32) * (255 - holes.array()[..., 3].astype(np.int32)) // 255).astype(np.uint8)
+        d.set_array(a)
     c.paste(d)
-    if level >= 2:
-        for _ in range(6):  # small stones & footprints
-            x, y = rng.uniform(1, T - 1), rng.uniform(T * 0.32, T * 0.68)
-            c.ellipse(x, y, rng.uniform(0.7, 1.3), rng.uniform(0.5, 0.9), rgba(P["dirt_dark"], 200))
+    for _ in range((2, 5, 7)[level - 1]):  # stones and scuffs along the band
+        ang = rng.uniform(0, 6.283)
+        rr = rng.uniform(0, wid * 0.6)
+        x, y = cx + math.cos(ang) * rr, cy + math.sin(ang) * rr
+        c.ellipse(x, y, rng.uniform(0.7, 1.4), rng.uniform(0.5, 0.9), rgba(P["dirt_dark"], 190))
     return c.finish()[..., :3]
 
 
@@ -414,7 +430,7 @@ def build_atlas() -> Tuple[np.ndarray, Dict[str, int]]:
     for v in range(2):
         add("forest.floor.%d" % v, tile_forest_floor(v))
     for kind in ("deep", "shallow"):
-        for v in range(2):
+        for v in range(3):
             for ph in range(4):
                 add("water.%s.%d.r%d" % (kind, v, ph), tile_water(kind, ph, variant=v))
     for m in range(16):
@@ -426,7 +442,8 @@ def build_atlas() -> Tuple[np.ndarray, Dict[str, int]]:
         add("hill.top.%d" % v, tile_hill(v))
     add("hill.edge.s", tile_hill(0, edge_s=True))
     for lv in (1, 2, 3):
-        add("path.grass.%d" % lv, tile_path(lv))
+        for m in range(16):
+            add("path.m%d.%d" % (m, lv), tile_path(m, lv))
     for st in ("bare", "sprout", "ripe"):
         add("farm.%s" % st, tile_farm(st))
     atlas = np.stack(tiles).astype(np.uint8)

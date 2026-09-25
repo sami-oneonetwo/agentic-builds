@@ -637,3 +637,11 @@ ffmpeg and relay pids unchanged, encoder never interrupted. Round 2 of that work
 more effort on the cave; the honesty/label/sprite/verb-feedback fixes carry into the settlement.
 Committed 63b9832. Remaining cave items (tile lit% gate, A/B/C letter height, hatch-frame 27 ms
 warm-up) are moot after the swap.
+
+Addendum to 020 (19:20): art studios reviewed by the owner (docs/art/studio-a|b|c): **Studio C
+chosen** ("Yes studio C. But let's try to make the chars more people shaped. Not just shapes.").
+Read as: keep C's bold clean outlines, palette discipline and stream-scale readability; redesign the
+creatures as small people-shaped settlers (head, torso, arms, legs, ~2.5 heads tall, big expressive
+heads and eyes, hair/hat/clothes from the name hash, real walk cycle, carry poses) — ours, warm,
+Thronglet-level appeal, not abstract blobs. Grafts: A's dusk lighting, B's ground richness. The
+running art workflow was stopped before its judge/bible steps; a focused settlers pass replaces it.

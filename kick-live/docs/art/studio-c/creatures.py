@@ -3,7 +3,7 @@
 Every creature is a real chatter. Identity is procedural and deterministic from the username:
 
     hue      31-multiplier hash of the lower-cased name -> a hue on a 290 degree wheel that SKIPS the grass
-             band (85-145 deg) so no creature ever vanishes into the meadow, even as a 2 px dot at 320x180
+             band (70-160 deg) so no creature ever vanishes into the meadow, even as a 2 px dot at 320x180
     genome   sha1(name) -> body profile (pebble / kite / bell / pear), crest (sprout / horns / fan / curl / tuft),
              tail (tuft / ribbon / fan), face patch (goggle / bib / blaze / face), eyes (round / tall / wide / big)
 
@@ -68,9 +68,9 @@ def genome(name: str) -> Dict[str, int]:
 
 def hue(name: str) -> float:
     frac = (name_hash(name) % 1000) / 1000.0
-    h = frac * 290.0
-    if h >= 85.0:
-        h += 60.0          # skip the grass band 85-145
+    h = frac * 270.0
+    if h >= 70.0:
+        h += 90.0          # skip the grass band 70-160 (lime to teal-green)
     return h % 360.0
 
 
@@ -88,8 +88,8 @@ def palette(name: str) -> Dict[str, Tuple[int, int, int]]:
     h = hue(name)
     main = _hsv(h, 0.66, 0.90)
     ah = (h + 150 + 40 * g["accent_shift"]) % 360
-    if 85 <= ah <= 145:
-        ah = (ah + 70) % 360
+    if 70 <= ah <= 160:
+        ah = (ah + 90) % 360
     accent = _hsv(ah, 0.62, 0.92)
     outline = _mix(_hsv(h, 0.60, 0.30), INK, 0.45)
     feet = _hsv(h, 0.62, 0.62)
