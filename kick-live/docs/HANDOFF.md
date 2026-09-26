@@ -107,6 +107,9 @@ settlers first; category/title may change on evidence. Each tick journals one en
 - Secrets live in ~/.config/kick-live/env and are stripped from render processes (and from the ops switch).
 - Never restart the pipeline for small changes. Deploy through hot-reload or the relay. Tell the owner first.
 - Test harnesses must never `pkill -f` by pattern (a harness killed the live keeper heartbeat for 69 s today).
+- Harness output fills the disk (journal 035: 5,400 frame PNGs + 395 bakes = 7.7 GB took the stream down for 4 min).
+  Every workflow deletes its `selftest/frame_*.png` and `bake/*.npy` when done and keeps only `report/`; the loop tick
+  checks `df` and refuses new builds under 20 GB free.
 - Stream key was not rotated by owner choice. Rotate after the project.
 
 ## API and cost

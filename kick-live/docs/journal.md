@@ -1099,3 +1099,18 @@ settlement gets an age ladder driven by real collective activity (distinct chatt
 air) shown in the world (buildings, gear, palette, a monument), never as HUD copy. Design workflow launched now
 (three lenses -> judges -> synthesis -> spec doc); implementation starts the moment the full-bleed build is on air so
 two agents never edit steading/behaviour/honesty at once.
+
+## 035 — 2026-09-26 20:05 — Disk full took the stream down for 4 minutes; my harness dumps were the cause
+
+19:53:00: run.sh exited (rc=0, uptime 35351 s) and the supervisor could not even write run.pid: "No space left on
+device". kick_api.py could not write channel.json or its cache from 19:53:26; Kick reported us OFFLINE at 19:54:46 and
+LIVE again at 19:58:13 when the supervisor's attempt 15 finally started (new ffmpeg pid 32378, new relay/compositor; the
+VOD likely split). The Data volume was at 100 % (460 GB, the owner's disk is ~93 % full in normal times); today's
+workflow harnesses had written ~7.7 GB under /tmp/lg-*: 5,424 self-test frame PNGs (~650 KB each) and 395 ground bakes
+(20 MB each). Cleaned: every selftest frame dump and .npy outside the in-flight /tmp/lg-fb-fix-* and the staging copy,
+plus scratch run dirs. The keeper heartbeat pid file was unwritable during the outage, so the tick's health check read it
+as DOWN and relaunched it; three heartbeats were running, the two duplicates were stopped. world.json / state.json intact
+(atomic writes). Kick HLS probe PASS after recovery. Rule from now on (HANDOFF): a harness deletes its frame dumps when
+it finishes and keeps only report/ (grids, tiles, crops); the loop tick refuses to launch a build under 20 GB free and
+cleans /tmp/lg-* first. This outage was not a restart by the agent; it was the box running out of disk under the agent's
+own test output, which is the same failure in effect.
