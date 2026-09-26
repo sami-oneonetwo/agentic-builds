@@ -238,6 +238,8 @@ SUFFIX_MIN_LEN = 5            # "spic" must not match "spices"; "retard" may mat
 SPACED_RUN_MIN = 3            # "n i g g e r": a run of >= 3 single-letter tokens is re-joined and re-checked
 
 MOD_CMDS = {"hide", "unhide", "pause", "resume", "kill", "unkill", "clear", "banish", "unbanish", "rename"}
+PAUSE_BOT_PHRASES = ("pause bot", "bot pause")          # owner's failsafe phrase -> mod pause (badge still required)
+RESUME_BOT_PHRASES = ("resume bot", "bot resume", "unpause bot")
 # Theme phrasing (journal 023 addendum: the owner's `Change the colour to kick colours` fell through as chat). A short
 # message (<= THEME_PHRASE_MAX_TOKENS words, no URL) that names exactly ONE preset and carries a theme word is read
 # as `!theme <preset>`: `kick colours`, `theme kick`, `make it kick coloured`. A theme word with no preset gets the
@@ -568,6 +570,13 @@ class ChatBridge(object):
         m = VOTE_RE.match(t)
         if m:
             return "vote", "", m.group(1).upper()
+        # Owner's failsafe (2026-09-26, terminal): the exact words `pause bot` stop chat ingestion (same as the mod
+        # `!pause`); `resume bot` resumes. Kind "mod" still requires the broadcaster/moderator badge downstream.
+        low = re.sub(r"\s+", " ", t.lower())
+        if low in PAUSE_BOT_PHRASES:
+            return "mod", "pause", None
+        if low in RESUME_BOT_PHRASES:
+            return "mod", "resume", None
         m = CMD_RE.match(t)
         if m:
             cmd, arg = m.group(1).lower(), m.group(2).strip()
@@ -1544,6 +1553,11 @@ def _self_test() -> int:
     b = ChatBridge("/tmp/lg-verbs")
     assert b.classify("A") == ("vote", "", "A") and b.classify("!b")[2] == "B" and b.classify("abc")[0] == "plain"
     assert b.classify("!idea show the diff bigger") == ("idea", "show the diff bigger", None)
+    assert b.classify("pause bot") == ("mod", "pause", None)
+    assert b.classify("  Pause   BOT ") == ("mod", "pause", None)
+    assert b.classify("resume bot") == ("mod", "resume", None)
+    assert b.classify("pause the bot") == ("plain", "", None)
+    assert b.classify("pause bot please") == ("plain", "", None)
     assert b.classify("!hide @spammer") == ("mod", "hide @spammer", None)
     # refusals are amber (level "warn") and scrub raw names
     assert b._safe_reason("no pip called @troll here", "feed") == "no pip by that name here"

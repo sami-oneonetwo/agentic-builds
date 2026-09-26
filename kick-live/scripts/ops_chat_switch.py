@@ -42,7 +42,8 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple
 OWNER = "atleastonce"
 OWNER_ID = 42750175            # broadcaster_user_id (journal 105); checked whenever the record carries sender_id
 CHATROOM_ID = 41370704         # checked whenever the record carries chatroom_id
-TOKENS = ("nuke", "init")
+TOKENS = ("nuke", "init", "pause bot", "resume bot")
+PAUSE_FLAG = "pause_bot.json"      # <run_dir>/pause_bot.json exists => the agent's improvement loop must not change anything
 FRESH_S = 120.0          # a matching line older than this is history, not an order
 COOLDOWN_S = 20.0        # between two actions
 POLL_S = 0.5
@@ -138,7 +139,7 @@ def classify(rec: Optional[Dict], now: float, seen: Set[str]) -> Tuple[Optional[
         return None, "webhook shape (no badges)"
     if rec.get("type") not in (None, "message", "reply"):     # a Kick reply from the owner's phone is still the owner
         return None, "not a message event"
-    text = rec["text"].strip().lower()
+    text = " ".join(rec["text"].strip().lower().split())
     if text not in TOKENS:
         return None, "not a token"
     if rec["user"].strip().lower() != OWNER:
@@ -380,6 +381,39 @@ def do_init(run_dir: str, snapshot: str, dry: bool) -> bool:
     return ok
 
 
+def do_pause(run_dir: str, on: bool, dry: bool, by: str = OWNER) -> bool:
+    """`pause bot`: raise <run_dir>/pause_bot.json so the agent's improvement loop stops changing anything (the chat
+    bridge pauses ingestion on its own from the same phrase). `resume bot`: remove it."""
+    flag = os.path.join(run_dir, PAUSE_FLAG)
+    if dry:
+        log("%s: DRY RUN (%s)" % ("pause bot" if on else "resume bot", flag))
+        return True
+    try:
+        if on:
+            tmp = flag + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump({"paused_ts": _now_iso(), "by": by, "note": "owner said pause bot in chat"}, fh)
+            os.replace(tmp, flag)
+            log("pause bot: flag raised %s" % flag)
+            activity(run_dir, "owner paused the keepers from chat: no changes until resume")
+        else:
+            if os.path.exists(flag):
+                os.remove(flag)
+                log("resume bot: flag cleared")
+                activity(run_dir, "owner resumed the keepers from chat")
+            else:
+                log("resume bot: no flag was set")
+                activity(run_dir, "owner asked to resume: the keepers were not paused")
+        return True
+    except Exception as e:
+        log("pause flag %s failed: %r" % ("raise" if on else "clear", e))
+        return False
+
+
+def paused(run_dir: str) -> bool:
+    return os.path.exists(os.path.join(run_dir, PAUSE_FLAG))
+
+
 # ----------------------------------------------------------------------------- tail
 def tail(path: str, stop: List[bool]) -> Iterator[str]:
     """Yield new complete lines appended to `path`, starting at its END; survive truncation and replacement."""
@@ -466,6 +500,10 @@ def run(run_dir: str, snapshot: str, dry: bool) -> int:
                     seen.discard(seen_order.popleft())
                 if token == "nuke":                      # the emergency stop is never rate-limited; do_nuke is idempotent
                     do_nuke(run_dir, dry)
+                elif token == "pause bot":               # the failsafe is never rate-limited either
+                    do_pause(run_dir, True, dry, rec["user"].strip().lower())
+                elif token == "resume bot":
+                    do_pause(run_dir, False, dry, rec["user"].strip().lower())
                 else:
                     if now - last_init < COOLDOWN_S:
                         log("init ignored: cooldown (%.0fs since the last start)" % (now - last_init))
@@ -543,6 +581,11 @@ def self_test() -> int:
         ("malformed type: dict", json.dumps({"ts": fresh, "id": "m23", "username": "atleastonce", "content": "nuke", "badges": ["broadcaster"], "type": {"x": 1}}), None),
         ("timestamp 60 s in the future", pusher("atleastonce", "nuke", ts=_dt.datetime.utcfromtimestamp(now + 60).strftime("%Y-%m-%dT%H:%M:%S.000Z"), mid="m24"), None),
         ("content is a list", json.dumps({"ts": fresh, "id": "m25", "username": "atleastonce", "content": ["nuke"], "badges": ["broadcaster"], "type": "message"}), None),
+        ("owner 'pause bot'", pusher("atleastonce", "pause bot", mid="p1"), "pause bot"),
+        ("owner 'Pause  Bot' spacing/case", pusher("atleastonce", " Pause   Bot ", mid="p2"), "pause bot"),
+        ("owner 'resume bot'", pusher("atleastonce", "resume bot", mid="p3"), "resume bot"),
+        ("'pause bot please' is chat", pusher("atleastonce", "pause bot please", mid="p4"), None),
+        ("stranger 'pause bot'", pusher("someone", "pause bot", mid="p5", sender_id=5), None),
         ("owner name + badge but wrong sender_id", pusher("atleastonce", "nuke", mid="m26", sender_id=1), None),
         ("owner from another chatroom", pusher("atleastonce", "nuke", mid="m27", chatroom_id=1), None),
         ("owner record without sender_id/chatroom_id fields", json.dumps({"ts": fresh, "id": "m28", "username": "atleastonce", "content": "nuke", "badges": ["broadcaster"], "type": "message"}), "nuke"),
@@ -555,6 +598,12 @@ def self_test() -> int:
     seen.add("m1")
     got, why = classify(parse_record(pusher("atleastonce", "nuke", mid="m1")), now, seen)
     check("duplicate id ignored (%s)" % why, got is None)
+
+    print("pause bot flag:")
+    check("not paused at start", not paused(run_dir))
+    check("pause raises the flag", do_pause(run_dir, True, dry=False) and paused(run_dir))
+    check("resume clears it", do_pause(run_dir, False, dry=False) and not paused(run_dir))
+    check("resume when not paused is harmless", do_pause(run_dir, False, dry=False) and not paused(run_dir))
 
     print("stale / recycled pid files are never trusted:")
     stranger = subprocess.Popen(["sleep", "300"], start_new_session=True)       # a same-user process that is NOT ffmpeg
