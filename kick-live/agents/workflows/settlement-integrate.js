@@ -28,7 +28,7 @@ const integrated = await agent(`${CONTRACT}
 5. MODE=test via relay to local HLS for 40 s: start with hollow as the scene, drop the world files in mid-run and prove the HotReloader swapped the scene live (log lines), relay never saw a gap, hls_probe PASS; then scripts/deploy.sh once and confirm ffmpeg pid unchanged.
 6. Let a round complete with settlers at waystones → event fires; duty.py macro-start/done shows on the beacon/notice board.
 Fix every bug in the owning files. Return verdict, frame_grid_path, evidence.`,
-  { model: 'fable', label: 'integrate', phase: 'Integrate', effort: 'high', schema: VERIFY_SCHEMA })
+  { label: 'integrate', phase: 'Integrate', effort: 'high', schema: VERIFY_SCHEMA })
 
 phase('QA')
 const GRID = integrated && integrated.frame_grid_path ? integrated.frame_grid_path : '/tmp/lg-integ2/grid.png'
@@ -38,7 +38,7 @@ const QA = [
   { key: 'art', prompt: `Review against ${ROOT}/docs/ART.md: canonical settlers on the land (not the old pips); silhouettes readable at 1x and 320x180; settler size at 1x adequate; consistent light with the sun vector; tiles seamless; camps in builders' colours; HUD plates not stacking over the land's labels; anything cheap at 3 Mbps; anything resembling Thronglets/Pokémon/AoE assets. Pass/fail with pixel-level fixes.` },
 ]
 const qa = (await parallel(QA.map(q => () => agent(`${CONTRACT}\n## QA: ${q.key}\n${q.prompt}\nReturn structured pass/fail + blocking issues + suggestions.`,
-  { model: 'fable', label: `qa:${q.key}`, phase: 'QA', effort: 'high', schema: { type: 'object', properties: { verdict: { type: 'string', enum: ['pass', 'fail'] }, checks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, pass: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['name', 'pass', 'evidence'] } }, blocking_issues: { type: 'array', items: { type: 'string' } }, suggestions: { type: 'array', items: { type: 'string' } } }, required: ['verdict', 'checks', 'blocking_issues', 'suggestions'] } })))).filter(Boolean)
+  { label: `qa:${q.key}`, phase: 'QA', effort: 'high', schema: { type: 'object', properties: { verdict: { type: 'string', enum: ['pass', 'fail'] }, checks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, pass: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['name', 'pass', 'evidence'] } }, blocking_issues: { type: 'array', items: { type: 'string' } }, suggestions: { type: 'array', items: { type: 'string' } } }, required: ['verdict', 'checks', 'blocking_issues', 'suggestions'] } })))).filter(Boolean)
 const blocking = qa.flatMap(q => q.blocking_issues || [])
 log(`QA: ${qa.map(q => q.verdict).join(',')}; blocking=${blocking.length}`)
 let fixed = null
@@ -49,6 +49,6 @@ if (blocking.length) {
 ${blocking.map((b, i) => `${i + 1}. ${b}`).join('\n')}
 Cheap suggestions worth taking: ${JSON.stringify(qa.flatMap(q => q.suggestions || []).slice(0, 12))}
 Do not regress honesty, legibility, the night floor, motion at zero, the frame budget, or the hot-reload path. Re-render into /tmp/lg-fix2 (dawn/noon/23:00, 0 and 3 awake), rebuild grid + tiles, re-run the honesty self-test and a MODE=test HLS probe. Return verdict + fixes + new frame_grid_path + evidence.`,
-    { model: 'fable', label: 'fix', phase: 'Fix', effort: 'high', schema: VERIFY_SCHEMA })
+    { label: 'fix', phase: 'Fix', effort: 'high', schema: VERIFY_SCHEMA })
 }
 return { mode: MODE, integrated, qa, fixed }
