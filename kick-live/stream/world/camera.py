@@ -2,7 +2,7 @@
 sizes, five modes evaluated in priority order, a critically damped spring under a hard pan cap, never a cut.
 
     from stream.world.camera import Camera
-    cam = Camera()                                   # map 960x440 cells, window 320x110 at 1x, 12-cell edge clamp
+    cam = Camera()                                   # map 960x440 cells, window 320x180 at 1x, 12-cell edge clamp
     cam.resume(land.camera())                        # world.json["camera"] -> no jump on a hot-reload (None = snap to the Moot)
     cam.update(now, dt,                              # once per frame, ctx.now only; pure function of state + inputs
                awake=[{"key": "sami", "x": 480, "y": 220, "fx": 1, "fy": 0, "walking": True, "spoke_t": now - 3}],
@@ -12,8 +12,8 @@ sizes, five modes evaluated in priority order, a critically damped spring under 
                stops=land.survey_stops(natural))     # DRIFT survey targets: real marks + the three natural points
     cam.mode ; cam.cx, cam.cy ; cam.zoom             # "DRIFT" ...; centre in cells; 0.75 / 1.0 / 1.5
     cam.view_rect()          -> (x0, y0, w, h) in cells (floats; the window the scene shows)
-    cam.bake_crop(ppc=4)     -> (px0, py0, pw, ph) integer pixels on the 4 px/cell bake (1707x587 / 1280x440 / 853x293)
-    cam.sim_to_screen(x, y, size=(1280, 440)) -> (sx, sy) or None when off-view
+    cam.bake_crop(ppc=4)     -> (px0, py0, pw, ph) integer pixels on the 4 px/cell bake (1707x960 / 1280x720 / 853x480)
+    cam.sim_to_screen(x, y, size=(1280, 720)) -> (sx, sy) or None when off-view
     cam.zoom_blend(now)      -> (zoom_from, zoom_to, alpha 0..1): alpha < 1 during the 12-frame crossfade
     cam.edge_arrows(size)    -> [{"key", "x", "y", "side", "sx", "sy", "dist"}] awake pips outside the window
     cam.drift_stop           -> the survey stop in view during DRIFT ({"kind", "owner", "x", "y"}) for the plank copy
@@ -24,10 +24,13 @@ Motion rules (4.4): critically damped spring, 0.8 s time constant, pan speed cap
 displacement itself (so no input can ever produce a cut: the only cut is the first frame of a session, `snap()`);
 a 1.5 s / 10-cell dead zone so a wandering pip is not chased; zoom changes only when the pan speed is under
 2 cells/s and 20 s after the last change, as a 12-frame crossfade; a 12-cell clamp keeps the map edge off screen.
-Modes in priority order: EVENT (hold 4 s) > MOOT (last 30 s of a round with anyone at a waystone) > FOLLOW (weighted
-mean of awake pips with two-axis lead room) > CLOSE (one slow pip, 1.5x) > DRIFT (a 4 cells/s survey over real marks
-and three natural points, 20 s dwell at a camp, 12 s elsewhere, no repeat inside 10 min). Honesty: FOLLOW needs a real
-entity; DRIFT visits only real marks and fixed natural points; the camera never writes wear or marks.
+Modes in priority order: EVENT (hold 4 s; a hatch at awake <= 2 is a 3 s 1.5x close-up) > MOOT (last 30 s of a
+round with anyone at a waystone) > CLOSE (one or two slow pips inside 60 cells of each other, 1.5x on their centroid)
+> FOLLOW (weighted mean of awake pips with two-axis lead room; 0.75x only when the group does not fit 1x) > DRIFT (a
+4 cells/s survey alternating the Moot (30 s at 1.5x: the sign, the stones, the beacon fill the 320x180 tile) with the
+least-recently-visited real mark / natural point (camps 20 s at 1.5x, else 12 s at 1x), no non-Moot repeat inside
+10 min). Honesty: FOLLOW needs a real entity; DRIFT visits only real marks and fixed points; the camera never writes
+wear or marks. Full-bleed land (journal 034): SCREEN is the whole 1280x720 frame.
 Python 3.9, stdlib + math only; nothing here reads time.time().
 """
 from __future__ import annotations
@@ -46,9 +49,9 @@ from stream.world.land import MAP_W, MAP_H, EDGE_MARGIN, DEFAULT_MOOT  # noqa: E
 # ---------------------------------------------------------------------------- constants (4.3, 4.4)
 PPC = 4                                                   # bake pixels per cell at 1x
 ZOOMS = (0.75, 1.0, 1.5)
-CROP_PX = {0.75: (1707, 608), 1.0: (1280, 456), 1.5: (853, 304)}   # crop of the 4 px/cell bake per zoom (152 / 114 / 76 cells tall)
+CROP_PX = {0.75: (1707, 960), 1.0: (1280, 720), 1.5: (853, 480)}   # crop of the 4 px/cell bake per zoom (240 / 180 / 120 cells tall)
 WINDOW = {z: (CROP_PX[z][0] / float(PPC), CROP_PX[z][1] / float(PPC)) for z in ZOOMS}   # window in cells
-SCREEN = (1280, 456)                                      # the world region (HUD pass, journal 028: was 440; 480 missed the 12 ms scene gate)
+SCREEN = (1280, 720)                                      # the world region = the whole frame (full-bleed land, journal 034)
 MODES = ("EVENT", "MOOT", "FOLLOW", "CLOSE", "DRIFT")
 
 SPRING_TAU_S = 0.8            # time constant; omega = 2 / tau gives ~1.5 s to settle within 10 %
@@ -63,23 +66,26 @@ LEAD_FRAC = 0.15              # lead room: the target sits 15 % of the window ah
 LEAD_HOLD_S = 2.0             # the lead offset flips only after the facing has held this long
 EVENT_HOLD_S = 4.0
 HATCH_CLOSE_S = 3.0
+HATCH_CLOSE_MAX_AWAKE = 2     # a hatch is a 1.5x close-up while at most this many are awake (the first-minute case is 1-2 people)
 EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named")
 MOOT_LAST_S = 30.0
 MOOT_RADIUS = 120.0
 FOLLOW_MARGIN = 24.0          # cells around the group's bounding box (x)
 FOLLOW_MARGIN_Y = 12.0        # cells above / below the group inside the SAFE band (a settler stands ~10 cells tall)
-# The HUD lives in the world region (HUD pass, journal 028): ONE plank row top-left (46 px, x 0-840; a second row only
-# while a newcomer's sticky line waits), the vote card top-right (864-1264 x 12-148) and the minimap bottom-right (the
-# clock row moved to the header in the fix pass, journal 030). People framed under those chips read as "HUD stacks over settlers" (owner verdict, journal 023
-# handoff), so every people-framing mode centres its target in the SAFE band between them: the desired centre is
-# lifted by half the difference (56 - 16) / 2 = 20 px.
-HUD_TOP_PX = 56
-HUD_BOTTOM_PX = 16
+# The only screen-fixed object left on the frame (full-bleed land, journal 034) is the plank top-left: ONE row, 38 px
+# chip at (16, 16), x 0-840, blank at idle. The world panel refreshes `hud_boxes` from what it actually drew (an empty
+# list when the plank is blank). People framed under it read as "HUD stacks over settlers" (owner verdict, journal 023
+# handoff), so every people-framing mode centres its target in the SAFE band below it: the desired centre is lifted by
+# half the band (54 - 0) / 2 = 27 px. There is no bottom box any more (the minimap is gone); the code path stays.
+HUD_TOP_PX = 54
+HUD_BOTTOM_PX = 0
 HUD_LEFT_W = 840              # the plank's x extent (the panel refreshes `hud_boxes` from what it actually drew)
-HUD_RIGHT_BOX = (848, 0, 1280, 152)
-HUD_BOXES_DEFAULT = ((0, 0, HUD_LEFT_W, HUD_TOP_PX), HUD_RIGHT_BOX)
+HUD_BOXES_DEFAULT = ((0, 0, HUD_LEFT_W, HUD_TOP_PX),)
 HEAD_CELLS = 20.0             # a settler's head top above its feet cell (creatures tier 3 drawn at 1.2x: anchor 79 px = 20 cells at 1x)
-STONE_TOP_CELLS = 36.0        # a waystone's letter + count + option row stack above the stone cell (~144 px at 1x)
+STONE_TOP_PX = 274.0          # a waystone's screen-scale stack above the stone cell: letters (AB 56 top at cy - 128) + 6 px gap +
+                              # the STACKED MOOT BOARD (30 px rail + 3 x 34 px rows + 6 px rail = 138, world.BOARD_H_MAX) + 2 px;
+                              # SCREEN px, converted per zoom (68.5 cells at 1x, 45.7 at 1.5x, 91 at 0.75x) because the stack is
+                              # screen-scale, not cell-scale (was 214 for the one-row board, STONE_TOP_CELLS 36 before that)
 HUD_NUDGE_PAD_PX = 32.0       # the spring lags a walker by ~0.8 s (6 cells at 8 cells/s): the lift starts this early
 HUD_BOTTOM_BOX_PX = 24        # a HUD box whose bottom edge is within this of the region's bottom is a BOTTOM box (the minimap)
 HUD_BOTTOM_PAD_PX = 12.0      # framed feet stay this far above a bottom box
@@ -88,15 +94,24 @@ CLUSTER_LINK = 60.0
 CLOSE_MOVE_CELLS = 40.0
 CLOSE_WINDOW_S = 30.0
 DRIFT_SPEED = 4.0             # cells/s (16 screen px/s at 1x)
-DRIFT_DWELL_CAMP_S = 20.0
-DRIFT_DWELL_OTHER_S = 12.0
-DRIFT_REPEAT_S = 600.0        # never repeats a route inside 10 min
+DRIFT_DWELL_MOOT_S = 30.0     # the Moot dwell at 1.5x: sign + stones + beacon in the tile for >= 50 % of Kick's 90-120 s snapshots
+DRIFT_DWELL_CAMP_S = 20.0     # a sleeper's tent at 1.5x: the 0-awake tile's character
+DRIFT_DWELL_OTHER_S = 12.0    # trees / fields / natural points at 1x
+DRIFT_REPEAT_S = 600.0        # never repeats a non-Moot route inside 10 min (the Moot is exempt: it is every other stop)
+DRIFT_MOOT_ID = "moot"        # land.survey_stops() fixed stop id
+DRIFT_ZOOM = {"moot": 1.5, "camp": 1.5}   # dwell zoom per stop kind (others 1.0); travel keeps the current zoom
 PERSIST_S = 5.0
 WEIGHT_SPOKE, WEIGHT_WALK, WEIGHT_SEED, WEIGHT_IDLE, SPOKE_WINDOW_S = 3.0, 2.0, 2.0, 1.0, 10.0
 
 
 def _hyp(ax: float, ay: float, bx: float, by: float) -> float:
     return math.hypot(ax - bx, ay - by)
+
+
+def stone_top_cells(zoom: float) -> float:
+    """Cells from a waystone's cell to the top of its screen-scale stack (letters + MOOT BOARD + rail) at this zoom."""
+    z = zoom if zoom in ZOOMS else 1.0
+    return STONE_TOP_PX / (PPC * z)
 
 
 def _top(a: Dict[str, Any]) -> float:
@@ -369,7 +384,7 @@ class Camera(object):
     @staticmethod
     def safe_dy(zoom: float) -> float:
         """Cells the camera centre is lifted so the framed point lands in the middle of the band the HUD leaves free
-        (region y HUD_TOP_PX .. SCREEN_H - HUD_BOTTOM_PX): (56 - 16) / 2 = 20 px above the window centre."""
+        (region y HUD_TOP_PX .. SCREEN_H - HUD_BOTTOM_PX): (54 - 0) / 2 = 27 px above the window centre."""
         z = zoom if zoom in ZOOMS else 1.0
         return (HUD_TOP_PX - HUD_BOTTOM_PX) / 2.0 / (PPC * z)
 
@@ -381,12 +396,12 @@ class Camera(object):
 
     # ------------------------------------------------------------------ mode ladder (4.4 table)
     def _choose(self, now, awake, seeds, moot, stops, lead_key) -> Tuple[str, Tuple[float, float], float]:
-        # 1. EVENT: that point, hold 4 s, 1x (1.5x for a 3 s hatch close-up when only one pip is awake)
+        # 1. EVENT: that point, hold 4 s, 1x (1.5x for a 3 s hatch close-up while at most two pips are awake)
         if self._event is not None and self._event_t is not None:
             age = now - self._event_t
             if age <= EVENT_HOLD_S:
                 z = 1.0
-                if self._event.get("type") == "hatch" and len(awake) == 1 and age <= HATCH_CLOSE_S:
+                if self._event.get("type") == "hatch" and len(awake) <= HATCH_CLOSE_MAX_AWAKE and age <= HATCH_CLOSE_S:
                     z = 1.5
                 ex, ey = float(self._event["x"]), float(self._event["y"])
                 hw, hh = WINDOW[1.0][0] / 2.0, self.safe_h(1.0) / 2.0
@@ -405,27 +420,36 @@ class Camera(object):
                 mx = sum(p[0] for p in pts) / len(pts)
                 my = sum(p[1] for p in pts) / len(pts)
                 near = [(float(a["x"]), float(a["y"])) for a in awake if _hyp(a["x"], a["y"], mx, my) <= MOOT_RADIUS]
-                self._nudge_pts = [(x, y, STONE_TOP_CELLS) for x, y in pts]
+                c, z = self._frame_points(pts + near)
+                z_eff = (z if z in ZOOMS else 1.0) if self.allow_zoom else 1.0
+                self._nudge_pts = [(x, y, stone_top_cells(z_eff)) for x, y in pts]
                 self._nudge_pts += [(float(a["x"]), float(a["y"]), _top(a)) for a in awake if _hyp(a["x"], a["y"], mx, my) <= MOOT_RADIUS]
-                pts += near
-                c, z = self._frame_points(pts)
                 return "MOOT", c, z
         # 3 / 4. FOLLOW / CLOSE: a real entity is required
         if awake or seeds:
             # the waystones' letter stacks join the dead-zone points whenever anyone stands at or walks to a stone (a
             # 180 s round has voters standing long before the MOOT window opens): their letters must not be culled
             # under the HUD chips while people are reading them
-            stones_top: List[Tuple[float, float, float]] = []
-            if moot and moot.get("stones") and (moot.get("voters") or moot.get("walking_to_stone")):
-                stones_top = [(float(x), float(y), STONE_TOP_CELLS) for x, y in moot["stones"]]
-            if len(awake) == 1 and not seeds and self._slow(awake[0], now):
-                a = awake[0]
-                lead = self._lead_room(now, a, 1.5)
-                self._nudge_pts = [(float(a["x"]), float(a["y"]), _top(a))] + stones_top
-                return "CLOSE", (float(a["x"]) + lead[0], float(a["y"]) + lead[1]), 1.5
+            stones_on = bool(moot and moot.get("stones") and (moot.get("voters") or moot.get("walking_to_stone")))
+
+            def stones_top(z: float) -> List[Tuple[float, float, float]]:
+                if not stones_on:
+                    return []
+                ze = (z if z in ZOOMS else 1.0) if self.allow_zoom else 1.0
+                return [(float(x), float(y), stone_top_cells(ze)) for x, y in moot["stones"]]
+            # CLOSE: one or two awake people, close together, all slow -> 1.5x on their centroid (a settler is 31-50 px
+            # at 1x = 8-12 px in the 320 tile; the first-minute case is one or two people and they get the close camera)
+            if 1 <= len(awake) <= 2 and not seeds and all(self._slow(a, now) for a in awake) and \
+                    (len(awake) == 1 or _hyp(awake[0]["x"], awake[0]["y"], awake[1]["x"], awake[1]["y"]) <= CLUSTER_LINK):
+                mover = self._newest(awake, lead_key) or awake[0]
+                lead = self._lead_room(now, mover, 1.5)
+                cx_ = sum(float(a["x"]) for a in awake) / len(awake)
+                cy_ = sum(float(a["y"]) for a in awake) / len(awake)
+                self._nudge_pts = [(float(a["x"]), float(a["y"]), _top(a)) for a in awake] + stones_top(1.5)
+                return "CLOSE", (cx_ + lead[0], cy_ + lead[1]), 1.5
             self._drift_stop, self._drift_pt, self._drift_arrived_t = None, None, None
             out = self._follow(now, awake, seeds, lead_key)
-            self._nudge_pts += stones_top
+            self._nudge_pts += stones_top(out[2])
             return out
         # 5. DRIFT
         return self._drift(now, stops or [])
@@ -580,23 +604,43 @@ class Camera(object):
         px, py = self._drift_pt
         d = _hyp(px, py, sx, sy)
         step = DRIFT_SPEED * (now - self.last_t if self.last_t is not None else 1 / 30.0)
+        zoom = self.zoom                                           # travel keeps the current zoom (zoom changes only at rest)
         if d <= max(step, 1.5):
             self._drift_pt = (sx, sy)
             if self._drift_arrived_t is None:
                 self._drift_arrived_t = now
                 self._drift_visited[s["id"]] = now
-            dwell = DRIFT_DWELL_CAMP_S if s.get("kind") == "camp" else DRIFT_DWELL_OTHER_S
-            if now - self._drift_arrived_t >= dwell:
+            zoom = self._dwell_zoom(s)
+            if now - self._drift_arrived_t >= self._dwell_s(s):
                 nxt = self._pick_stop(now, stops, exclude=s["id"])
                 if nxt is not None and nxt["id"] != s["id"]:
                     self._drift_stop, self._drift_arrived_t = nxt, None
         else:
             self._drift_pt = (px + (sx - px) / d * step, py + (sy - py) / d * step)
-        return "DRIFT", self._drift_pt, 1.0
+        return "DRIFT", self._drift_pt, zoom
+
+    @staticmethod
+    def _dwell_s(s: Dict[str, Any]) -> float:
+        kind = str(s.get("kind") or "")
+        if kind == "moot":
+            return DRIFT_DWELL_MOOT_S
+        return DRIFT_DWELL_CAMP_S if kind == "camp" else DRIFT_DWELL_OTHER_S
+
+    @staticmethod
+    def _dwell_zoom(s: Dict[str, Any]) -> float:
+        return DRIFT_ZOOM.get(str(s.get("kind") or ""), 1.0)
 
     def _pick_stop(self, now, stops, exclude: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Nearest stop not visited inside 10 min (route never repeats early); if all were, the least recent."""
-        cands = [s for s in stops if s.get("id") != exclude] or list(stops)
+        """Moot, mark, Moot, mark...: after any non-Moot stop the next stop is the Moot (exempt from the 10-min rule);
+        after the Moot the nearest real mark / natural point not visited inside 10 min, else the least recent. So >= 50 %
+        of Kick's 90-120 s card snapshots carry the carved SAY ANYTHING + the stones + the beacon, the rest a sleeper's
+        tent at 1.5x, never an anonymous green map."""
+        moot = next((s for s in stops if s.get("kind") == "moot" or s.get("id") == DRIFT_MOOT_ID), None)
+        cur = self._drift_stop
+        at_moot = cur is not None and (cur.get("kind") == "moot" or cur.get("id") == DRIFT_MOOT_ID)
+        if moot is not None and not at_moot and (exclude is not None or cur is None):
+            return moot                                  # after any mark, and as the first stop of a session: the spawn
+        cands = [s for s in stops if s.get("id") != exclude and s is not moot] or [s for s in stops if s.get("id") != exclude] or list(stops)
         if not cands:
             return None
         fresh = [s for s in cands if now - self._drift_visited.get(s["id"], -1e12) >= DRIFT_REPEAT_S]
@@ -771,23 +815,31 @@ def _self_test(verbose: bool = True) -> bool:
     # 3. DRIFT: survey over real stops, dwell, no repeat inside 10 min, continuous motion
     cam3 = Camera()
     cam3.resume(None)
-    stops = [{"id": "camp:a", "kind": "camp", "owner": "a", "x": 400, "y": 200}, {"id": "camp:b", "kind": "camp", "owner": "b", "x": 560, "y": 260},
-             {"id": "natural:ford", "kind": "natural", "owner": None, "x": 500, "y": 150}]
+    mx3, my3 = cam3.moot
+    stops = [{"id": "camp:a", "kind": "camp", "owner": "a", "x": mx3 - 80, "y": my3 - 20}, {"id": "camp:b", "kind": "camp", "owner": "b", "x": mx3 + 80, "y": my3 + 40},
+             {"id": "natural:ford", "kind": "natural", "owner": None, "x": mx3 + 20, "y": my3 - 70},
+             {"id": DRIFT_MOOT_ID, "kind": "moot", "owner": None, "x": mx3, "y": my3 + 4}]
     t = 3000.0
     visited, ms, prev = [], 0.0, (cam3.cx, cam3.cy)
-    still = 0
-    for i in range(int(120 * fps)):
+    dwell_zoom = {}
+    for i in range(int(240 * fps)):
         t += dt
         cam3.update(t, dt, stops=stops)
         sid = (cam3._drift_stop or {}).get("id")
         if not visited or visited[-1] != sid:
             visited.append(sid)
+        if cam3._drift_arrived_t is not None and t - cam3._drift_arrived_t > 25.0 and sid is not None:
+            dwell_zoom[sid] = cam3.zoom                     # the zoom once settled at the stop
         sp = _hyp(cam3.cx, cam3.cy, prev[0], prev[1]) / dt
         ms = max(ms, sp)
         prev = (cam3.cx, cam3.cy)
     check(cam3.mode == "DRIFT", "drift: mode DRIFT at 0 awake")
     check(ms <= PAN_CAP + 1e-6, "drift: max speed %.2f <= cap" % ms)
-    check(len(visited) >= 2 and len(set(visited)) == len(visited), "drift: visited %s without an early repeat" % visited)
+    non_moot = [v for v in visited if v != DRIFT_MOOT_ID]
+    alternates = all((visited[i] == DRIFT_MOOT_ID) != (visited[i + 1] == DRIFT_MOOT_ID) for i in range(len(visited) - 1))
+    check(len(visited) >= 4 and alternates and len(set(non_moot)) == len(non_moot),
+          "drift: stops alternate Moot / mark with no early non-Moot repeat: %s" % visited)
+    check(dwell_zoom.get(DRIFT_MOOT_ID) == 1.5, "drift: the Moot dwell settles at 1.5x (dwell zooms %s)" % dwell_zoom)
     check(ms <= DRIFT_SPEED * 1.6, "drift: survey speed %.2f cells/s stays near %.0f" % (ms, DRIFT_SPEED))
 
     # 4. CLOSE: one pip standing still 35 s -> 1.5x after the rest + 20 s gates, then a 12-frame blend
@@ -799,6 +851,22 @@ def _self_test(verbose: bool = True) -> bool:
         cam4.update(t, dt, awake=[{"key": "solo", "x": cam4.moot[0] + 5, "y": cam4.moot[1], "fx": 1, "fy": 0, "walking": False, "spoke_t": None}])
     zf, zt, a = cam4.zoom_blend(t)
     check(cam4.mode == "CLOSE" and cam4.zoom == 1.5, "close: one still pip -> CLOSE at 1.5x (mode %s zoom %s)" % (cam4.mode, cam4.zoom))
+    two = Camera()
+    two.resume(None)
+    t2 = 4500.0
+    for i in range(int(40 * fps)):
+        t2 += dt
+        two.update(t2, dt, awake=[{"key": "p", "x": two.moot[0] - 12, "y": two.moot[1], "fx": 1, "fy": 0, "walking": False, "spoke_t": None},
+                                   {"key": "q", "x": two.moot[0] + 14, "y": two.moot[1] + 6, "fx": -1, "fy": 0, "walking": False, "spoke_t": None}])
+    check(two.mode == "CLOSE" and two.zoom == 1.5, "close: two still pips 27 cells apart -> CLOSE at 1.5x (mode %s zoom %s)" % (two.mode, two.zoom))
+    far = Camera()
+    far.resume(None)
+    t2 = 4600.0
+    for i in range(int(40 * fps)):
+        t2 += dt
+        far.update(t2, dt, awake=[{"key": "p", "x": far.moot[0] - 60, "y": far.moot[1], "fx": 1, "fy": 0, "walking": False, "spoke_t": None},
+                                   {"key": "q", "x": far.moot[0] + 60, "y": far.moot[1], "fx": -1, "fy": 0, "walking": False, "spoke_t": None}])
+    check(far.mode == "FOLLOW" and far.zoom == 1.0, "close: two still pips 120 cells apart -> FOLLOW at 1x (mode %s zoom %s)" % (far.mode, far.zoom))
     px0, py0, pw, ph = cam4.bake_crop()
     check((pw, ph) == CROP_PX[1.5] and px0 >= 0 and py0 >= 0, "close: bake crop %dx%d at (%d,%d)" % (pw, ph, px0, py0))
     check(a == 1.0, "close: crossfade finished (alpha %.2f)" % a)
@@ -822,34 +890,45 @@ def _self_test(verbose: bool = True) -> bool:
     hud.resume(None)
     t = 6000.0
     mx_, my_ = hud.moot
-    grp = [{"key": "n", "x": mx_ - 40, "y": my_ - 46, "fx": 0, "fy": 1, "walking": True, "spoke_t": t},
+    #     (720 rows: the group spans 120 cells, still inside the 1x safe band of 166 cells; a bare camera with no box
+    #     puts the north head at y ~14 under the plank)
+    grp = [{"key": "n", "x": mx_ - 40, "y": my_ - 120, "fx": 0, "fy": 1, "walking": True, "spoke_t": t},
            {"key": "s", "x": mx_ - 30, "y": my_, "fx": 0, "fy": 1, "walking": False, "spoke_t": None},
            {"key": "e", "x": mx_ + 40, "y": my_ - 10, "fx": 1, "fy": 0, "walking": False, "spoke_t": None}]
+    bare0 = Camera(allow_zoom=False)
+    bare0.resume(None)
+    bare0.hud_boxes = []
     for i in range(int(12 * fps)):
         t += dt
         for a in grp:
             a["spoke_t"] = t if a["key"] == "n" else a["spoke_t"]
         hud.update(t, dt, awake=grp)
+        bare0.update(t, dt, awake=[dict(a) for a in grp])
     heads = []
     for a in grp:
         r = hud.sim_to_screen(a["x"], a["y"] - HEAD_CELLS)
         heads.append((a["key"], None if r is None else (int(r[0]), int(r[1]))))
     under = [k for k, r in heads if r is not None and r[0] < HUD_LEFT_W + 24 and r[1] < HUD_TOP_PX]
-    check(hud.mode == "FOLLOW" and not under and hud.hud_nudge > 0.0, "hud dead zone: no followed head under the top-left chips (heads %s, nudge %.1f cells)" % (heads, hud.hud_nudge))
+    hb = bare0.sim_to_screen(grp[0]["x"], grp[0]["y"] - HEAD_CELLS)
+    bites = hb is not None and hb[1] < HUD_TOP_PX
+    check(hud.mode == "FOLLOW" and not under and bites, "hud dead zone: no followed head under the plank band (heads %s; without the box the north head sits at y %s)" % (
+        heads, None if hb is None else int(hb[1])))
     feet = [hud.sim_to_screen(a["x"], a["y"]) for a in grp]
     check(all(f is not None and f[1] <= SCREEN[1] for f in feet), "hud dead zone: every framed pip's feet stay inside the region (%s)" % [None if f is None else int(f[1]) for f in feet])
 
     # 4c. bottom dead zone (journal 030): the minimap box bottom-right; three pips whose weighted centre puts the
     #     east one's feet inside that box at 1x; with the bottom box the target is pushed down (sprites up) until the
     #     feet clear the box, while every head stays clear of the top boxes
+    #     (the minimap is gone with the full-bleed land; the bottom-box path stays and is proven with a synthetic box)
+    bbox = (1108, 618, 1272, 712)
     mm = Camera(allow_zoom=False)
     mm.resume(None)
-    mm.hud_boxes = [(0, 0, HUD_LEFT_W, HUD_TOP_PX), HUD_RIGHT_BOX, (1108, 354, 1272, 448)]
+    mm.hud_boxes = [(0, 0, HUD_LEFT_W, HUD_TOP_PX), bbox]
     t = 7000.0
     mx_, my_ = mm.moot
     grp = [{"key": "w1", "x": mx_ - 100, "y": my_ - 8, "fx": 1, "fy": 0, "walking": False, "spoke_t": t},
            {"key": "w2", "x": mx_ - 90, "y": my_ + 6, "fx": 1, "fy": 0, "walking": False, "spoke_t": None},
-           {"key": "e", "x": mx_ + 118, "y": my_ + 34, "fx": 0, "fy": 1, "walking": False, "spoke_t": None}]
+           {"key": "e", "x": mx_ + 118, "y": my_ + 68, "fx": 0, "fy": 1, "walking": False, "spoke_t": None}]
     bare = Camera(allow_zoom=False)                        # the same frame without the bottom box: proves the scenario bites
     bare.resume(None)
     min_nudge = 0.0
@@ -864,11 +943,48 @@ def _self_test(verbose: bool = True) -> bool:
     feet_bare = bare.sim_to_screen(grp[2]["x"], grp[2]["y"])
     feet_mm = mm.sim_to_screen(grp[2]["x"], grp[2]["y"])
     heads_mm = [mm.sim_to_screen(a["x"], a["y"] - HEAD_CELLS) for a in grp]
-    under_top = [h for h in heads_mm if h is not None and ((h[0] < HUD_LEFT_W + 24 and h[1] < HUD_TOP_PX) or (h[0] > 848 - 24 and h[1] < 152))]
-    check(_in_box(feet_bare, (1108, 354, 1272, 448)), "bottom dead zone: without the minimap box the east pip's feet land in it (feet %s)" % (None if feet_bare is None else (int(feet_bare[0]), int(feet_bare[1])),))
-    check(mm.mode == "FOLLOW" and feet_mm is not None and not _in_box(feet_mm, (1108, 354, 1272, 448)) and min_nudge < 0.0,
-          "bottom dead zone: with the minimap box the feet are pushed above it (feet %s, push peaked at %.1f cells)" % (None if feet_mm is None else (int(feet_mm[0]), int(feet_mm[1])), -min_nudge))
+    under_top = [h for h in heads_mm if h is not None and (h[0] < HUD_LEFT_W + 24 and h[1] < HUD_TOP_PX)]
+    check(_in_box(feet_bare, bbox), "bottom dead zone: without the bottom box the east pip's feet land in it (feet %s)" % (None if feet_bare is None else (int(feet_bare[0]), int(feet_bare[1])),))
+    check(mm.mode == "FOLLOW" and feet_mm is not None and not _in_box(feet_mm, bbox) and min_nudge < 0.0,
+          "bottom dead zone: with the bottom box the feet are pushed above it (feet %s, push peaked at %.1f cells)" % (None if feet_mm is None else (int(feet_mm[0]), int(feet_mm[1])), -min_nudge))
     check(not under_top, "bottom dead zone: no head came back under a top chip (heads %s)" % [None if h is None else (int(h[0]), int(h[1])) for h in heads_mm])
+
+    # 4d. a seed EVENT cut: two people at the river far from the Moot, a new record lands a nameless tuft on the green ->
+    #     the camera's mode is EVENT on that very frame and the landing point is framed within the 4 s hold (the typist
+    #     sees a landing within one frame even when the camera was elsewhere; journal 034 judges' gap)
+    ev = Camera()
+    ev.resume(None)
+    t = 8000.0
+    mx_, my_ = ev.moot
+    riv = [{"key": "r1", "x": mx_ + 150, "y": my_ + 40, "fx": 1, "fy": 0, "walking": False, "spoke_t": None},
+           {"key": "r2", "x": mx_ + 160, "y": my_ + 48, "fx": 1, "fy": 0, "walking": False, "spoke_t": None}]
+    for i in range(int(8 * fps)):
+        t += dt
+        ev.update(t, dt, awake=riv)
+    far_off = not ev.in_view(mx_, my_ + 6)
+    t += dt
+    ev.update(t, dt, awake=riv, seeds=[(mx_ + 3, my_ + 6)], events=[{"type": "seed", "x": mx_ + 3, "y": my_ + 6}])
+    mode_at_seed = ev.mode
+    for i in range(int(3.5 * fps)):
+        t += dt
+        ev.update(t, dt, awake=riv, seeds=[(mx_ + 3, my_ + 6)])
+    check(far_off and mode_at_seed == "EVENT", "seed event: camera was elsewhere (Moot off view %s) and cut to EVENT on the record's frame (mode %s)" % (far_off, mode_at_seed))
+    check(ev.mode == "EVENT" and ev.in_view(mx_ + 3, my_ + 6) and ev.cuts == 0, "seed event: the landing point is in view inside the 4 s hold with no cut (mode %s, in view %s)" % (ev.mode, ev.in_view(mx_ + 3, my_ + 6)))
+
+    # 4e. MOOT framing never clips the board: with the stones' screen-scale stack (STONE_TOP_PX) as the dead-zone height,
+    #     a voter standing at the stones with the round closing puts the middle stone at least STONE_TOP_PX + 54 below the
+    #     top edge at every zoom the mode picks (else the MOOT BOARD's rail would be culled under the plank / off the top)
+    bd = Camera()
+    bd.resume(None)
+    t = 9000.0
+    st3 = [(bd.moot[0] - 12, bd.moot[1] - 4), (bd.moot[0], bd.moot[1] - 9), (bd.moot[0] + 12, bd.moot[1] - 4)]
+    for i in range(int(12 * fps)):
+        t += dt
+        bd.update(t, dt, awake=[{"key": "v", "x": st3[1][0], "y": st3[1][1] + 9, "fx": 0, "fy": -1, "walking": False, "spoke_t": None}],
+                  moot={"stones": st3, "voters": ["v"], "walking_to_stone": False, "round_remaining": 20})
+    sb = bd.sim_to_screen(st3[1][0], st3[1][1])
+    check(bd.mode == "MOOT" and sb is not None and sb[1] - STONE_TOP_PX >= HUD_TOP_PX - 1, "moot board: the B stone sits at screen y %s so its %d px stack clears the plank band (%d) at %sx" % (
+        None if sb is None else int(sb[1]), int(STONE_TOP_PX), HUD_TOP_PX, bd.zoom))
 
     # 5. persistence round trip: resume keeps the position (no jump)
     d = cam4.to_dict(t)

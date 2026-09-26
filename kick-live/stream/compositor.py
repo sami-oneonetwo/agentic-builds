@@ -51,7 +51,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
 
 from stream import layout as L  # noqa: E402
 from stream.panels import PANEL_REGISTRY, IMPORT_ERRORS, discover, placeholder  # noqa: E402
@@ -64,8 +64,21 @@ PANEL_BUDGET_MS = 28.0
 PANEL_STRIKES = 30
 PANEL_RETRY_FRAMES = 300
 STATIC_WATCHDOG_FRAMES = 30
-WORLD_BAND = (66, 522)           # the static watchdog watches the WORLD rows (art-rules 4), so the header clock cannot mask a frozen land
-HEADER_MIN_STD = 8.0             # self-test: luminance std of the 0-66 header band below this counts as a blank header
+WORLD_BAND = (0, 720)            # the static watchdog watches the WORLD rows = the whole frame (full-bleed land, journal 034)
+# the owner's rule as a mechanical gate (journal 032 / 034): none of these may appear, as a whole token, in any string the
+# world panel writes ITSELF (plank, plates, board, sign, marker, arrows, letters). A person's own words (bubbles, labels)
+# are theirs and are excluded; `@tokens` are stripped before matching. Wall clocks match outside the timer / closes-in forms.
+BANNED_COPY = ("ai", "keeper", "keepers", "on duty", "build", "builds", "show", "live", "version", "fps", "ms", "viewer", "viewers",
+               "watching", "camera", "mic", "fake", "honest", "honesty", "surveying", "awake", "longgrass", "chat is quiet",
+               "someone is arriving", "leads", "tied", "reverting", "next round soon", "picked", "failed", "counts while standing",
+               "to do that, type", "the keepers read it next", "one letter decides it")
+BANNED_COPY_RE = re.compile(r"(?<![a-z0-9_])(?:%s)(?![a-z0-9_])" % "|".join(re.escape(t) for t in sorted(BANNED_COPY, key=len, reverse=True)))
+BANNED_VERSION_RE = re.compile(r"(?<![a-z0-9_])v\d+\.\d+")
+BANNED_DAY_RE = re.compile(r"(?<![a-z0-9_])day \d+")
+BANNED_CLOCK_RE = re.compile(r"(?<![0-9:])\d{1,2}:\d{2}(?![0-9:])")
+CLOCK_OK_RE = re.compile(r"(closes in \d{1,2}:\d{2}|^\d{1,2}:\d{2}$|A B C · \d{1,2}:\d{2})")
+TILE_SIZES = ((320, 180), (284, 160))   # Kick's directory tile and the smallest card it actually serves
+TILE_MIN_PX = 16.0                      # a creature + its name chip must be at least this tall at 284 wide
 HOT_RELOAD_S = 2.0               # file watch interval (wallclock)
 HOT_RELOAD_SETTLE_S = 0.3        # a file modified less than this long ago may still be half-written: next poll
 HOT_RELOAD_PROBATION = 30        # renders during which a raise rolls back to the previous panel + module
@@ -541,10 +554,13 @@ class Compositor(object):
                                "hot_reload": self.reloader.stats, "selftest": bool(selftest)}
         self._frame_votes: List[Dict] = []    # accepted live votes ingested this frame (vote-to-strip latency proof)
         self.vote_acks = [0, 0]               # [acknowledged on the same frame, total]
-        self.header_blank = 0                 # frames whose header band (rows 0-66) had no contrast
-        self.honesty_rows_missing = 0         # self-test: frames whose land strip did not carry the honesty line + the keepers sentence
-        self.card_mismatch = 0                # self-test: frames where a vote-card count string differed from its stone's
-        self.card_checked = 0
+        self.boot_frames = 0                  # self-test: frames before the land scene booted (excluded from the watchdog / tile gate)
+        self.board_checked = 0                # self-test: frames the MOOT BOARD was drawn
+        self.board_mismatch = 0               # ... where its lit segment / titles disagreed with who stands / the round's options
+        self.copy_frames = 0                  # self-test: frames the copy check ran over the panel's own strings
+        self.copy_hits = 0                    # ... banned strings drawn (must stay 0)
+        self.tile_stats: Dict[str, int] = {k: 0 for k in ("frames", "awake_frames", "awake_ok", "zero_frames", "zero_ok", "moot_frames", "moot_ok",
+                                                          "sign_frames", "marker_due", "marker_ok")}
 
     # ------------------------------------------------------------------ slots (hot reload uses these)
     def slot_for(self, key: str) -> Optional[Slot]:
@@ -755,43 +771,134 @@ class Compositor(object):
             self._log_vote_ack(votes, frame)
         return self.canvas
 
+    @staticmethod
+    def _world_booted() -> bool:
+        """True once the land scene has booted (before that the frame is the scene's flat meadow beat, identical by
+        design while the terrain thread runs: the watchdog and the tile gate start counting from the first real frame)."""
+        wm = sys.modules.get("stream.panels.world")
+        try:
+            sc = wm.scene() if (wm is not None and hasattr(wm, "scene")) else None
+            return bool(sc is not None and getattr(sc, "booted", False))
+        except Exception:
+            return True
+
     def _world_static(self, b: bytes) -> None:
-        """Track identical WORLD-region frames (rows 66-522 of the rgb24 buffer): the header and the vote card's fuse move
-        on their own, so a whole-frame comparison never fires when only the land is frozen."""
+        """Track identical WORLD-region frames (rows 0-720 of the rgb24 buffer: the whole frame is the land now)."""
+        if not self._world_booted():
+            self.boot_frames += 1
+            self.last_world = None
+            return
         wb = b[L.W * 3 * WORLD_BAND[0]:L.W * 3 * WORLD_BAND[1]]
         self.same_world = self.same_world + 1 if wb == self.last_world else 0
         self.last_world = wb
         if self.same_world > self.longest_static_world:
             self.longest_static_world = self.same_world
 
+    @staticmethod
+    def banned_copy_hits(strings: List[str]) -> List[str]:
+        """The owner's rule as a function: every drawn string of ours that carries a banned token (case-insensitive, whole
+        token, @names stripped first), a version tag, `day N` or a wall clock outside the timer forms."""
+        hits: List[str] = []
+        for t in strings:
+            raw = str(t or "")
+            low = re.sub(r"@[^\s·]+", "", raw).lower()
+            if BANNED_COPY_RE.search(low) or BANNED_VERSION_RE.search(low) or BANNED_DAY_RE.search(low):
+                hits.append(raw)
+            elif BANNED_CLOCK_RE.search(low) and not CLOCK_OK_RE.search(raw):
+                hits.append(raw)
+        return hits
+
     def _hud_checks(self) -> None:
-        """Per-frame self-test assertions for the HUD pass: the land strip's inputs() key carries the keepers sentence
-        and the two honesty rows; the world panel's card counts equal its stone counts letter by letter."""
-        slot = self.slot_for("colony")
-        key = getattr(slot, "last_inputs", None) if slot is not None else None
-        ok = False
-        if isinstance(key, tuple) and len(key) >= 4 and isinstance(key[3], tuple):
-            rows = " ".join(key[3])
-            ok = ("no camera, no mic, no fake viewers." in rows and "real person" in rows and "AI keepers build this show live" in str(key[1]))
-        if not ok:
-            self.honesty_rows_missing += 1
+        """Per-frame self-test assertions for the full-bleed land (journal 034): the MOOT BOARD lights the letter with the
+        unique max standing count (None on a tie / zero) and draws the round's option titles WHOLE (== the panel's own
+        board_title(): HN-safe glyphs, cut only past BOARD_TITLE_MAX_W, which no menu title reaches), for every frame it
+        is drawn; and no string the world panel wrote itself carries a banned token (the copy check)."""
         wm = sys.modules.get("stream.panels.world")
         pnl = getattr(wm, "PANEL", None) if wm is not None else None
-        if pnl is not None:
-            card = getattr(pnl, "last_card_counts", {}) or {}
-            for letter, txt in (getattr(pnl, "last_stone_counts", {}) or {}).items():
-                self.card_checked += 1
-                if card.get(letter) != txt:
-                    self.card_mismatch += 1
+        if pnl is None or not self._world_booted():
+            return
+        if getattr(pnl, "last_board_drawn", False):
+            self.board_checked += 1
+            ns = dict(getattr(pnl, "last_stone_n", {}) or {})
+            try:
+                sc = wm.scene()
+                pc = sc.platform_counts() if sc is not None else {}
+                ns = {k: len(v or []) for k, v in pc.items()} or ns      # an independent read of who stands
+            except Exception:
+                pass
+            best = max(ns.values()) if ns else 0
+            leaders = [k for k, n in ns.items() if n == best and n > 0]
+            want_lit = leaders[0] if len(leaders) == 1 else None
+            rnd = self.store.state.get("round") or {}
+            phase = rnd.get("phase") or "open"
+            lit = getattr(pnl, "last_board_lit", None)
+            if phase == "ship":
+                res = rnd.get("last_result") or {}
+                want_lit = str(res.get("letter") or "").upper() or None
+                if res.get("ok") is False:
+                    want_lit = None
+            want_titles = {}
+            bt = getattr(wm, "board_title", None)
+            for o in rnd.get("options") or []:
+                if isinstance(o, dict) and o.get("letter") and o.get("title"):
+                    raw = L.strip_non_bmp(str(o["title"])).strip()
+                    want_titles[str(o["letter"]).upper()] = bt(raw) if callable(bt) else L.truncate("HN Medium", 22, raw, 560)
+            got_titles = dict(getattr(pnl, "last_board_titles", {}) or {})
+            ok_titles = all(got_titles.get(k, "") == v for k, v in want_titles.items()) if want_titles else True
+            if ok_titles and any("\u2192" in v or "\u2190" in v for v in got_titles.values()):
+                ok_titles = False                                   # an arrow reached an HN face: it renders as .notdef
+            if ok_titles and any(v.endswith("…") and len(v) < len(want_titles.get(k, "")) for k, v in got_titles.items()
+                                 if L.text_width("HN Medium", 22, want_titles.get(k, "")) <= 560):
+                ok_titles = False                                   # a title that fits was cut
+            if lit != want_lit or not ok_titles:
+                self.board_mismatch += 1
+                if self.board_mismatch <= 3:
+                    log("moot board check: lit %r want %r; titles %r want %r" % (lit, want_lit, got_titles, want_titles))
+        copy = list(getattr(pnl, "last_copy", []) or [])
+        self.copy_frames += 1
+        hits = self.banned_copy_hits(copy)
+        if hits:
+            self.copy_hits += len(hits)
+            if self.copy_hits <= 5:
+                log("copy check: banned string(s) drawn: %r" % (hits[:3],))
+        # the tile gate's per-frame facts (from panel stats, not pixels)
+        try:
+            sc = wm.scene()
+            awake = int(sc.awake_count()) if sc is not None else 0
+            cam = getattr(sc, "camera", None)
+            mode = getattr(cam, "mode", None)
+            stop = getattr(cam, "drift_stop", None) or {}
+            at_moot = mode == "DRIFT" and (stop.get("kind") == "moot" or stop.get("id") == "moot") and getattr(cam, "_drift_arrived_t", None) is not None
+            self.tile_stats["frames"] += 1
+            if awake >= 1:
+                self.tile_stats["awake_frames"] += 1
+                if float(getattr(pnl, "last_tile_px", 0.0) or 0.0) >= TILE_MIN_PX:
+                    self.tile_stats["awake_ok"] += 1
+            else:
+                self.tile_stats["zero_frames"] += 1
+                if int(getattr(pnl, "last_marks_in_view", 0) or 0) + int(getattr(pnl, "last_sleepers_in_view", 0) or 0) > 0 or getattr(pnl, "last_sign_in_view", False):
+                    self.tile_stats["zero_ok"] += 1
+                if at_moot:
+                    self.tile_stats["moot_frames"] += 1
+                    if getattr(pnl, "last_stones_in_view", 0) == 3 and getattr(pnl, "last_beacon_in_view", False) and getattr(pnl, "last_sign_in_view", False):
+                        self.tile_stats["moot_ok"] += 1
+            if getattr(pnl, "last_sign_in_view", False):
+                self.tile_stats["sign_frames"] += 1
+            rnd = self.store.state.get("round") or {}
+            if awake >= 1 and rnd.get("options") and (rnd.get("phase") or "open") != "ship" and getattr(pnl, "last_stones_in_view", 0) == 0:
+                self.tile_stats["marker_due"] += 1
+                if getattr(pnl, "last_marker", None):
+                    self.tile_stats["marker_ok"] += 1
+        except Exception:
+            pass
 
     def _log_vote_ack(self, votes: List[Dict], frame: int) -> None:
         """Prove CONCEPT 2 'name on screen within one second': the world plank (stream/panels/world.py PANEL.last_plank;
         the legacy pinned strip when no world panel is loaded) on the SAME frame the vote was ingested must read
-        `@name walks to X · counts while standing there · closes in m:ss` (HUD pass, journal 028: the tally is who stands
-        at the stone at close, so the ack leads with the walk). A first-time chatter inside their 3 s hold is nameless on
-        the land, so their same-frame ack reads `someone new walks to X` (the by-name ack follows at show_t, journal
-        030); `walks to X` + `counts while standing` is what is asserted, plus the display name when it is already past
-        the hold. Counted in self.vote_acks."""
+        `@name stands at X · <title> · closes in m:ss` (journal 034: `stands at` carries the standing rule in two words;
+        the option title rides along). A first-time chatter inside their 3 s hold is nameless on the land, so their
+        same-frame ack reads `someone new stands at X` (the by-name ack follows at show_t, journal 030); `stands at X` is
+        what is asserted, plus the display name when it is already past the hold. Counted in self.vote_acks."""
         wm = sys.modules.get("stream.panels.world")
         pnl = getattr(wm, "PANEL", None) if wm is not None else None
         txt = getattr(pnl, "last_plank", None) if pnl is not None else None
@@ -802,10 +909,10 @@ class Compositor(object):
             txt = key[0] if isinstance(key, tuple) and key else None
             where = "pinned strip"
         for m in votes:
-            want = "@%s walks to %s" % (m.get("display_name"), m.get("letter"))
-            held = "walks to %s" % m.get("letter")
+            want = "@%s stands at %s" % (m.get("display_name"), m.get("letter"))
+            held = "stands at %s" % m.get("letter")
             s = str(txt or "")
-            ok = bool(txt) and "counts while standing" in s and (want in s or (held in s and ("someone new" in s or "@builder #" in s)))   # several votes in one frame share the plank
+            ok = bool(txt) and (want in s or (held in s and ("someone new" in s or "@builder #" in s)))   # several votes in one frame share the plank
             self.vote_acks[1] += 1
             self.vote_acks[0] += 1 if ok else 0
             log("vote ack: frame %d %s -> %s reads %r (%s)" % (frame, want, where, txt, "same frame" if ok else "NOT shown"))
@@ -983,7 +1090,8 @@ class Compositor(object):
             import numpy as _np
         except Exception:
             _np = None
-        hdr_min = None
+        tile_frames: List[Tuple[int, Image.Image]] = []
+        lum_sum, lum_frac_sum, lum_n = 0.0, 0.0, 0
         t_start = time.perf_counter()
         realtime = os.environ.get("KL_SELFTEST_REALTIME") == "1"
         if realtime:
@@ -1009,37 +1117,65 @@ class Compositor(object):
             self.same_frames = self.same_frames + 1 if b == self.last_bytes else 0
             self.last_bytes = b
             self._world_static(b)
-            if _np is not None:
-                # header over every scene, proven per frame: the 0-66 band must have contrast (std of luminance > 8)
-                band = _np.frombuffer(b, dtype=_np.uint8)[:L.W * 66 * 3].reshape(66, L.W, 3)
-                sd = float(band.astype(_np.float32).mean(axis=2).std())
-                hdr_min = sd if hdr_min is None else min(hdr_min, sd)
-                if sd <= HEADER_MIN_STD:
-                    self.header_blank += 1
             self._hud_checks()
+            if _np is not None and (i % 30 == 29 or i == n - 1):
+                # the tile gate's luminance facts on the whole frame (the night floor: >= 60 % of pixels above 0.12)
+                small = img.resize((320, 180), Image.Resampling.BOX)
+                a = _np.asarray(small, _np.float32) / 255.0
+                lum = 0.2126 * a[..., 0] + 0.7152 * a[..., 1] + 0.0722 * a[..., 2]
+                lum_sum += float(lum.mean()); lum_frac_sum += float((lum > 0.12).mean()); lum_n += 1
+            if i in (n // 4, n // 2, (3 * n) // 4, n - 1):
+                tile_frames.append((i, img.copy()))
             img.save(os.path.join(out_dir, "frame_%04d.png" % i))
             if i % 30 == 0:
                 self._update_counters(t_start, time.perf_counter())
         self._update_counters(t_start, time.perf_counter())
         log(self._report("self-test"))
-        log("static-frame watchdog: longest identical run %d frames (limit %d); WORLD region (rows %d-%d) longest static run %d frames -> %s" % (
-            self.same_frames, STATIC_WATCHDOG_FRAMES, WORLD_BAND[0], WORLD_BAND[1], self.longest_static_world,
+        log("static-frame watchdog: longest identical run %d frames (limit %d); WORLD region (rows %d-%d) longest static run %d frames after boot (%d boot frames skipped) -> %s" % (
+            self.same_frames, STATIC_WATCHDOG_FRAMES, WORLD_BAND[0], WORLD_BAND[1], self.longest_static_world, self.boot_frames,
             "PASS" if self.longest_static_world < STATIC_WATCHDOG_FRAMES else "FAIL"))
         if self.longest_static_world >= STATIC_WATCHDOG_FRAMES:
             rc_static = 1
         else:
             rc_static = 0
-        log("header band check: %d/%d frames non-blank (min luminance std %.1f, threshold %.0f) -> %s" % (
-            n - self.header_blank, n, hdr_min if hdr_min is not None else -1.0, HEADER_MIN_STD, "PASS" if not self.header_blank else "FAIL"))
         log("vote ack check: %d/%d live votes acknowledged on the world plank in the same frame" % (self.vote_acks[0], self.vote_acks[1]))
-        # HUD pass (journal 028): the honesty line and the keepers sentence are on the land strip in EVERY frame (ADR-000),
-        # and the vote card draws the same count string as the stone for every letter drawn
-        log("land strip check: honesty line + keepers sentence present in %d/%d frames -> %s" % (
-            n - self.honesty_rows_missing, n, "PASS" if not self.honesty_rows_missing else "FAIL"))
-        log("vote card check: %d/%d letter counts equal the stone's string -> %s" % (
-            self.card_checked - self.card_mismatch, self.card_checked, "PASS" if not self.card_mismatch else "FAIL"))
+        # full-bleed land (journal 034): the MOOT BOARD agrees with who stands and the round's options in every frame it is
+        # drawn; no banned copy is ever drawn; the tile gate's facts
+        log("moot board check: %d/%d drawn frames lit the unique leader and carried the round's titles whole -> %s" % (
+            self.board_checked - self.board_mismatch, self.board_checked, "PASS" if not self.board_mismatch else "FAIL"))
+        log("copy check: %d blocked strings drawn in %d frames -> %s" % (self.copy_hits, self.copy_frames, "PASS" if not self.copy_hits else "FAIL"))
+        ts = self.tile_stats
+        tile_ok = True
+        if ts["awake_frames"]:
+            ok_a = ts["awake_ok"] == ts["awake_frames"]
+            tile_ok = tile_ok and ok_a
+            log("tile gate: awake >= 1 in %d frames, a creature + name chip >= %.0f px at 284 wide in %d -> %s" % (
+                ts["awake_frames"], TILE_MIN_PX, ts["awake_ok"], "PASS" if ok_a else "FAIL"))
+        if ts["zero_frames"]:
+            ok_z = ts["zero_ok"] == ts["zero_frames"]
+            tile_ok = tile_ok and ok_z
+            log("tile gate: 0 awake in %d frames, a real mark / sleeper / the sign in view in %d -> %s" % (ts["zero_frames"], ts["zero_ok"], "PASS" if ok_z else "FAIL"))
+        if ts["moot_frames"]:
+            ok_m = ts["moot_ok"] == ts["moot_frames"]
+            tile_ok = tile_ok and ok_m
+            log("tile gate: DRIFT Moot dwell in %d frames, stones + beacon + sign all in view in %d -> %s" % (ts["moot_frames"], ts["moot_ok"], "PASS" if ok_m else "FAIL"))
+        if ts["marker_due"]:
+            ok_k = ts["marker_ok"] == ts["marker_due"]
+            tile_ok = tile_ok and ok_k
+            log("moot marker check: round open, awake >= 1, no stone in view in %d frames; marker drawn in %d -> %s" % (ts["marker_due"], ts["marker_ok"], "PASS" if ok_k else "FAIL"))
+        log("tile gate: sign in view in %d/%d frames; frame mean luminance %.3f, frac > 0.12 = %.2f over %d samples" % (
+            ts["sign_frames"], ts["frames"], (lum_sum / lum_n) if lum_n else -1.0, (lum_frac_sum / lum_n) if lum_n else -1.0, lum_n))
+        if lum_n and (lum_frac_sum / lum_n) < 0.60:
+            tile_ok = False
+            log("tile gate: frac > 0.12 luminance %.2f < 0.60 -> FAIL" % (lum_frac_sum / lum_n))
+        try:
+            self._write_tiles(out_dir, tile_frames)
+        except Exception:
+            log("tiles.png failed:\n" + traceback.format_exc())
+        p95 = sorted(self.frame_ms)[min(len(self.frame_ms) - 1, int(len(self.frame_ms) * 0.95))] if self.frame_ms else 0.0
+        log("frame budget: p95 %.1f ms (gate < 25 ms at 6 awake) -> %s" % (p95, "PASS" if p95 < 25.0 else "FAIL"))
         rc = rc_static
-        if self.honesty_rows_missing or self.card_mismatch:
+        if self.board_mismatch or self.copy_hits or not tile_ok:
             rc = 1
         # WORLD.md 11: the honesty assertions run every frame inside the world panel (HonestyMonitor); the self-test
         # fails when any frame had a violation (a planted fake pip must turn this red).
@@ -1074,6 +1210,23 @@ class Compositor(object):
         self._world_shutdown()
         self.bridge.flush(time.time(), force=True)
         return rc
+
+    @staticmethod
+    def _write_tiles(out_dir: str, frames: List[Tuple[int, Image.Image]]) -> Optional[str]:
+        """tiles.png: the sampled frames at 320x180 and 284x160 (LANCZOS), the frame as Kick's directory serves it."""
+        if not frames:
+            return None
+        cols = len(frames)
+        sheet = Image.new("RGB", (cols * 330, 180 + 160 + 30), (12, 14, 20))
+        d = ImageDraw.Draw(sheet)
+        for i, (fi, im) in enumerate(frames):
+            for j, (tw, th) in enumerate(TILE_SIZES):
+                t = im.convert("RGB").resize((tw, th), Image.Resampling.LANCZOS)
+                sheet.paste(t, (i * 330 + 5, 5 + j * 190))
+            d.text((i * 330 + 5, 360), "frame %d · 320x180 / 284x160" % fi, fill=(220, 220, 220))
+        path = os.path.join(out_dir, "tiles.png")
+        sheet.save(path)
+        return path
 
     @staticmethod
     def _world_shutdown() -> None:

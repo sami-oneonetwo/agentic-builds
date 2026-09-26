@@ -89,14 +89,16 @@ except Exception:                                                      # pragma:
 from stream.world.art import creatures, props, tiles  # noqa: E402
 
 NAME = "steading"
-SCREEN = (1280, 456)          # the world region (HUD pass, journal 028: was 440; 480 missed the 12 ms scene gate)
+SCREEN = (1280, 720)          # the world region = the whole frame (full-bleed land, journal 034; was 456)
 PPC = 4                                   # bake px per cell at 1x
 SAVE_S = 5.0
 FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "sleep", "hatch", "cairn_named")
 HISTORY_S = 60.0                          # a record older than this when first seen is boot/deploy history (ChatBridge.HISTORY_S)
 SEED_SINK_S = HOLD_S + 4.0
 HEARTBEAT_FRESH_S = 120.0
-DEGRADE_MS = (14.0, 18.0, 18.0, 20.0, 24.0, 28.0)   # clouds+wind · glow · shadows · labels/plates · bubbles · zoom pin
+DEGRADE_MS = (22.0, 28.0, 28.0, 32.0, 38.0, 44.0)   # clouds+wind · glow · shadows · labels/plates · bubbles · zoom pin
+                                                    # (x 720/456 with the full-bleed land: the ladder is per pixel count, else it
+                                                    # would switch clouds and wind off permanently under the bigger frame)
 DEGRADE_WINDOW = 30
 RESTORE_FRAMES = 300
 PROVENANCE_S = 5.0
@@ -107,8 +109,11 @@ EMBERS_S = 20 * 60.0                      # a camp fire burns while the owner is
 SEED_RING = 30                            # a tuft lands inside this ring around the Moot centre (3.1)
 TUFT_W, TUFT_H = 20, 16
 MOOT_LAYOUT = {                           # cell offsets from the Moot centre; the waystones come from the behaviour
-    "beacon": (6, -10),                       # = keepers.beacon_state(): the minimap's amber dot and the post agree
+    "beacon": (6, -10),                       # = keepers.beacon_state(): lit on a fresh keeper heartbeat, dark otherwise
     "hearth": (-16, 10), "cairn": (16, 10),
+    "sign": (0, 46),                          # the SAY ANYTHING sign's post cell (the text layer draws it): south of the hearth /
+                                              # cairn row with room for the cairn's plate at 1x, outside the SEED_RING so a tuft
+                                              # never lands under it (journal 034: 38 put the plate inside the sign's body)
 }
 HOP_BODY_FRAMES = ("hop0", "hop1")            # drawn body-only over creatures.shadow() so the shadow stays on the ground
 # Settlers are drawn slightly larger than the atlas's 1x sizes (owner fix pass, journal 023 handoff: 26/30/34/42 px read
@@ -320,7 +325,7 @@ class SteadingScene(object):
 
     def __init__(self, run_dir: Optional[str] = None, seed: Optional[int] = None, log=None,
                  sleep_after_s: float = SLEEP_AFTER_S, hold_s: float = HOLD_S, name_filter=None,
-                 allow_zoom: bool = False, map_seed: int = LAND.MAP_SEED):
+                 allow_zoom: bool = True, map_seed: int = LAND.MAP_SEED):
         self.run_dir = run_dir or os.environ.get("RUN_DIR") or os.path.join(_ROOT, "run")
         self.log = log or _log
         self.seed = int(seed) if seed is not None else None
@@ -328,7 +333,8 @@ class SteadingScene(object):
         self.sleep_after_s = float(sleep_after_s)
         self.hold_s = float(hold_s)
         self._name_filter = name_filter
-        self.allow_zoom = bool(allow_zoom)            # v0 preview pins 1x (OPENWORLD 13); the ladder pins it too
+        self.allow_zoom = bool(allow_zoom)            # the zoom ladder is on (journal 034: CLOSE / hatch / Moot dwell at 1.5x, 0.75x
+                                                      # only when a group does not fit 1x); the degrade ladder's last rung pins 1x
         self.force_zoom: Optional[float] = None       # TEST HOOK (test mode only): pin the camera at a zoom
         self.world: Optional[WorldState] = None
         self.behaviour: Optional[Behaviour] = None
@@ -1058,6 +1064,13 @@ class SteadingScene(object):
                 self.worker.submit(3, self._job_trails, cur)
         if changed and self._bakes75 is not None and self._bakes75.current is not None and self._bakes75.current.ready:
             self.worker.submit(1, self._job_repaint, self._bakes75.current, tuple(self._mark_regions()), dict(self._marks))
+        # the 0.75x bake (3 px/cell) is pre-warmed in the background once the 1x bake has landed, so the first wide cut on
+        # air never shows the flat fallback ground (journal 034; the zoom ladder is on)
+        if self.allow_zoom and self._bakes75 is None and cur is not None and cur.ready and not self.test_pips:
+            N = self.nature
+            self._bakes75 = BK.BakeManager(self.run_dir, self.terrain, log=self.log, px_per_cell=3)
+            B75 = self._bakes75.want(NAT.season_index(N.season(now)), N.sun(now), self._bake_ver_applied, self._marks)
+            self._bake_marks_ver[id(B75)] = self._marks_ver
 
     def _mark_regions(self) -> List[Tuple[int, int, int, int]]:
         regs = []
@@ -1501,6 +1514,9 @@ class SteadingScene(object):
         hearth_lit = self.land.hearth_lit(started if started is not None else (now - 3600.0))
         beacon_lit = self._beacon_lit(ctx, now)
         acc = L.hex_rgb(L.preset(ctx.preset)["accent"])
+        kp = getattr(self, "keepers", None)
+        flare = bool(getattr(kp, "raising", None)) or bool((getattr(ctx, "macro", None) or {}).get("active"))   # a raising runs: the beacon flares
+        beacon_col = (255, 236, 200) if (beacon_lit and flare and int(now * 4) % 2 == 0) else (acc if beacon_lit else (150, 150, 150))
         for _, _, kind, data in live:
             if kind == "pip":
                 self._blit_pip(rgb, data, now, zoom, s)
@@ -1510,7 +1526,7 @@ class SteadingScene(object):
                 spr = props.waystone(acc, LETTERS.index(letter), sun)
             elif kind == "beacon":
                 x, y = data
-                spr = props.beacon(fire_phase if beacon_lit else 0, beacon_lit, acc if beacon_lit else (150, 150, 150), sun)
+                spr = props.beacon(fire_phase if beacon_lit else 0, beacon_lit, beacon_col, sun)
             elif kind == "hearth":
                 x, y = data
                 spr = props.campfire(fire_phase if hearth_lit else 0, hearth_lit, sun)
@@ -2244,7 +2260,10 @@ def _self_test() -> bool:                                       # pragma: no cov
     results["B"] = {"boot_ms": round(sc2._boot_ms), "camera": sc2.camera.stats(), "bake": sc2.bakes.current.stats() if sc2.bakes.current else None}
 
     # ------------------------------------------------------------------ C. night 23:00, 0.75x with 60 test pips: the budget gate
-    for label, n_pips, zoom, hour in (("C1", 20, 1.0, 18.1), ("C2", 60, 0.75, 18.1), ("C3", 20, 1.0, 23.0)):
+    # gates rebased for 1280x720 (1.58x the pixels of 1280x456; journal 034): C1 / C3 < 14 ms, C2 < 19 ms, and C4 the real
+    # load (6 awake at 1x at noon, the directory-tile case) < 12 ms
+    C_LIMIT = {"C1": 14.0, "C2": 19.0, "C3": 14.0, "C4": 12.0}
+    for label, n_pips, zoom, hour in (("C1", 20, 1.0, 18.1), ("C2", 60, 0.75, 18.1), ("C3", 20, 1.0, 23.0), ("C4", 6, 1.0, 12.0)):
         print("[%s] budget: %d test pips at %.2fx, %02.0f:00, 300 frames" % (label, n_pips, zoom, hour))
         os.environ["KL_TEST_PIPS"] = str(n_pips)
         nowc = local_today(hour)
@@ -2304,7 +2323,7 @@ def _self_test() -> bool:                                       # pragma: no cov
         drawn = sum(1 for e in sc3.entities(now) if e["awake"] and e.get("origin") == "test")
         check(sc3.test_pips == n_pips and drawn == n_pips, "%d test pips awake and drawn (origin test, never persisted as real)" % drawn)
         check(sc3.camera.zoom == zoom, "zoom pinned at %.2fx for the test (%s)" % (zoom, sc3.camera.zoom))
-        limit = 12.0
+        limit = C_LIMIT[label]
         check(float(arr.mean()) < limit, "steady scene avg %.2f ms < %.0f ms (p95 %.2f, max %.2f) at %.2fx with %d pips; glow/clouds/shadows on, level %d" % (
             arr.mean(), limit, np.percentile(arr, 95), arr.max(), zoom, n_pips, sc3.degrade_level))
         print("    %s contended (worker rendering sheets): avg %.2f p95 %.2f max %.2f ms, ladder reached level %d; drained in %.0f ms" % (
@@ -2331,12 +2350,12 @@ def _self_test() -> bool:                                       # pragma: no cov
     sc4 = sc3
     lvl0 = sc4.degrade_level
     for k in range(DEGRADE_WINDOW + 2):
-        sc4._budget(30.0)
-    check(sc4.degrade_level == lvl0 + 1, "one rung after a 30-frame window over 14 ms (level %d)" % sc4.degrade_level)
+        sc4._budget(60.0)
+    check(sc4.degrade_level == lvl0 + 1, "one rung after a 30-frame window over %.0f ms (level %d)" % (DEGRADE_MS[0], sc4.degrade_level))
     d = sc4.degrade
     check(d["clouds"] is False and d["wind"] is False and sc4.nature.degrade["clouds"] is False, "level 1 turns clouds + wind bands off for nature")
     for k in range(6 * (DEGRADE_WINDOW + 1)):
-        sc4._budget(30.0)
+        sc4._budget(60.0)
     check(sc4.degrade_level == 6 and sc4.degrade["zoom_pinned"] and sc4.degrade["glow"] is False and sc4.degrade["bubbles_single"], "ladder tops out at 6: glow off, bubbles single, zoom pinned")
     bad_dir = os.path.join(run_dir, "refuse")
     os.makedirs(bad_dir, exist_ok=True)

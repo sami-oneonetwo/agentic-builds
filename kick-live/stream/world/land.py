@@ -784,10 +784,13 @@ class Land(object):
 
     # ------------------------------------------------------------------ survey stops for the DRIFT camera
     def survey_stops(self, natural: Optional[Sequence[Dict]] = None) -> List[Dict]:
-        """Every real mark the DRIFT camera may visit (camps, fields, trees, the cairn when it has stones) plus the
-        three fixed natural points the scene passes. Nothing else: the camera never frames emptiness as if someone
-        were there."""
+        """The Moot (a fixed stop), every real mark the DRIFT camera may visit (camps, fields, trees, the cairn when it
+        has stones) plus the three fixed natural points the scene passes. Nothing else: the camera never frames
+        emptiness as if someone were there."""
         stops: List[Dict] = []
+        # the Moot is a fixed stop (full-bleed land, journal 034): the DRIFT camera alternates it with the marks so the
+        # 0-awake directory tile carries the sign, the stones and the beacon at least every other stop
+        stops.append({"id": "moot", "kind": "moot", "owner": None, "x": int(self.moot[0]), "y": int(self.moot[1]) + 4})
         for c in self.camps():
             if c["x"] is not None:
                 stops.append({"id": "camp:" + c["key"], "kind": "camp", "owner": c["key"], "x": c["x"], "y": c["y"]})

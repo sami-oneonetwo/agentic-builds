@@ -17,7 +17,7 @@ pip can carry a berry or a stone, and a newcomer is a nameless tuft on the wind 
     b.sink(key, t)                             # hidden inside the hold / never cleared: the wind takes the tuft, nothing hatches
     b.place_sleeper(key, tier, energy, salt, camp, display_name, t=now, x=None, y=None)   # boot: a past chatter asleep at its camp
     b.message(key, t)                          # existing pip, record landed (pre-hold): hop + brighten; asleep -> stands up at camp
-    b.speak(key, t, text, learned_from=None)   # after the hold: bubble 6 s; awake pips within 50 cells look toward the speaker
+    b.speak(key, t, text, learned_from=None)   # after the hold: bubble 8 s; awake pips within 50 cells look toward the speaker
     b.walk_to(key, "A"|"B"|"C"|(x, y), t, then="idle")   # vote at a waystone slot / walk somewhere; then = what to do on arrival
     b.go(key, "river"|"north"|"home"|"@name", t) -> (ok, reason)   # the `go` verb: places, 8 directions (60 cells), home, a person
     b.fetch(key, (px, py), (qx, qy), t, kind="stone")    # `stack`: walk to a stone, carry it, walk to the cairn, place it
@@ -117,7 +117,7 @@ BLINK_MIN, BLINK_MAX = 4.0, 7.0
 BLINK_LEN = 0.15
 LOOK_CELLS = 50.0                           # awake pips this close look toward a speaker (ART.md: ~200 px)
 LOOK_S = 2.5
-SPEAK_S = 6.0
+SPEAK_S = 8.0                # a bubble is the only place a message is readable now the chat log is gone (journal 034: was 6)
 MOUTH_S = 1.0
 HOP_TICKS = (3, 6, 2)                       # hop0 x3, hop1 x6 on a parabola, hop0 x2 (ART.md 7)
 HOP_S = sum(HOP_TICKS) / 30.0

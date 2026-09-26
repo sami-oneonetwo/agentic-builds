@@ -54,8 +54,8 @@ the count under each letter is len(scene.platform_counts()[letter]) (the API nam
 slots), the pips STANDING at that waystone, keys run through display_name (builder #N on a blocklist hit), voters
 ordered by vote time. Without a world the bridge's vote list is the tally. Both are len() over real chat records;
 round.tally_source says which. Zero votes: the ship stays agent_pick=True (ships.jsonl unchanged) and
-round.last_result.copy says who picked, honestly: "nobody voted. the keepers picked B." on a fresh agent heartbeat
-(< 120 s), else "nobody voted. the land picked B itself." Ship effects land on the land ONLY through the world API
+round.last_result.copy for an agent pick is "nobody stood at a stone · the land chose B" (world voice; the record's
+line, never drawn: the board shows a land pick as muted amber). Ship effects land on the land ONLY through the world API
 (scene.command / Behaviour / Land methods, never world.json):
   weather      land.set_weather + nature.weather.set_round for the round window (the scene reads micro.weather too);
                rain also passes a RAIN_BOOST_S growth boost to every field (land.advance_fields)
@@ -690,7 +690,7 @@ class RoundEngine(object):
         vals = [v for v in entry["values"] if str(v) != str(cur)] or list(entry["values"])
         value = self._rng.choice(vals)
         param = entry["param"]
-        opt["title"] = "chaos → " + self._title(entry, value)
+        opt["title"] = "chaos · " + self._title(entry, value)     # `·`, not `→`: HelveticaNeue (the board face) has no arrow
         opt["id"] = "micro.%s.%s" % (param, value)
         opt["param"], opt["value"] = param, value
         opt["chaos"] = True
@@ -856,12 +856,10 @@ class RoundEngine(object):
         return out
 
     def _zero_vote_copy(self, s: Dict, letter: Optional[str], now: float) -> str:
-        """OPENWORLD.md 11 plank copy for an agent pick: who picked is said honestly (keeper heartbeat fresh or not)."""
-        hb = iso_to_epoch((s.get("agent") or {}).get("heartbeat_ts"))
-        fresh = hb is not None and (now - hb) < KEEPER_FRESH_S
-        if fresh:
-            return "nobody voted. the keepers picked %s." % (letter or "one")
-        return "nobody voted. the land picked %s itself." % (letter or "one")
+        """The record's copy for an agent pick (ships.jsonl / last_result.copy; the land draws no result prose). World
+        voice only: no `keepers`, no `picked` (both banned on screen, compositor.BANNED_COPY, owner 2026-09-26); the
+        keeper heartbeat is the beacon's business, not a sentence's."""
+        return "nobody stood at a stone · the land chose %s" % (letter or "one")
 
     @staticmethod
     def stones_double(micro: Optional[Dict], now: float) -> bool:
@@ -1653,7 +1651,7 @@ def _self_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--self
     rolled = lr["option_id"].split(".")[1]
     if rolled in INSTANT_PARAMS:
         changed = {rolled: (None, (d["micro"].get("last_event") or {}).get("param"))} if (d["micro"].get("last_event") or {}).get("param") == rolled else {}
-    check("chaos: title rewritten to what changed", str(lr["title"]).startswith("chaos → ") and lr["chaos"] is True, lr["title"])
+    check("chaos: title rewritten to what changed", str(lr["title"]).startswith("chaos · ") and lr["chaos"] is True, lr["title"])
     check("chaos: option id is the real param", lr["option_id"].startswith("micro.") and rolled in REAL_PARAMS, lr["option_id"])
     check("chaos: exactly one real parameter changed, never 'chaos'", len(changed) == 1 and CHAOS_PARAM not in d["micro"] and rolled in changed, str(changed))
     check("chaos: ships.jsonl line carries the real param + chaos flag", lines[-1]["option_id"] == lr["option_id"] and lines[-1].get("chaos") is True and lines[-1]["version"] == "v0.0.2")
@@ -2033,11 +2031,11 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     ship_of(3)
     d = disk()
     lr = d["round"]["last_result"]
-    check("ship 3: zero votes -> agent pick with honest copy (no keeper heartbeat -> the land picked it)",
-          lr["agent_pick"] is True and lr["total_votes"] == 0 and lr["copy"] == "nobody voted. the land picked %s itself." % lr["letter"], str(lr.get("copy")))
+    check("ship 3: zero votes -> agent pick with honest world-voice copy (no `keepers`, no `picked`)",
+          lr["agent_pick"] is True and lr["total_votes"] == 0 and lr["copy"] == "nobody stood at a stone · the land chose %s" % lr["letter"], str(lr.get("copy")))
     fresh = engine._zero_vote_copy({"agent": {"heartbeat_ts": epoch_to_iso(now[0] - 10)}}, "B", now[0])
     stale = engine._zero_vote_copy({"agent": {"heartbeat_ts": epoch_to_iso(now[0] - 600)}}, "B", now[0])
-    check("zero-vote copy: fresh heartbeat -> keepers, stale -> the land", fresh == "nobody voted. the keepers picked B." and stale == "nobody voted. the land picked B itself.", "%s | %s" % (fresh, stale))
+    check("zero-vote copy: the same world-voice line whatever the heartbeat", fresh == stale == "nobody stood at a stone · the land chose B", "%s | %s" % (fresh, stale))
     ex = d["micro"].get("expedition")
     check("ship 3: expedition on the cave: `go` refused for every pip -> 'nobody set off (3 awake)', walkers [] (no fake walkers)",
           isinstance(ex, dict) and ex.get("to") == "ford" and ex.get("walkers") == [] and "nobody set off (3 awake)" in str(lr.get("world")), str(lr.get("world")))

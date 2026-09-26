@@ -47,7 +47,7 @@ Verbs (OPENWORLD.md 6: the exact-token rule plus the LEADING-VERB rule; parsed o
     camp [here|tent|hut] 1 per session ; fire (alias light) 1 per 10 min ; feed/pet [@name] 30 s ;
     gift @name 1 per target per session ; wave/sit/dance 5 s ; name <word> 10 min ; forget.
     sow / harvest / stack / swim / sing / explore / water @name / teach <word> parse (so they never bubble as
-    commands elsewhere) and refuse with `<verb> comes in a later raising` (v1 / v1.1 / v2 items).
+    commands elsewhere) and refuse with `<verb> · not yet · try: go river · plant a flower · camp` (v1 / v1.1 / v2 items).
     dig and duck are gone (OPENWORLD 6: nothing to carve or duck under outdoors); they are plain chat now.
   Every refusal is a 4 s AMBER plank notice (level "warn" -> layout COLORS["warn"]) AND a `notice` world event: a
   second person trying never sees nothing happen. Application: at show_t the bridge calls
@@ -133,15 +133,15 @@ HOLD_S = 3.0                 # 7.1 step 1
 RATE_S = 2.0                 # 7.1 step 8
 THEME_COOLDOWN_S = 60.0
 CMD_COOLDOWN_S = 30.0
-NOTICE_S = 4.0
+NOTICE_S = 5.0
 THEME_NOTICE_S = 10.0        # `@name set theme: ember` lives here (CONCEPT 7 said header toast; QA 2026-09-25 moved it so
                              # the SHIPPED/FAILED scoreline never disappears from the thumbnail)
-VOTE_ACK_S = 5.0             # `@name walks to A · counts while standing there · closes in 1:27` within the same frame as
+VOTE_ACK_S = 5.0             # `@name stands at A · light: gold · closes in 1:27` within the same frame as
                              # ingest (QA rank 3a; HUD pass journal 028: the tally is who STANDS at the stone at close, so
                              # the ack leads with the walk). The name goes through name_for(): a first-time chatter inside
                              # their hold reads `builder #N` (WORLD.md 11.1)
 IDEA_ACK_S = 5.0
-HINT_S = 4.0                 # an unparsed message that carried one of our own words: the plank names the exact token
+HINT_S = 5.0                 # an unparsed message that carried one of our own words: the plank names the exact token
 HINT_COOLDOWN_S = 10.0       # ... at most once per user per 10 s
 HINT_MAX_TOKENS = 10
 HELD_ROWS_MAX = 2            # the chat log shows at most this many `name: …` rows for records inside their hold (one per chatter)
@@ -217,7 +217,7 @@ PITCH_NEEDS_OBJECT = True                       # `pitch` alone is chat; `pitch 
 VERBS = tuple(VERB_SPECS.keys())
 TARGET_VERBS = {v: s["targets"] for v, s in VERB_SPECS.items() if s.get("targets", (0, 0))[1] > 0}
 WORD_VERBS = {v for v, s in VERB_SPECS.items() if s.get("word")}           # exactly one plain word (<= 12 alnum)
-LATER_VERBS = {v: "%s comes in a later raising" % v
+LATER_VERBS = {v: "%s · not yet · try: go river · plant a flower · camp" % v          # world voice, never roadmap-speak (`comes in a later raising`)
                for v in ("sow", "harvest", "stack", "swim", "sing", "explore", "water", "teach")}
 VERB_COOLDOWN_S = {"go": 5.0, "fire": 600.0, "feed": 30.0, "pet": 30.0, "wave": 5.0, "sit": 5.0, "dance": 5.0,
                    "name": 600.0, "sing": 60.0, "explore": 60.0, "water": 60.0, "stack": 45.0, "swim": 30.0,
@@ -460,6 +460,7 @@ class ChatBridge(object):
         self.help_by: Optional[str] = None                  # who asked !help / !stats (the plank answers them by name)
         self.stats_by: Optional[str] = None
         self._round_remaining: Optional[float] = None       # from ctx at ingest: the vote ack's `closes in m:ss`
+        self._round_titles: Dict[str, str] = {}             # letter -> option title, from ctx at ingest: the ack's ` · light: gold`
         self._round_remaining_at: Optional[float] = None
         self._hint_t: Dict[str, float] = {}                 # key -> t of the last unparsed-with-hint
         self._last_help_t: Optional[float] = None
@@ -651,9 +652,9 @@ class ChatBridge(object):
 
     @staticmethod
     def hint_for(text: str) -> Optional[str]:
-        """The plank hint for a message that did NOT parse (call only when parse_verb() is None): `to do that, type: go
-        north` / `to walk there, type: go river` / `to do that, type: camp` / `to do that, type: plant tree` / `to do
-        that, type: fire` / `to vote, type: B` / `to do that, type: !theme kick`. None when the message is longer than
+        """The plank hint for a message that did NOT parse (call only when parse_verb() is None): `try: go north` /
+        `try: go river` / `try: camp` / `try: plant tree` / `try: fire` / `try: B` / `try: !theme kick` (the world's
+        voice, two words: the same fact the old seven-word sentence carried). None when the message is longer than
         HINT_MAX_TOKENS, carries a URL, or names none of our words. The hint is built ONLY from canonical tokens in the
         tables above: the typed words and any @name never reach the plank. A bare object word (`river`, `trees`) is a
         hint only in a message of <= 2 tokens (`river please`); `I love trees` and `the river is pretty` stay chat."""
@@ -667,10 +668,13 @@ class ChatBridge(object):
         toks = [w for w in toks if w and not w.startswith("@")]
         if not toks:
             return None
+        # `bbbbb` / `AAA` (journal 031: a repeated letter fell through as plain chat): a vote is exactly one letter
+        if len(toks) == 1 and len(toks[0]) >= 2 and toks[0][0] in "abc" and toks[0] == toks[0][0] * len(toks[0]):
+            return "try: %s" % toks[0][0].upper()
         # a preset word with no theme word (`kick would be nice`): the theme verb
         presets = [w for w in toks if w in L.PRESETS]
         if len(presets) == 1 and not any(w in THEME_WORDS for w in toks) and not any(w in VERB_SPECS or w in VERB_ALIASES for w in toks):
-            return "to do that, type: !theme %s" % presets[0]
+            return "try: !theme %s" % presets[0]
         verb = None
         for w in toks:
             if w in VERB_SPECS and w not in ("name", "teach", "home") and w not in LATER_VERBS:
@@ -685,31 +689,37 @@ class ChatBridge(object):
         place = next((GO_OBJECTS[w] for w in toks if w in GO_OBJECTS and w not in ("home", "camp", "tent", "hut")), None)
         plant_obj = next((HINT_PLANT_WORDS[w] for w in toks if w in HINT_PLANT_WORDS), None)
         if syn == "vote" and len(letters) == 1:
-            return "to vote, type: %s" % letters[0]
+            return "try: %s" % letters[0]
         v = verb or syn
         if v is None:
             if len(toks) <= 2 and (direction or place):
-                return "to walk there, type: go %s" % (direction or place)
+                return "try: go %s" % (direction or place)
             if len(toks) <= 2 and plant_obj:
-                return "to do that, type: plant %s" % plant_obj
+                return "try: plant %s" % plant_obj
             return None
         if v == "vote":
             return None
         if v == "go":
             if direction:
-                return "to do that, type: go %s" % direction
+                return "try: go %s" % direction
             if place:
-                return "to walk there, type: go %s" % place
-            return "to do that, type: %s" % HINT_EXAMPLES["go"]
+                return "try: go %s" % place
+            return "try: %s" % HINT_EXAMPLES["go"]
         if v == "plant":
-            return "to do that, type: plant %s" % (plant_obj or "flower")
+            return "try: plant %s" % (plant_obj or "flower")
         if v in ("camp", "fire"):
-            return "to do that, type: %s" % v
+            return "try: %s" % v
         if v in HINT_EXAMPLES:
-            return "to do that, type: %s" % HINT_EXAMPLES[v]
+            return "try: %s" % HINT_EXAMPLES[v]
         if v in VERB_SPECS and not VERB_SPECS[v].get("word"):
-            return "to do that, type: %s" % v
+            return "try: %s" % v
         return None
+
+    def _title_of(self, letter: str) -> str:
+        """` · light: gold`: the option's title from the round the compositor handed ingest() (empty when unknown), so a
+        letter typed while the Moot is off view still gets its meaning on the plank (journal 034)."""
+        t = (self._round_titles or {}).get(str(letter or "").upper())
+        return (" · " + t) if t else ""
 
     def _closes_in(self, now: float) -> str:
         """` · closes in 1:27` from the round clock the compositor handed ingest() (empty when no round is open)."""
@@ -947,6 +957,11 @@ class ChatBridge(object):
             self._round_remaining, self._round_remaining_at = float(rr), float(now)
         else:
             self._round_remaining = None
+        titles: Dict[str, str] = {}
+        for o in ((getattr(ctx, "round", None) or {}).get("options") or []) if ctx is not None else []:
+            if isinstance(o, dict) and o.get("letter") and o.get("title"):
+                titles[str(o["letter"]).upper()] = L.strip_non_bmp(str(o["title"])).strip()
+        self._round_titles = titles
         ask_enabled = bool(((ctx.ask if ctx is not None else None) or {}).get("enabled"))
         out: List[Dict] = []
         for raw in msgs or []:
@@ -1032,12 +1047,12 @@ class ChatBridge(object):
                 self._votes[key] = (letter, t)
                 if not history:
                     if self._cleared(key, now):
-                        self._ack("%s walks to %s · counts while standing there%s" % (self._at(key, now), letter, self._closes_in(now)), now)
+                        self._ack("%s stands at %s%s%s" % (self._at(key, now), letter, self._title_of(letter), self._closes_in(now)), now)
                     else:
                         # their first record this run is still inside its 3 s hold: the tuft on the land is nameless, so the
                         # same-frame ack says so (`someone new`, never `builder #N` for a name that is merely waiting) and the
                         # ack is repeated by name at show_t, the moment they first see themselves (pump())
-                        self._ack("someone new walks to %s · counts while standing there%s" % (letter, self._closes_in(now)), now)
+                        self._ack("someone new stands at %s%s%s" % (letter, self._title_of(letter), self._closes_in(now)), now)
                         self._held_acks.append((float(self._first_show_t.get(key, m["show_t"])), key, letter))
                 if key not in self._voted_this_round:
                     self._voted_this_round.add(key)
@@ -1053,7 +1068,7 @@ class ChatBridge(object):
                 if not history:
                     self._set_notice("!idea <what should change>", "warn", now)
             elif not history:
-                self._ack("%s's idea is on the board · the keepers read it next" % self._at(key, now), now, dur=IDEA_ACK_S)
+                self._ack("%s's idea is on the board" % self._at(key, now), now, dur=IDEA_ACK_S)
         elif kind == "theme":
             if history:
                 m["accepted"] = False
@@ -1093,7 +1108,7 @@ class ChatBridge(object):
             elif not history and self.theme_hint_due(text) and (
                     self._last_theme_hint_t is None or now - self._last_theme_hint_t >= THEME_HINT_COOLDOWN_S):
                 self._last_theme_hint_t = now
-                self._set_notice("type !theme " + " · ".join(L.PRESETS.keys()), "info", now, 6.0)
+                self._set_notice("try: !theme " + " · ".join(L.PRESETS.keys()), "warn", now, HINT_S)
             elif not history:
                 hint = self.hint_for(text)
                 if hint and (key not in self._hint_t or now - self._hint_t[key] >= HINT_COOLDOWN_S):
@@ -1282,7 +1297,7 @@ class ChatBridge(object):
         for _show_t, key, letter in due:
             if key in hidden or (self._votes.get(key) or (None,))[0] != letter:
                 continue
-            self._ack("%s walks to %s · counts while standing there%s" % (self._at(key, now), letter, self._closes_in(now)), now)
+            self._ack("%s stands at %s%s%s" % (self._at(key, now), letter, self._title_of(letter), self._closes_in(now)), now)
 
     def held_rows(self, now: float) -> List[Dict]:
         """Real messages inside their 3 s hold (their `t` already reached, so a record stamped ahead of this clock waits
@@ -1448,7 +1463,7 @@ class ChatBridge(object):
             elif arg in DIRECTIONS:
                 self._plank("%s walks %s" % (me, arg), now, "info", by=key)
             elif arg:
-                self._plank("%s heads for %s" % (me, PLACE_LABELS.get(arg, arg)), now, "info", by=key)
+                self._plank("%s walks to %s" % (me, PLACE_LABELS.get(arg, arg)), now, "info", by=key)
         elif p.get("understood"):
             # `plant a flower` -> `plant flower`: the world's own event carries the effect; this echoes the reading.
             # Rebuilt here so a target is drawn through name_for(), never as the typed `@word`.
@@ -1609,7 +1624,7 @@ class ChatBridge(object):
         self._notice = (text, level, now + dur, now)
 
     def _ack(self, text: str, now: float, dur: float = VOTE_ACK_S) -> None:
-        """Same-frame public acknowledgement (`@name walks to A · counts while standing there · closes in 1:27`) for
+        """Same-frame public acknowledgement (`@name stands at A · light: gold · closes in 1:27`) for
         VOTE_ACK_S. Several accepted in one ingest batch share the strip (the panel truncates to its width) so no voter
         is skipped. It has priority over the regular notice while it lasts; the regular notice keeps its own expiry."""
         cur = self._ack_notice
@@ -1618,7 +1633,7 @@ class ChatBridge(object):
         self._ack_notice = (text, "ok", now + dur, now)
 
     def notice(self, now: float):
-        """(text, level, start) of the live notice: a person's answer, NEWEST FIRST (HUD pass, journal 028: each ack has
+        """(text, level, start, until) of the live notice: a person's answer, NEWEST FIRST (HUD pass, journal 028: each ack has
         its own timer; a 5 s vote ack must not hide the refusal or hint that came after it). The start lets the world
         panel rank its own person-facing lines against this one by age."""
         self.pump(now)
@@ -1626,7 +1641,7 @@ class ChatBridge(object):
         if not live:
             return None
         n = max(live, key=lambda q: q[3] if len(q) > 3 else 0.0)
-        return (n[0], n[1], n[3] if len(n) > 3 else None)
+        return (n[0], n[1], n[3] if len(n) > 3 else None, n[2])      # + until: the plank fades its last 0.5 s (journal 034)
 
     # ------------------------------------------------------------------ views
     @property
@@ -1735,11 +1750,11 @@ def _self_test() -> int:
     for txt, got, want in bad:
         print("FAIL parse_verb(%r) -> %r, want %r" % (txt, got, want))
     # unparsed-with-hint (HUD pass, journal 028): the exact canonical token, never the typed words, never an @name
-    HINTS = {"go north further": "to do that, type: go north", "can you go to the river please": "to walk there, type: go river",
-             "build a hut here": "to do that, type: camp", "plant some trees please": "to do that, type: plant tree",
-             "warm us up": "to do that, type: fire", "I pick B": "to vote, type: B", "kick would be nice": "to do that, type: !theme kick",
-             "go north @hiddenname": "to do that, type: go north", "go there": "to do that, type: go river",
-             "river please": "to walk there, type: go river",
+    HINTS = {"go north further": "try: go north", "can you go to the river please": "try: go river",
+             "build a hut here": "try: camp", "plant some trees please": "try: plant tree",
+             "warm us up": "try: fire", "I pick B": "try: B", "kick would be nice": "try: !theme kick",
+             "go north @hiddenname": "try: go north", "go there": "try: go river",
+             "river please": "try: go river", "bbbbb": "try: B", "AAA": "try: A", "!ccc": "try: C",
              # false positives are worse than silence
              "I love trees": None, "the river is pretty": None, "hello land": None, "anyone here": None, "hello there": None,
              "I'm going home now": None, "further than that": None,
