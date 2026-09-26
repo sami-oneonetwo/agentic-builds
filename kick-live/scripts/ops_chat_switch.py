@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """scripts/ops_chat_switch.py - the owner's kill switch and relaunch from Kick chat.
 
-    source scripts/env.sh
-    RUN_DIR=$HOME/.local/share/kick-live/run-live nohup $PYTHON scripts/ops_chat_switch.py --run-dir "$RUN_DIR" \
-        >> "$RUN_DIR/logs/ops_switch.out" 2>&1 &
+    L=$HOME/.local/share/kick-live/run-live; PY=$HOME/.local/share/kick-live/venv/bin/python
+    RUN_DIR=$L env -u STREAM_KEY -u SRT_PASSPHRASE -u KICK_CLIENT_SECRET -u KICK_TOKEN -u NGROK_AUTHTOKEN \
+        -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_BASE_URL \
+        nohup $PY scripts/ops_chat_switch.py --run-dir "$L" >> "$L/logs/ops_switch.out" 2>&1 < /dev/null &
+    # do NOT `source scripts/env.sh` first: the watcher needs no secret, and `ps -E` shows the exec-time environment.
     $PYTHON scripts/ops_chat_switch.py --self-test            # RUN_DIR under /tmp only, fake processes, exit 0 on pass
 
 Owner rule (2026-09-26, given in the terminal): a chat message that is exactly `nuke` from the broadcaster account
