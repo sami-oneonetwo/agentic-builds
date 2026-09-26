@@ -1050,3 +1050,14 @@ together, one relay-held child restart, 18 frames held (0.60 s), ffmpeg 40018 un
 panels (world chat_log colony header_center header_right), scene resumed with 3 pips / 3 camps, prebaked -v3 ground
 loaded from disk (the bake key now matches), honesty 0. The bake-thread fix lands as a follow-up hot-reload when the
 bisect returns.
+
+## 032 — 2026-09-26 18:35 — Owner: no cringe AI copy; the world is the show
+
+Owner (terminal): "Never put cringey ai text onto the stream. 'no camera, no mic, no fake viewer' is so unnecessary...
+Seriously change that, make the actual world the main viewable thing. Go crazy dude." Memory: no-cringe-ai-copy-on-
+stream.md. ADR-000's principle (no fake anything) is unchanged; its on-screen recital is gone by owner decision.
+Hot-fix now: colony.py keepers line, on-duty line and both honesty rows blanked and hot-reloaded into live-snapshot-v3
+(the compositor's self-test "land strip check" now asserts the wrong thing and is removed in the next build). Launched
+workflow longgrass-fullbleed-world: full-bleed land, HUD dissolved into in-world objects (signpost "say anything",
+waystone plaques + a torch for the round, the beacon for keeper presence), no strip, no chat-log panel unless the judges
+prove a newcomer needs it, zero explainer copy; three design lenses -> judges -> synthesis -> implement -> QA.
