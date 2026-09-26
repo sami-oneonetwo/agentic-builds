@@ -1061,3 +1061,18 @@ Hot-fix now: colony.py keepers line, on-duty line and both honesty rows blanked 
 workflow longgrass-fullbleed-world: full-bleed land, HUD dissolved into in-world objects (signpost "say anything",
 waystone plaques + a torch for the round, the beacon for keeper presence), no strip, no chat-log panel unless the judges
 prove a newcomer needs it, zero explainer copy; three design lenses -> judges -> synthesis -> implement -> QA.
+
+## 033 — 2026-09-26 18:45 — Bake-thread stall: a latent GIL hold, not the HUD; fixed and hot-reloaded
+
+Bisect (instrumented frame + bake timelines, /tmp/lg-bake-instr): the spike was nondeterministic on BOTH builds (the
+pre-HUD control also hit 71 ms once in three runs), so the 3-vs-1 evidence at 18:15 was disk-timing luck. Real cause in
+stream/world/bake.py's landing sequence: `np.memmap.flush()` calls msync(2) WITHOUT releasing the GIL (59 ms msync ->
+52 ms main-thread gap, 15-64 ms depending on page cache) and the re-open via `np.load(mmap_mode='r+')` holds it another
+7-12 ms; the one blocked frame is always the one overlapping those steps. Fix (bake.py only, +44/-11): msync through
+libc via ctypes (a foreign call releases the GIL), keep the painted mapping across the rename instead of re-opening, and
+`close()` syncs on a daemon thread instead of on the frame thread at an octant swap. Bakes are byte-identical before and
+after. Gates after: steading A "bake thread never blocked a frame: max 10.0 ms" (was 27-57), verified twice
+independently (10.3 / 8.9 ms, assertion code unchanged); camera, behaviour, honesty, chat_bridge, compositor 300 PASS.
+Hot-reloaded into live-snapshot-v3 at 18:43:12: world batch re-executed, scene resumed with 3 pips in 12 ms, panel
+committed after 30 clean renders, no relay gap. Lesson: a self-test with a thread-timing assertion needs three runs before
+it convicts a diff.
