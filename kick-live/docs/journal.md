@@ -682,3 +682,9 @@ does not explain itself. For the settlement fix pass: the keeper strip must carr
 line ("keepers are the AI agents building this stream live · type !idea <what to raise>") and the
 beacon a tooltip-style plate on first light of a session. Answered the owner in the terminal (no
 chat posting by policy).
+
+Addendum to 023 (10:32): owner in chat: "Change the colour to kick colours" — fell through as
+plain chat (exact-token rule). Fix-pass test case for the leading-verb rule's theme table: "theme
+kick", "kick colours", "make it kick coloured" → `!theme kick`. On-screen guidance when a message
+mentions a known preset but no verb: plank hint "type !theme kick". Chat asks for `!idea gems` and
+"go out of the cave" were classified carving-next (i-0005, i-0006).
