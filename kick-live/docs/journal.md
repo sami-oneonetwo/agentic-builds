@@ -859,3 +859,80 @@ sets it). HUD reshape is in its implement phase (layout.py + 8 panels + composit
 Tick 17:00 (loop): not paused; 9/9 processes alive; viewers 1-4 (avg 2.2), live 100 %, followers 2; chat quiet since
 15:58, no !idea pending, honesty 0. HUD reshape: implementer running its budget + camera chain (/tmp/lg-hud-build).
 Instrumentation: build + two reviews done, fix/go-live step running (sampler not started yet). Nothing deployed.
+
+---
+
+## 028 — 2026-09-26 17:10 — HUD pass: fifteen text clusters to seven (not deployed; layout changed -> child restart)
+
+Owner (terminal, 15:50): "There is too much information on the screen. The bottom bar with the scrolling and frame rate
+could go completely. Review the rest and see what is valid and what is not. Think about how people would like to
+interact with this and shape it for that. Do people need to see all this information? What else is important here?"
+Built in the tree against the HUD spec (OPENWORLD 8 rewritten); nothing live touched (RUN_DIR /tmp/lg-hud-build, MODE=test).
+
+What left the frame: header_left (channel name + `CHAT BUILDS THIS` slogan slot), the countdown strip, the version string,
+`1 watching`, `day N`, the land line, the time dial + wind/moon rows, the floating A/B/C options row, the bottom-left place
+label, the colony and keeper strips, the ticker, the oscilloscope, the readout. Telemetry (fps, frame ms, stale, audio
+fallback, degrade flags) now lives only in the compositor log / state.json / status.sh: the owner and mods no longer read
+it off the stream. What stayed, once each: the 56 px headline (`SAY ANYTHING` at 0 awake and before boot, `N AWAKE`
+after: the tile hook, no more `NOBODY AWAKE`), a two-row column beside it (`a creature walks out / with your name`),
+`LONGGRASS ● LIVE` (the dot doubles as the chat-link state: red linked, amber reconnecting), the plank as the land's
+single voice (blank at idle with people awake; DRIFT caption at 0 awake), ONE plate, labels, bubbles, letters over the
+stones, edge arrows, the chat log (6 slots, `chat is quiet.`). New: a fixed VOTE CARD top-right (state + timer header,
+three rows [letter chip][title][count], the leader filled, the round's fuse along its edge; the card's count string ==
+the stone's, asserted per frame), a muted clock row (`23:04 · night · wind NW calm · spring`), the minimap bottom-right
+(no caption), ONE land strip (`2 have walked here · 1 more and the cairn is named` / `AI keepers build this show live
+from chat's ideas` STATIC / keeper state / the honesty line STATIC in two rows, asserted every frame).
+
+Interaction copy (all rendered in the runs): vote ack `@fern_ok walks to B · counts while standing there · closes in
+0:07` (VOTE_ACK_S 1.5 -> 5; the tally is who stands at close); `@lumen_k walked off A · that vote is dropped · type A to
+stand again` (behaviour leave_platform, gated on round.tally_source == platforms; the bridge pops _votes for a pip that
+is no longer standing so vote_count / zero-vote plank / card / stones agree); unparsed-with-hint from our own tokens only
+(`go north further` -> `to do that, type: go north`, `build a hut here` -> `to do that, type: camp`; `hello there`, `I love
+trees`, `the river is pretty` stay chat; a name-leak case `go north @hiddenname` -> no @ in the hint; 17 cases in the
+bridge self-test); newcomer sticky `that's you, @quill_z · try: go river · plant a flower · camp · or A, B, C` (hatch at
+awake <= 1, until the first verb; the first-breath hearth is not a verb); next-two hints after go / camp / plant / fire /
+a vote at awake <= 1; `new round · everyone steps off the stones · type A, B or C`; `@moss_m's idea is on the board · the
+keepers read it next`; land row 3 `raising the Ford bridge · asked by @moss_m · 09:59 left` -> `just raised the Ford
+bridge · asked by @moss_m`. Notices are newest-first across the bridge and the panel (a 5 s ack no longer hides the
+refusal that came after it).
+
+Geometry: world (0,66,1280,456) -- the spec said 480; measured at 60 test pips / 0.75x (the fix-2 protocol, 300 frames
+in the compositor) 480 gave scene avg 12.26 ms (a 600-frame run 11.44 / 12.62) against the < 12 gate (440 had 11.15), so
+the spec's stated ladder rung 456 ships: 114 / 152 / 76 cells at 1x / 0.75x / 1.5x (integer at every zoom), measured
+11.90 / 11.48 / 12.51 / 11.59 / 11.46 (mean 11.79, 4 of 5 under 12: AT the gate for the synthetic 60-pip stress; the real
+6-awake runs sit at 5.3-5.8 ms scene, 7 ms panel; 20 pips at 1x 8.83). A tried bake-multiply rewrite (broadcast instead
+of np.repeat) was SLOWER (14.4 ms) and was reverted. Footer 198 px: land (0,522,720,198), chat_log (720,522,560,198).
+Camera SCREEN/CROP_PX/HUD_TOP_PX 56/HUD_BOTTOM_PX 16; steading SCREEN; compositor WORLD_BAND (66,522). The camera self-test
+scenario 4b moved its north pip 12 cells further up so the smaller HUD band still exercises the dead zone.
+
+Evidence (/tmp/lg-hud-build): noon / dawn / 23:00 x 1200 paced frames with the 42-message plan: honesty PASS x3, vote acks
+6/6 x3, land strip check 1200/1200 x3, vote card check 3573-3576/3576 x3, header band PASS, watchdog PASS; 0-awake x3
+(300): all PASS; drop plan (60 s rounds, 1500 frames): dropped copy, hints, next-two hints, blank plank at idle; sticky
+plan (660, 23:00): the newcomer line; camera run 4200 frames (180 s rounds, 60 s sleep hook): 0 framed points under a HUD
+chip at rest, 100 % awake-settler-frames in the safe band, max jump 2.01 cells (no cut), DRIFT->EVENT->FOLLOW->EVENT->
+DRIFT->... 11 transitions; night floor: night / noon tile mean 0.64 (gate 0.50), 93 % of the world band > 0.12; tiles.png:
+`SAY ANYTHING` and `6 AWAKE` read at 320x180. Module self-tests: py_compile all, honesty PASS, steading PASS (C2 60 pips
+0.75x 8.74 ms isolated), camera PASS, chat_bridge 68 cases PASS. Grids: report/grid.png, grid_0awake.png, tiles.png.
+
+Deploy: layout.py changed, so this is NOT a hot-reload: stage to /tmp, then `scripts/deploy.sh` (relay-held compositor
+child restart, ffmpeg / relay pids unchanged) with every changed file copied into live-snapshot-v3 together. Tell the
+owner first (never-restart rule; the child restart was pre-approved for this change only). Note for the owner: the frame
+no longer shows fps / viewers / version; status.sh and the compositor log carry them.
+
+## 029 — 2026-09-26 17:20 — Instrumentation live; title set
+
+Workflow kick-instrumentation-and-title (pass_with_fixes; two adversarial reviews, 5 blockers fixed: Day N computed
+from the wrong metrics file under the documented invocation, raw usernames in reports, env.sh KICK_LIVE_ROOT wrong when
+sourced from zsh, site fallback on by default, poller restart env). Live now: `monitor/category_sampler.py` loop (pid in
+run-live/pids/category_sampler.pid; 7 categories every 10 min, public API v1 with v2 fallback; site scrape only as a
+last resort), `monitor/kick_api.py` restarted from the repo tree and writing category_live / category_viewers / our_rank
+into metrics.jsonl (17:14: rank #3 of 9, 35 category viewers, 3 ours). The first relaunch attempt failed (zsh sourcing
+resolved KICK_LIVE_ROOT wrong) and left an 81 s polling gap; env.sh now detects its own path under bash and zsh and
+refuses when the root is wrong. `monitor/chatter_log.py` writes run-live/chatters.json and run/reports/YYYY-MM-DD.md with
+the on-air name filter (blocklist -> builder #N, owner/staff accounts flagged separately): so far 2 chatters, both
+owner/staff; the external funnel is empty. Title set through the OAuth app at 17:14 (scripts/set_title.py, variant A,
+state file caps it at one PATCH per 24 h): "Your name becomes a pixel settler. Type anything. AI agents build the
+village · Day 3 · 2 settled". custom_tags were sent (10) but GET /channels returns custom_tags null; whether Kick stores
+them for this account is open. stop.sh now stops category_sampler and ops_switch too. The HUD implementer wrote journal
+028 + a HANDOFF addendum: the HUD pass changes layout.py regions, so it ships as ONE child restart with every changed
+file copied together (a partial copy shows a black strip).

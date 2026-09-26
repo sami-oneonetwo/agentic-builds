@@ -3,7 +3,19 @@
 #   source "$(dirname "$0")/env.sh"
 # Resolves tool paths, loads secrets from OUTSIDE the repo, and defines runtime paths.
 
-KICK_LIVE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Locate this file under bash (BASH_SOURCE) AND zsh (%x): under zsh BASH_SOURCE is unset, so the old line resolved
+# KICK_LIVE_ROOT to "$PWD/.." and a `source scripts/env.sh; $PYTHON $KICK_LIVE_ROOT/monitor/kick_api.py` restart
+# from a zsh terminal launched a non-existent path (2026-09-26, live poller down 81 s). Unless KICK_LIVE_ROOT was
+# already exported by the caller, it must contain scripts/env.sh or we refuse.
+if [ -n "${BASH_SOURCE[0]:-}" ]; then __kl_src="${BASH_SOURCE[0]}"
+elif [ -n "${ZSH_VERSION:-}" ]; then eval '__kl_src="${(%):-%x}"'
+else __kl_src="$0"; fi
+KICK_LIVE_ROOT="${KICK_LIVE_ROOT:-$(cd "$(dirname "$__kl_src")/.." && pwd)}"
+unset __kl_src
+if [ ! -f "$KICK_LIVE_ROOT/scripts/env.sh" ]; then
+  echo "env.sh: KICK_LIVE_ROOT=$KICK_LIVE_ROOT does not contain scripts/env.sh; export KICK_LIVE_ROOT=<repo>/kick-live first" >&2
+  return 1 2>/dev/null || exit 1
+fi
 export KICK_LIVE_ROOT
 
 # --- secrets (outside the repo) -------------------------------------------

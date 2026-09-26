@@ -40,6 +40,13 @@ its code is on origin/worktree-kick-ngrok-tunnel. Restore with
 `git archive origin/worktree-kick-ngrok-tunnel kick-live/kickapp kick-live/scripts/kick-app.sh | tar -x -C /tmp/lg-kickapp`
 (used for the title PATCH; ko.user_token() refreshes the user token).
 
+Since 17:10 two more monitors run from the REPO tree, not the snapshot: `kick_api` (pid in run-live/pids/kick_api.pid;
+restarted to add category_live / category_viewers / our_rank to metrics.jsonl; snapshot copy kept in step) and
+`category_sampler` (monitor/category_sampler.py, 10-min loop, writes run-live/category_samples.jsonl +
+category_latest.json). `monitor/chatter_log.py --all-days` refreshes run-live/chatters.json and run/reports/YYYY-MM-DD.md
+(run it each tick). Title is set by `scripts/set_title.py` (live counters, once per 24 h; --dry-run first); it was set
+at 17:14 to "Your name becomes a pixel settler. Type anything. AI agents build the village · Day 3 · 2 settled".
+
 ## The owner's chat kill switch (new rule, 2026-09-26)
 
 `scripts/ops_chat_switch.py` tails run-live/chat.jsonl. Exactly `nuke` from atleastonce with the broadcaster badge
@@ -106,3 +113,14 @@ settlers first; category/title may change on evidence. Each tick journals one en
 
 The owner runs this session through OpenRouter (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN). Workflow scripts no longer
 pin a model; agents inherit the session model.
+
+## Addendum 17:10 — HUD pass built, not deployed (journal 028)
+
+The HUD reshape (owner 15:50: too much on screen) is in the tree: stream/layout.py regions changed (world 0,66,1280,456;
+one `land` strip 0,522,720,198; chat_log 720,522,560,198; header_left / countdown / colony / keeper / ticker / scope /
+readout removed), header.py / colony.py / chat_log.py / world.py rewritten, camera.py + steading.py at SCREEN 456,
+compositor.py (WORLD_BAND, vote-ack copy, land-strip + vote-card per-frame checks), chat_bridge.py (vote ack `walks to X ·
+counts while standing there · closes in m:ss`, unparsed-with-hint, vote reconciliation with who stands). Because layout.py
+moved regions this ships as ONE relay-held compositor child restart (scripts/deploy.sh) after copying all changed files
+into live-snapshot-v3 together, never as a hot-reload of single panels (a panel registering a removed region is dropped,
+so a partial copy shows a black strip, not a crash). Tell the owner first. Evidence and grids: /tmp/lg-hud-build/report.

@@ -5,7 +5,11 @@ Polls https://kick.com/api/v2/channels/<slug> with a browser User-Agent and
 writes one JSON line per sample to $METRICS_FILE:
 
     {ts, is_live, viewer_count, title, category, followers,
-     source: "api" | "hls" | "none", http_status, latency_ms, ...}
+     source: "api" | "hls" | "none", http_status, latency_ms, ...,
+     category_live, category_viewers, our_rank}
+
+The last three come from $RUN_DIR/category_latest.json (monitor/category_sampler.py) when that table is
+younger than 20 min, else null; existing consumers keep every field they already read.
 
 On HTTP 403/429/5xx or a network error it backs off exponentially
 (2, 4, 8 ... 120 s), logs to stderr, and falls back to a liveness check on the
@@ -34,7 +38,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -48,6 +52,9 @@ LOG_DIR = os.environ.get("LOG_DIR") or os.path.join(RUN_DIR, "logs")
 PID_DIR = os.environ.get("PID_DIR") or os.path.join(RUN_DIR, "pids")
 CHANNEL_FILE = os.path.join(RUN_DIR, "channel.json")          # --json-state output
 CACHE_FILE = os.path.join(RUN_DIR, "kick_api_cache.json")     # playback_url + last is_live
+CATEGORY_LATEST_FILE = os.path.join(RUN_DIR, "category_latest.json")   # written by monitor/category_sampler.py
+CATEGORY_FRESH_S = 20 * 60                                    # older than this -> category_* fields are null
+CATEGORY_FIELDS = ("category_live", "category_viewers", "our_rank")
 
 DEFAULT_SLUG = os.environ.get("KICK_CHANNEL", "atleastonce")
 DEFAULT_API_URL = "https://kick.com/api/v2/channels/{slug}"
@@ -368,6 +375,121 @@ def _fallback_sample(e: KickApiError, slug: str, playback_url: Optional[str],
 
 
 # ---------------------------------------------------------------------------
+# Category context (from monitor/category_sampler.py's category_latest.json)
+# ---------------------------------------------------------------------------
+def _parse_iso_utc(ts: Any) -> Optional[datetime]:
+    if not isinstance(ts, str) or len(ts) < 19:
+        return None
+    try:
+        return datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def category_context(s: Dict[str, Any], path: Optional[str] = None,
+                     now: Optional[datetime] = None) -> Dict[str, Any]:
+    """{category_live, category_viewers, our_rank} for the sample's category, or all-null.
+
+    Reads category_latest.json (the sampler's compact table). Values are used only when the table is
+    younger than CATEGORY_FRESH_S; the entry is the one where the sampler found our slug (our_rank set),
+    else the one whose name matches the sample's category. Never raises.
+    """
+    out: Dict[str, Any] = {k: None for k in CATEGORY_FIELDS}
+    latest = read_json(path or CATEGORY_LATEST_FILE)
+    if not latest:
+        return out
+    ts = _parse_iso_utc(latest.get("ts"))
+    now = now or datetime.now(timezone.utc)
+    if ts is None or (now - ts).total_seconds() > CATEGORY_FRESH_S or (now - ts).total_seconds() < -60:
+        return out
+    cats = latest.get("categories")
+    if not isinstance(cats, dict):
+        return out
+    entry: Optional[Dict[str, Any]] = None
+    for c in cats.values():
+        if isinstance(c, dict) and c.get("our_rank") is not None and not c.get("error"):
+            entry = c
+            break
+    if entry is None:
+        name = (s.get("category") or "")
+        if isinstance(name, str) and name:
+            for c in cats.values():
+                if isinstance(c, dict) and str(c.get("category") or "").lower() == name.lower() and not c.get("error"):
+                    entry = c
+                    break
+    if entry is None:
+        return out
+    out["category_live"] = _to_int(entry.get("live_channels"))
+    out["category_viewers"] = _to_int(entry.get("total_viewers"))
+    # our_rank is only meaningful while we are live; a stale rank on an offline row would mislead
+    out["our_rank"] = _to_int(entry.get("our_rank")) if s.get("is_live") else None
+    return out
+
+
+def with_category(s: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the three category_* fields (null when unknown) to a sample, in place."""
+    try:
+        s.update(category_context(s))
+    except Exception as e:  # defensive: the poller must never die on the side table
+        log("category context failed: %s" % e, "warn")
+        for k in CATEGORY_FIELDS:
+            s.setdefault(k, None)
+    return s
+
+
+def self_test() -> int:
+    """Offline check of category_context() against a temp table: fresh, stale, offline, missing."""
+    import tempfile
+    failures = []
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "category_latest.json")
+        table = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "categories": {
+            "34": {"category": "Software Development", "live_channels": 8, "total_viewers": 33, "our_rank": 3},
+            "242": {"category": "Games + Demos", "live_channels": 36, "total_viewers": 344, "our_rank": None}}}
+        write_json_atomic(p, table)
+        live = {"is_live": True, "category": "Software Development"}
+        got = category_context(live, path=p, now=now)
+        if got != {"category_live": 8, "category_viewers": 33, "our_rank": 3}:
+            failures.append("fresh live: %r" % got)
+        got = category_context({"is_live": False, "category": None}, path=p, now=now)
+        if got != {"category_live": 8, "category_viewers": 33, "our_rank": None}:
+            failures.append("offline keeps context, drops rank: %r" % got)
+        table["categories"]["34"]["our_rank"] = None
+        write_json_atomic(p, table)
+        got = category_context({"is_live": True, "category": "Games + Demos"}, path=p, now=now)
+        if got != {"category_live": 36, "category_viewers": 344, "our_rank": None}:
+            failures.append("name match: %r" % got)
+        table["ts"] = (now - timedelta(seconds=CATEGORY_FRESH_S + 5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        write_json_atomic(p, table)
+        got = category_context(live, path=p, now=now)
+        if got != {k: None for k in CATEGORY_FIELDS}:
+            failures.append("stale must be null: %r" % got)
+        got = category_context(live, path=os.path.join(td, "missing.json"), now=now)
+        if got != {k: None for k in CATEGORY_FIELDS}:
+            failures.append("missing must be null: %r" % got)
+        with open(p, "w") as fh:
+            fh.write("{not json")
+        got = category_context(live, path=p, now=now)
+        if got != {k: None for k in CATEGORY_FIELDS}:
+            failures.append("corrupt must be null: %r" % got)
+    # existing parsers still produce the legacy keys
+    s = parse_channel({"slug": "x", "livestream": {"viewer_count": "2", "session_title": "t",
+                                                   "categories": [{"name": "Software Development"}],
+                                                   "created_at": "2026-09-26 00:04:03"}}, "x")
+    with_category(s)
+    for k in ("viewer_count", "is_live", "title", "category", "started_at") + CATEGORY_FIELDS:
+        if k not in s:
+            failures.append("missing key %s" % k)
+    if s["viewer_count"] != 2 or s["is_live"] is not True:
+        failures.append("parse_channel regression: %r" % s)
+    for f in failures:
+        log("SELF-TEST FAIL: %s" % f, "error")
+    log("self-test %s (%d checks)" % ("PASS" if not failures else "FAIL", 8))
+    return 0 if not failures else 1
+
+
+# ---------------------------------------------------------------------------
 # Loop plumbing
 # ---------------------------------------------------------------------------
 def public_sample(s: Dict[str, Any]) -> Dict[str, Any]:
@@ -456,6 +578,7 @@ def run_loop(args: argparse.Namespace) -> int:
     try:
         while not stop["flag"]:
             s = sample(args.channel, api_url=args.api_url, timeout=args.timeout, cache=cache)
+            with_category(s)
             handle_transition(s, cache)
             try:
                 append_jsonl(args.metrics_file, public_sample(s))
@@ -496,6 +619,7 @@ def run_once(args: argparse.Namespace) -> int:
     if args.playback_url:
         cache["playback_url"] = args.playback_url
     s = sample(args.channel, api_url=args.api_url, timeout=args.timeout, cache=cache)
+    with_category(s)
     handle_transition(s, cache)
     if args.json_state:
         write_channel_state(s, cache)
@@ -527,7 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  kick_api.py --once --api-url https://httpbin.org/status/403\n"
             "                                              simulate a blocked API -> HLS fallback\n"
             "\nenvironment: RUN_DIR, METRICS_FILE, ACTIVITY_FILE, PID_DIR, KICK_CHANNEL (see scripts/env.sh)\n"
-            "files: %s (metrics), %s (cache), %s (--json-state)" % (METRICS_FILE, CACHE_FILE, CHANNEL_FILE)
+            "files: %s (metrics), %s (cache), %s (--json-state), %s (category context)" % (METRICS_FILE, CACHE_FILE, CHANNEL_FILE, CATEGORY_LATEST_FILE)
         ),
     )
     p.add_argument("--channel", "--slug", default=DEFAULT_SLUG, help="channel slug (default: $KICK_CHANNEL or %(default)s)")
@@ -542,6 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json-state", action="store_true", help="also maintain $RUN_DIR/channel.json (last good sample + playback_url)")
     p.add_argument("--metrics-file", default=METRICS_FILE, help="metrics JSONL path (default: $METRICS_FILE)")
     p.add_argument("--max-samples", type=int, default=0, help="loop mode: stop after N samples (0 = forever)")
+    p.add_argument("--self-test", action="store_true", help="offline check of the category_* enrichment, exit 0/1")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging to stderr")
     return p
 
@@ -550,6 +675,8 @@ def main(argv: Optional[list] = None) -> int:
     global _VERBOSE
     args = build_parser().parse_args(argv)
     _VERBOSE = args.verbose
+    if args.self_test:
+        return self_test()
     if args.interval <= 0:
         log("--interval must be > 0", "error")
         return 2

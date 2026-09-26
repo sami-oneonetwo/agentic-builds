@@ -48,6 +48,8 @@ stop_one ffmpeg
 stop_one compositor
 stop_one kick_api
 stop_one chat_listener
+stop_one category_sampler
+stop_one ops_switch
 
 # Strays: anything else running from this repo's stream/ or monitor/ dirs (never ourselves).
 STRAY="$(pgrep -f "$KICK_LIVE_ROOT/(stream|monitor)/" 2>/dev/null | grep -vx -e "$$" -e "$PPID" || true)"
@@ -64,7 +66,7 @@ if [ -n "$STRAY" ]; then
   fi
 fi
 LEFT=""
-for n in supervisor run ffmpeg compositor kick_api chat_listener; do
+for n in supervisor run ffmpeg compositor kick_api chat_listener category_sampler ops_switch; do
   if [ -f "$PID_DIR/$n.pid" ] && pid_alive "$(cat "$PID_DIR/$n.pid")"; then LEFT="$LEFT $n"; fi
 done
 kl_activity stop.sh "pipeline stopped" 2>/dev/null || true
