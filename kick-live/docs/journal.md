@@ -1021,3 +1021,19 @@ Tick 18:00 (loop): not paused; 10/10 alive. Viewers 1-5 (avg 2.6), followers 2 -
 settlement went up), rank #3 of 10 in Software Development (34 category viewers). Chat: two `b` votes from the staff
 account at 17:39 and 17:43. Honesty 0. HUD fix agent still re-proving (drop-debug run in /tmp/lg-hud-fix). Nothing
 deployed.
+
+## 031 — 2026-09-26 18:20 — First external chatter; HUD deploy held on a bake-thread regression
+
+17:24: **Lordoomer** ("hey" / "Can I become a settler too?") is the first person who is not the owner or Kick staff to
+chat on the settlement: hatched as a pip, 2 messages, second within 10 min; the staff account answered "of course" in
+chat. Funnel report (run/reports/2026-09-26.md): 3 chatters, 1 external, external 2nd-message rate 100 % of 1; 144
+viewer arrivals today, 1 first-time chatter: the first-minute conversion is the bottleneck the HUD pass targets.
+
+HUD reshape workflow finished pass_with_fixes (journal 030 by the fix agent; two stranger blockers closed: the clock row
+moved into header_right, the minimap became a camera bottom dead-zone box; plank carries no vote states). Staging
+/tmp/lg-deploy-stage3: compile, honesty, camera, behaviour, state, keepers, chat_bridge PASS; compositor 300 frames on
+the live world + chat: header band 300/300, land strip 300/300, vote card 356/356, honesty 0. **Held**: the scene
+self-test fails one gate, "bake thread never blocked a frame" (84 frames during the bake, max 42.1 ms, twice), while
+the previous build under the same load passes it (max 9.5 ms). Regression from the reshape; a bisect + fix workflow
+is running. Backups taken: live-snapshot-v3-longgrass-v0b, world.json.bak-pre-hud-*. Deploy plan unchanged: one
+relay-held child restart with every changed file copied together.
