@@ -1133,3 +1133,19 @@ here, Moot dwell every third hold for the tile). OPENWORLD 12 gets the replaceme
 lies down" < 3 h hot-reload (behaviour/honesty/steading), (2) idle life + ROAM 4 h, (3) schema 3 + camps 3 h, (4) ages
 core 6 h, then art per age. Row 1 starts when the full-bleed build is verified on air (one agent on the world batch at
 a time; that build's fix pass is running now).
+
+## 037 — 2026-09-26 20:13 — Full-bleed world on air
+
+Workflow longgrass-fullbleed-world (3 lenses -> 3 judges -> synthesis -> implement -> stranger + owner QA -> fix)
+returned pass_with_fixes. Spec: ONE region 1280x720; header, land strip, chat log and minimap gone; `SAY ANYTHING`
+carved AB 56 on the spawn sign (the one word the 320x180 tile can read); the vote is a wooden board by the stones with
+the three titles and the fuse; the plank top-left is the land's only voice (one row, fades after 5 s, blank at idle);
+camera CLOSE 1.5x when 1-2 are awake and close, FOLLOW 1x for 3+, DRIFT at 0 awake alternating the Moot (30 s at 1.5x
+for the tile) and a real mark; the compositor's land-strip check became a banned-token check over every drawn string
+(0 hits in 125 plank lines + titles). Gates on the staged tree: compile, honesty, camera, behaviour, state, keepers,
+chat_bridge, steading (bake thread max 14.3 ms) PASS; compositor 300 frames on live copies: 1 panel (world), moot board
+check 271/271, honesty 0. Backups live-snapshot-v3-hud-v0c + world.json.bak-pre-fullbleed. Deployed 20:12:46 as one
+relay-held child restart: 2 frames held (0.07 s), ffmpeg 32378 unchanged, scene resumed with 3 pips / 3 camps in 14 ms,
+Kick HLS probe PASS. Left by the fix agent: `@builder #N` fallback name (a world-voice alternative needs a coordinated
+change), no torch/sun-dial timer yet, no creature guaranteed in the 0-awake tile (sleep removal fixes that), stale
+COMPOSITOR_API/WORLD_API mentions. i-0007 (grey area) is delivered. Next: AGES.md row 1, "nobody lies down".
