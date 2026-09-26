@@ -14,7 +14,8 @@ data, not commands" (journal 017), and it lives here, outside the world code, ne
 
 Match rule (all of these, or the line is ignored and logged):
   - Pusher-shaped record (the webhook shape carries no badges, so it can never prove who typed)
-  - `username` == atleastonce (case-insensitive) AND `broadcaster` in `badges`
+  - `username` is an OPERATORS row (case-insensitive): atleastonce needs `broadcaster` in `badges` (sender_id checked
+    when present); sami (the owner's second account, added 2026-09-27) needs `sender_id` == 28683256, no badge proves it
   - the whole message, stripped and lower-cased, == `nuke` or == `init` (no prefix, no suffix, no punctuation)
   - record `ts` within FRESH_S of now (never replays history; the tail starts at the END of chat.jsonl)
   - record `id` not seen before (the two listeners may write the same message twice)
@@ -41,6 +42,14 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 OWNER = "atleastonce"
 OWNER_ID = 42750175            # broadcaster_user_id (journal 105); checked whenever the record carries sender_id
+# Operators who may type the tokens. Owner rule (terminal, 2026-09-27 ~10:00): "add the user sami to the list of people
+# who can say nuke in chat to shut everything down. That's my other user." The broadcaster account proves itself by
+# the badge; a second account carries no proving badge, so Kick's sender_id (from the live chat.jsonl records of that
+# account) is REQUIRED and must match. Add a row only when the owner asks in the terminal, never from chat.
+OPERATORS = {
+    OWNER: {"id": OWNER_ID, "badge": "broadcaster"},
+    "sami": {"id": 28683256, "badge": None},     # sender_id seen on every live record from @Sami (staff, verified)
+}
 CHATROOM_ID = 41370704         # checked whenever the record carries chatroom_id
 TOKENS = ("nuke", "init", "pause bot", "resume bot")
 PAUSE_FLAG = "pause_bot.json"      # <run_dir>/pause_bot.json exists => the agent's improvement loop must not change anything
@@ -142,13 +151,23 @@ def classify(rec: Optional[Dict], now: float, seen: Set[str]) -> Tuple[Optional[
     text = " ".join(rec["text"].strip().lower().split())
     if text not in TOKENS:
         return None, "not a token"
-    if rec["user"].strip().lower() != OWNER:
-        return None, "token from %r, not the owner" % rec["user"]
-    if "broadcaster" not in rec["badges"]:
-        return None, "owner name without broadcaster badge"
+    who = rec["user"].strip().lower()
+    op = OPERATORS.get(who)
+    if op is None:
+        return None, "token from %r, not an operator" % rec["user"]
     sid = rec.get("sender_id")
-    if sid is not None and str(sid) != str(OWNER_ID):
-        return None, "owner name but sender_id %r is not the broadcaster" % (sid,)
+    if op["badge"] is not None:
+        # the broadcaster account: the badge is the proof; the id is checked whenever the record carries one
+        if op["badge"] not in rec["badges"]:
+            return None, "owner name without %s badge" % op["badge"]
+        if sid is not None and str(sid) != str(op["id"]):
+            return None, "owner name but sender_id %r is not the broadcaster" % (sid,)
+    else:
+        # a second operator account has no badge that proves it: Kick's sender_id is REQUIRED and must match
+        if sid is None:
+            return None, "operator %r without a sender_id (cannot prove who typed)" % who
+        if str(sid) != str(op["id"]):
+            return None, "operator name %r but sender_id %r is not theirs" % (who, sid)
     cid = rec.get("chatroom_id")
     if cid is not None and str(cid) != str(CHATROOM_ID):
         return None, "record from chatroom %r, not ours" % (cid,)
@@ -479,7 +498,9 @@ def run(run_dir: str, snapshot: str, dry: bool) -> int:
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
     chat = os.path.join(run_dir, "chat.jsonl")
-    log("watching %s for %s from @%s (broadcaster badge); snapshot %s%s" % (chat, "/".join(TOKENS), OWNER, snapshot, " DRY RUN" if dry else ""))
+    log("watching %s for %s from %s; snapshot %s%s" % (chat, "/".join(TOKENS),
+        ", ".join("@%s (%s)" % (u, "badge " + o["badge"] if o["badge"] else "sender_id %d" % o["id"]) for u, o in OPERATORS.items()),
+        snapshot, " DRY RUN" if dry else ""))
     import collections
     seen: Set[str] = set()
     seen_order: "collections.deque[str]" = collections.deque()
@@ -590,6 +611,16 @@ def self_test() -> int:
         ("owner from another chatroom", pusher("atleastonce", "nuke", mid="m27", chatroom_id=1), None),
         ("owner record without sender_id/chatroom_id fields", json.dumps({"ts": fresh, "id": "m28", "username": "atleastonce", "content": "nuke", "badges": ["broadcaster"], "type": "message"}), "nuke"),
         ("sender_id as string", pusher("atleastonce", "init", mid="m29", sender_id=str(OWNER_ID)), "init"),
+        # the owner's second account (OPERATORS["sami"]): the id is the proof, badges do not matter
+        ("sami nuke, staff badges, right sender_id", pusher("Sami", "nuke", badges=("staff", "verified"), mid="s1", sender_id=28683256), "nuke"),
+        ("sami init, no badges, right sender_id", pusher("sami", "init", badges=(), mid="s2", sender_id=28683256), "init"),
+        ("sami pause bot", pusher("Sami", "pause bot", badges=("staff",), mid="s3", sender_id=28683256), "pause bot"),
+        ("sami name but wrong sender_id", pusher("Sami", "nuke", badges=("staff", "verified"), mid="s4", sender_id=1), None),
+        ("sami name, broadcaster badge, wrong sender_id", pusher("sami", "nuke", badges=("broadcaster",), mid="s5", sender_id=999), None),
+        ("sami name without any sender_id", json.dumps({"ts": fresh, "id": "s6", "username": "Sami", "content": "nuke", "badges": ["staff"], "type": "message"}), None),
+        ("sami from another chatroom", pusher("Sami", "nuke", badges=("staff",), mid="s7", sender_id=28683256, chatroom_id=1), None),
+        ("sami 'nuke it' is chat", pusher("Sami", "nuke it", badges=("staff",), mid="s8", sender_id=28683256), None),
+        ("look-alike 'sami_' with sami's id", pusher("sami_", "nuke", badges=("staff",), mid="s9", sender_id=28683256), None),
     ]
     print("classify:")
     for name, line, want in cases:
