@@ -665,3 +665,14 @@ world panel, verbs with the leading-verb rule, rounds/keepers/audio, copy) → I
 on a copy of the live world.json, pre-bake, hot-reload swap test under the relay, probe) → QA
 (stranger, honesty, art) → Fix. Deploy plan: hot-reload scene swap while the cave is on air
 (OPENWORLD §14), swap-build.sh as fallback; owner told first either way.
+
+---
+
+## 023 — 2026-09-26 10:08 — Second overnight sleep; build resumed from cache
+
+The Mac slept again overnight (22 pipeline exits since VOD 2 started: mostly `rc=224` broken pipes
+on sleep and two watchdog restarts on stale liveness; supervisor reconnected on every wake, last at
+00:03:49Z, Kick session start 00:04:00Z). Mac is now on AC and charging. The settlement build's
+Integrate step died with the session; gate + all 8 modules are cached. Module work checkpointed as
+bbb0ad8; build resumed (`resumeFromRunId wf_876c9b0b-2b9`, v0 mode): Integrate → QA → Fix run live.
+Lesson stands (018): the stream needs an always-on host; a laptop lid is a single point of failure.
