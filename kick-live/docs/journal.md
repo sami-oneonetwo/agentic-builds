@@ -1042,3 +1042,11 @@ Tick 18:24 (loop): not paused; 10/10 alive. Viewers 1-4 (avg 2.3), followers 3, 
 (34 category viewers). Chat: `bbbbb` from the staff account at 18:22 fell through as plain (votes are exactly one
 letter): another silent miss for the plank-hint list (a message that is only repeated a/b/c letters -> `type just B`).
 Honesty 0. Bake-thread bisect running with instrumented new-vs-control runs. Nothing deployed.
+
+Addendum to 031 (18:30): **HUD reshape on air.** Owner asked why nothing had visibly changed; the held gate (bake-thread
+stall, ~2 s of late frames at boot and per octant bake) is not worth an hour of a static screen against the owner's
+"ship and iterate on air". Deployed 18:27:58 from /tmp/lg-deploy-stage3: every changed file copied into live-snapshot-v3
+together, one relay-held child restart, 18 frames held (0.60 s), ffmpeg 40018 unchanged, new compositor registers 5
+panels (world chat_log colony header_center header_right), scene resumed with 3 pips / 3 camps, prebaked -v3 ground
+loaded from disk (the bake key now matches), honesty 0. The bake-thread fix lands as a follow-up hot-reload when the
+bisect returns.
