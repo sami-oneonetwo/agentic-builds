@@ -1114,3 +1114,22 @@ as DOWN and relaunched it; three heartbeats were running, the two duplicates wer
 it finishes and keeps only report/ (grids, tiles, crops); the loop tick refuses to launch a build under 20 GB free and
 cleans /tmp/lg-* first. This outage was not a restart by the agent; it was the box running out of disk under the agent's
 own test output, which is the same failure in effect.
+
+## 036 — 2026-09-26 20:15 — AGES.md adopted: three keys, six named ages, nobody lies down
+
+Design workflow (systems designer / stranger+regular / honesty+engineering lenses, three judges, synthesis) wrote
+docs/AGES.md (551 lines). Drive = three keys, all required, each a len(): PEOPLE (distinct real chatters ever minus
+banished), STONES (one record per real stack; the x2 flag was dead code), DAYS (distinct local calendar dates with a
+moderated record; recomputed from chat.jsonl). Rejected drives: rounds (175/day close with nobody voting), marks (spam
+lever), raisings, viewer_count, session ids (one id since 09-24). Ladder people/stones/days: the Clearing 1/0/1, the Camp
+3/10/2 (EARNED tonight at 3/16/3: the first age build plays on air the minute it ships), the Steading 5/30/5, the Village
+10/80/10, the Town 25/200/25, then Centuries at +25/+200/+25. Vocabulary in the world, never "age N". No sleep: two axes
+replace asleep/awake: PRESENCE here/away (derived from the person's last record, gates every verb, vote, mark, fire;
+never drawn as a count) and ACTIVITY (seed, hatching, idle, walking, voting, sitting, hauling, hidden). Away settlers
+run honest errands (home, moot, water, visit, tend, stroll, haul) with per-name personality and variety caps; idle
+motion may never write wear, stones, marks, votes, speech or hops. Camps at hatch; the camp ladder runs on days seen and
+minutes present with age floors and never lowers. Camera gains ROAM (follow the most watchable errand when nobody is
+here, Moot dwell every third hold for the tile). OPENWORLD 12 gets the replacement rule text. Build order: (1) "Nobody
+lies down" < 3 h hot-reload (behaviour/honesty/steading), (2) idle life + ROAM 4 h, (3) schema 3 + camps 3 h, (4) ages
+core 6 h, then art per age. Row 1 starts when the full-bleed build is verified on air (one agent on the world batch at
+a time; that build's fix pass is running now).
