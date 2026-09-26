@@ -855,3 +855,7 @@ sampler then a measured Games + Demos vs Software Development test, (8) keeper p
 chat-posting keeper bot (owner said no bots earlier; also needs chat:write consent). Launched: workflow
 kick-instrumentation-and-title (items 2, 3, 7; monitor/ + scripts/ only; title stays dry-run until the orchestrator
 sets it). HUD reshape is in its implement phase (layout.py + 8 panels + compositor + chat_bridge being edited).
+
+Tick 17:00 (loop): not paused; 9/9 processes alive; viewers 1-4 (avg 2.2), live 100 %, followers 2; chat quiet since
+15:58, no !idea pending, honesty 0. HUD reshape: implementer running its budget + camera chain (/tmp/lg-hud-build).
+Instrumentation: build + two reviews done, fix/go-live step running (sampler not started yet). Nothing deployed.
