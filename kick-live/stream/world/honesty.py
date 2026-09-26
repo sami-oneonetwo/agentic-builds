@@ -22,18 +22,32 @@ Every rule is a `len()` over real records, never a sample string. The rules:
               the bridge cleared it (cleared == True)
   name        an entity's display_name is the pip's FILTERED display name (builder #N on a blocklist hit), never a
               raw name the filter would change
-  counts      awake_count / asleep_count / hatched_ever / platform_counts are len() over the entities they claim
+  counts      present_count / hatched_ever / platform_counts are len() over the entities they claim; asleep_count is 0
+              (nobody sleeps, AGES 1.1)
   text        a bubble is the owner's own moderated text (seen in ctx.chat), one of the owner's own words, or a
               learned word carrying a real source; pips never generate text
-  presence    len(PRESENT real entities) == scene.distinct_recent_chatters(ctx, now); present = awake and not on the
-              walk home to lie down (Entity.is_present). A pip wakes on the RAW record (one frame) while the reference
-              counts the MODERATED one (hold later), and a pip whose window just closed finishes its wander leg first,
-              so a drift is tolerated for max(presence_grace_s, hold_s + 1 s, PRESENCE_WANDER_GRACE_S = 12 s) and
-              counted separately as `presence_drift`; longer = violation
+  roster      (AGES 4.2) every settler on the land is one real person, one each: len(hatched real entities) ==
+              len(hatched real pip rows), no row without a settler, no entity for a banished key, and never more rows
+              than distinct real chatters ever in chat.jsonl minus banished minus quarantined. Tolerance: the hold +
+              one frame (a tuft's row lands before its hatch)
+  here        len(entities with is_present()) == scene.distinct_recent_chatters(ctx, now). A pip flips to here on the
+              RAW record (one frame) while the reference counts the MODERATED one (hold later), so a drift is
+              tolerated for max(presence_grace_s, hold_s + 1 s) and counted separately as `presence_drift`; longer =
+              violation. (The 12 s walk-home grace is gone: nobody walks home.)
+  agency      (AGES 4.2) an AWAY settler claims nothing a person could: no bubble spoken while away, no state
+              `voting` / platform slot, no carry in (berry, gift), no hop or wave started while away, no walking.then
+              outside idle | errand:* | sit | gather | credits. `enforce` clears the text / drops the vote. AND every
+              record-changing EVENT this frame names a HERE actor (RECORD_EVENTS_PIP by `pip`: stack / stone / place /
+              plant / sow / harvest / camp / fire / go / speak / hop / emote / pickup; RECORD_EVENTS_BY by `by`: feed /
+              pet / gift / hearth; a `walk` whose then is a verb's or whose `to` is a place label), AND every stone /
+              mark record that appeared on the land since the last frame names a here settler (the first frame takes
+              the baseline). This is the net under rounds' expedition / bonfire / harvest cards: a round can only act
+              through here settlers (AGES 9).
   scene       the scene's own _honesty_check removed something (stats()["honesty_violations"] grew)
-  wear        (the land, OPENWORLD.md 12) land.take_wear_added() per frame: the wear added equals 8 x (real pips that
-              entered a new cell) + the 4-neighbour spill (<= 16 x steps), and no step is ever laid while no real pip
-              is awake (the survey camera, the weather and test pips never write wear)
+  wear        (the land, OPENWORLD.md 12 / AGES 4.2) land.take_wear_added() per frame: added == 8 x (present settlers
+              that entered a new cell) + the 4-neighbour spill (<= 2 per neighbour, so <= 16 x steps), and zero wear
+              while zero settlers are present (an away body moved by the land, the survey camera, the weather and
+              test pips never write wear)
   marks       (the land) land.provenance_violations() every MARKS_EVERY_S: every camp / mark / stone / field owner is a
               row in world.json["pips"]
 
@@ -58,11 +72,14 @@ if _ROOT not in sys.path:
 
 from stream.state_store import normalise_chat, run_path  # noqa: E402
 
-RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "presence", "scene", "wear", "marks")
-PRESENCE_WANDER_GRACE_S = 12.0   # a pip whose owner's window just closed finishes its wander leg (8-40 cells at 5-10 cells/s,
-                                 # <= ~8 s with detours) before it heads home; a padded count still trips the rule after this
+RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "roster", "here", "agency", "scene", "wear", "marks")
 SEED_STATES = ("seed", "hatching")
-SLEEP_STATES = ("asleep", "burrowed")
+HIDDEN_STATES = ("hidden", "burrowed")           # the one lying pose (mod !hide); `burrowed` is the cave's name for it
+AWAY_THEN_OK = ("idle", "sit", "gather", "credits")   # a walking.then the land may give an away body (plus errand:<name>)
+RECORD_EVENTS_PIP = ("stack", "stone", "place", "plant", "sow", "harvest", "camp", "fire", "go", "speak", "hop", "emote", "pickup")
+RECORD_EVENTS_BY = ("feed", "pet", "gift", "hearth")    # the actor is `by` (the recipient `pip` may be away, AGES 1.5)
+RECORD_LISTS = (("stones", "by", "stone"), ("marks", "owner", "mark"))   # land lists diffed per frame: (attr, owner key, word)
+CLAIM_SLACK_S = 1.0                              # a hop / wave / bubble that STARTED while here may outlive the window flip by this
 CHAT_RESCAN_S = 2.0
 TEXT_MEMORY = 20
 ORPHAN_GRACE_S = 5.0          # a real pip is created from a record the listener already appended; the names scan lags <= 2 s
@@ -145,12 +162,15 @@ class HonestyMonitor(object):
         self._chat_scan_t = -1e18
         self._scene_hv = None
         self._drift_since: Optional[float] = None
+        self._roster_since: Optional[float] = None
         self._logged = 0
         self._missing_since: Dict[str, float] = {}
         self.quarantined = 0
         self._marks_t = -1e18
         self.wear_steps_total = 0
         self.wear_added_total = 0
+        self._records_seen: Dict[str, int] = {}                # len(land.stones / marks) at the last frame (agency: new records)
+        self.record_events_checked = 0
 
     # ------------------------------------------------------------------ helpers
     def _name_filter(self):
@@ -239,8 +259,13 @@ class HonestyMonitor(object):
 
         animate = 0
         animate_real = 0
-        awake_real = 0
-        moving_real = 0
+        present_real = 0
+        on_land_real = 0
+        hidden_real = 0
+        try:
+            banished = set(str(k).lower() for k in ((getattr(w, "data", None) or {}).get("banished") or {}).keys())
+        except Exception:
+            banished = set()
         remove: List[str] = []
         for key, e in ents.items():
             origin = getattr(e, "origin", None)
@@ -248,6 +273,11 @@ class HonestyMonitor(object):
             # -- origin
             if origin != "chat" and not is_test:
                 rep.add("origin", "%s origin=%r" % (key, origin))
+                remove.append(key)
+                continue
+            # -- roster: a settler for a BANISHED key (whatever its record says) is never on the land
+            if not is_test and key in banished:
+                rep.add("roster", "%s has a settler on the land but is banished" % key)
                 remove.append(key)
                 continue
             p = w.pip(key)
@@ -265,10 +295,44 @@ class HonestyMonitor(object):
                 remove.append(key)
                 continue
             animate_real += 1
-            if not is_test and e.is_awake():
-                moving_real += 1                   # still on the land (wear, fires, camera)
-                if getattr(e, "then", None) not in ("sleep", "credits"):
-                    awake_real += 1                # present: a pip walking home to lie down is the sleep animation, not a person
+            here = bool(e.is_present(t)) if hasattr(e, "is_present") else bool(e.is_awake())
+            if not is_test:
+                if e.state in HIDDEN_STATES:
+                    hidden_real += 1
+                elif e.is_awake():
+                    on_land_real += 1              # on the land (drawn standing, moved by the land)
+                if here:
+                    present_real += 1              # here: the person's record is inside present_s
+                # -- agency: an away body claims nothing a person could (AGES 4.2)
+                if not here and e.state not in HIDDEN_STATES:
+                    claims = []
+                    la, ps = float(getattr(e, "last_active_t", 0.0)), float(getattr(e, "present_s", 1200.0))
+                    spoke_t = getattr(e, "spoke_t", None)
+                    if e.text is not None and t < e.speak_until and (spoke_t is None or spoke_t - la > ps + CLAIM_SLACK_S):
+                        claims.append("bubble")
+                    if e.state == "voting":
+                        claims.append("state voting")
+                    if getattr(e, "platform", None) is not None:
+                        claims.append("platform %s" % e.platform)
+                    if getattr(e, "carry", None) in ("berry", "gift"):
+                        claims.append("carry %s" % e.carry)
+                    if float(getattr(e, "hop_t", -1e9)) - la > ps + CLAIM_SLACK_S and t - float(getattr(e, "hop_t", -1e9)) < 1.0:
+                        claims.append("hop")
+                    if getattr(e, "emote", None) == "wave" and t < float(getattr(e, "emote_until", 0.0)) \
+                            and float(getattr(e, "emote_until", 0.0)) - 2.0 - la > ps + CLAIM_SLACK_S:
+                        claims.append("wave")
+                    then = getattr(e, "then", None)
+                    if e.state == "walking" and then is not None and then not in AWAY_THEN_OK and not str(then).startswith("errand:"):
+                        claims.append("walking.then=%s" % then)
+                    if claims:
+                        rep.add("agency", "away %s claims %s" % (key, ", ".join(claims)))
+                        if self.enforce:
+                            if "bubble" in claims:
+                                e.text, e.speak_until = None, 0.0
+                            if e.state == "voting" or getattr(e, "platform", None) is not None:
+                                e.platform, e.slot = None, None
+                                if e.state == "voting":
+                                    e.state = "idle"
             # -- hold: hatched in this process -> hatch_t - seed_t >= hold_s; a label needs a cleared hold
             if e.hatch_t is not None and e.hatch_t - e.seed_t < hold_s - eps:
                 rep.add("hold", "%s hatched %.2fs after its seed (hold %.1fs)" % (key, e.hatch_t - e.seed_t, hold_s))
@@ -345,15 +409,40 @@ class HonestyMonitor(object):
         hatched_real = sum(1 for k in real_pips if (w.pips.get(k) or {}).get("state") not in SEED_STATES)
         if he != hatched_real:
             rep.add("counts", "hatched_ever() %d != len(real hatched pips) %d" % (he, hatched_real))
-        # -- counts: awake / asleep / platforms are len() over the entities they claim (test pips included, as drawn)
         live = b.entities
-        n_awake = sum(1 for e in live.values() if (e.is_present() if hasattr(e, "is_present") else e.is_awake()))
-        n_asleep = sum(1 for e in live.values() if e.state in SLEEP_STATES)
+        # -- roster (AGES 4.2): one real person per settler, one settler per hatched row, never more rows than chatters
+        rows_hatched = [k for k in real_pips if (w.pips.get(k) or {}).get("state") not in SEED_STATES]
+        ents_hatched = [k for k, e in live.items() if getattr(e, "origin", None) == "chat" and e.state not in SEED_STATES]
         try:
-            if int(scene.awake_count()) != n_awake:
-                rep.add("counts", "awake_count() %d != len(awake entities) %d" % (scene.awake_count(), n_awake))
-            if int(scene.asleep_count()) != n_asleep:
-                rep.add("counts", "asleep_count() %d != len(sleeping entities) %d" % (scene.asleep_count(), n_asleep))
+            quarantined = set(str(k).lower() for k in ((w.data.get("quarantine") or {}).keys()))
+        except Exception:
+            quarantined = set()
+        roster_bad: List[str] = []
+        no_entity = [k for k in rows_hatched if k not in live]
+        if no_entity:
+            roster_bad.append("%d hatched row(s) with no settler on the land: %s" % (len(no_entity), ", ".join(sorted(no_entity)[:4])))
+        if len(ents_hatched) != len(rows_hatched):
+            roster_bad.append("hatched settlers %d != hatched real rows %d" % (len(ents_hatched), len(rows_hatched)))
+        if self._chat_names is not None:
+            chatters_ref = set(self._chat_names) - banished - quarantined
+            if len(real_pips) > len(chatters_ref):
+                roster_bad.append("%d rows > %d distinct chatters ever minus banished / quarantined" % (len(real_pips), len(chatters_ref)))
+        if roster_bad:
+            if self._roster_since is None:
+                self._roster_since = t
+            elif t - self._roster_since > hold_s + eps:
+                rep.add("roster", "; ".join(roster_bad))
+        else:
+            self._roster_since = None
+        # -- counts: present / platforms are len() over the entities they claim (test pips included, as drawn); asleep is 0
+        n_present = sum(1 for e in live.values() if (e.is_present(t) if hasattr(e, "is_present") else e.is_awake()))
+        try:
+            pc_fn = getattr(scene, "present_count", None) or scene.awake_count
+            if int(pc_fn()) != n_present:
+                rep.add("counts", "present_count() %d != len(present entities) %d" % (pc_fn(), n_present))
+            ac = getattr(scene, "asleep_count", None)
+            if callable(ac) and int(ac()) != 0:
+                rep.add("counts", "asleep_count() %d: nobody sleeps" % ac())
             pc = scene.platform_counts()
             for letter, keys in pc.items():
                 standing = sorted(k for k, e in live.items() if e.state == "voting" and e.platform == letter)
@@ -361,20 +450,55 @@ class HonestyMonitor(object):
                     rep.add("counts", "platform %s lists %r, standing %r" % (letter, sorted(keys), standing))
         except Exception as ex:
             rep.unverified.append("counts: %r" % (ex,))
-        # -- presence: awake real == distinct chatters in the sleep window of this session
+        # -- agency (events, AGES 4.2 second clause): every record-changing event this frame names a HERE actor. The entity
+        # pass above sees only what an away body holds; this one sees what was done in its name (a round card's `go`, a
+        # stone stacked by rounds, a verb relayed for an away key). Test-origin actors are skipped (as drawn).
+        try:
+            evs = list(getattr(scene, "events", None) or [])
+        except Exception:
+            evs = []
+        ev_bad: List[str] = []
+        for ev in evs:
+            if not isinstance(ev, dict):
+                continue
+            typ = ev.get("type")
+            actor = None
+            if typ in RECORD_EVENTS_BY:
+                actor = ev.get("by")
+            elif typ in RECORD_EVENTS_PIP:
+                actor = ev.get("pip") or ev.get("key")
+            elif typ == "walk":
+                then = str(ev.get("then") or "idle")
+                verb_walk = (then not in AWAY_THEN_OK and not then.startswith("errand:")) or isinstance(ev.get("to"), str)
+                if verb_walk:
+                    actor = ev.get("pip") or ev.get("key")
+            if not actor:
+                continue
+            self.record_events_checked += 1
+            ak = str(actor).lower()
+            e = live.get(ak)
+            if e is None:
+                ev_bad.append("%s by %s (no settler on the land)" % (typ, ak))
+            elif getattr(e, "origin", None) == "test":
+                continue
+            elif not (e.is_present(t) if hasattr(e, "is_present") else e.is_awake()):
+                ev_bad.append("%s by away %s%s" % (typ, ak, (" then=%s to=%r" % (ev.get("then"), ev.get("to"))) if typ == "walk" else ""))
+        if ev_bad:
+            rep.add("agency", "record event(s) naming no here actor: " + "; ".join(ev_bad[:4]))
+        # -- here: present real == distinct chatters in the present window of this session
         try:
             ref = int(scene.distinct_recent_chatters(ctx, t))
         except Exception as ex:
             ref = None
             rep.unverified.append("distinct_recent_chatters: %r" % (ex,))
         if ref is not None:
-            if awake_real != ref:
+            if present_real != ref:
                 rep.drift = True
                 self.drift_frames += 1
                 if self._drift_since is None:
                     self._drift_since = t
-                elif t - self._drift_since > max(self.presence_grace_s, hold_s + 1.0, PRESENCE_WANDER_GRACE_S):
-                    rep.add("presence", "awake real %d != distinct recent chatters %d for %.1fs" % (awake_real, ref, t - self._drift_since))
+                elif t - self._drift_since > max(self.presence_grace_s, hold_s + 1.0):
+                    rep.add("here", "present real %d != distinct recent chatters %d for %.1fs" % (present_real, ref, t - self._drift_since))
             else:
                 self._drift_since = None
         # -- wear / marks (the land only; the cave has no Land and skips both)
@@ -393,10 +517,24 @@ class HonestyMonitor(object):
                     rep.add("wear", "wear added %d for %d step(s)" % (added, steps))
                 elif added > steps * (_WEAR_STEP + 4 * _WEAR_SPILL):
                     rep.add("wear", "wear added %d > %d x %d step(s) (8 + 4 x 2 spill)" % (added, _WEAR_STEP + 4 * _WEAR_SPILL, steps))
-                if steps > 0 and moving_real == 0:
-                    slept_now = any((ev or {}).get("type") == "sleep" for ev in (getattr(scene, "events", None) or []))
-                    if not slept_now:                       # the walk home ends in the same tick as the lie-down: that step is real
-                        rep.add("wear", "%d wear step(s) laid with no real awake pip" % steps)
+                if steps > 0 and present_real == 0:
+                    rep.add("wear", "%d wear step(s) laid while no settler is present" % steps)
+            # -- agency (records): a stone or mark that appeared since the last frame names a HERE settler (AGES 4.1 `never
+            # adds a stone`, `never leaves a mark`); the first frame only takes the baseline (history is the record's)
+            for attr, owner_key, what in RECORD_LISTS:
+                try:
+                    rows = list(getattr(land, attr, None) or [])
+                except Exception:
+                    rows = []
+                seen = self._records_seen.get(attr)
+                if seen is not None and len(rows) > seen:
+                    for rec in rows[seen:]:
+                        who = str((rec or {}).get(owner_key) or "").lower()
+                        e = live.get(who)
+                        here_ = e is not None and (e.is_present(t) if hasattr(e, "is_present") else e.is_awake())
+                        if e is None or (getattr(e, "origin", None) != "test" and not here_):
+                            rep.add("agency", "%s recorded for %s who is %s" % (what, who or "?", "away" if e is not None else "not on the land"))
+                self._records_seen[attr] = len(rows)
             if t - self._marks_t >= MARKS_EVERY_S:
                 self._marks_t = t
                 try:
@@ -406,8 +544,9 @@ class HonestyMonitor(object):
                     rep.unverified.append("provenance_violations: %r" % (ex,))
                 if bad:
                     rep.add("marks", "%d mark(s) whose owner is not a pip row: %s" % (len(bad), "; ".join(str(b) for b in bad[:3])))
-        rep.counts = {"entities": len(live), "animate": animate, "animate_real": animate_real, "awake": n_awake,
-                      "awake_real": awake_real, "asleep": n_asleep, "seeds": sum(1 for e in live.values() if e.state in SEED_STATES),
+        rep.counts = {"entities": len(live), "animate": animate, "animate_real": animate_real, "present": n_present,
+                      "present_real": present_real, "on_land_real": on_land_real, "hidden_real": hidden_real,
+                      "seeds": sum(1 for e in live.values() if e.state in SEED_STATES),
                       "real_pips": len(real_pips), "hatched_ever": he, "recent_chatters": ref if ref is not None else -1,
                       "test_pips": int(getattr(scene, "test_pips", 0) or 0), "removed_total": self.removed}
         if chat_display is False:
@@ -482,7 +621,7 @@ def _selftest(run_dir: str) -> int:
     session = {"id": "honesty-" + epoch_to_iso(t0, ms=False), "started_ts": epoch_to_iso(t0 - 30, ms=False), "ending": False}
     # the "real" records: both chat.jsonl shapes, written to $RUN_DIR/chat.jsonl exactly as the listener / receiver do
     names = ["honesty-chatter-a", "honesty-chatter-b", "honesty-chatter-c"]
-    # a and b chatted an hour ago (asleep at boot, real last_seen); c has never chatted and appears live below
+    # a and b chatted an hour ago (placed standing at boot, away: real last_seen); c has never chatted and appears live below
     recs_file = [
         {"id": "h-0001", "ts": epoch_to_iso(t0 - 3600.0), "username": names[0], "content": "hello cave", "type": "message"},
         {"id": "h-0002", "ts": epoch_to_iso(t0 - 3500.0), "user": names[1], "text": "hi there", "user_id": 42},
@@ -537,7 +676,7 @@ def _selftest(run_dir: str) -> int:
         if i == 30:                                           # a stranger: seed drops THIS frame, nameless for 3 s
             append_chat({"id": "h-0003", "ts": epoch_to_iso(now), "username": names[2], "content": "first time here", "type": "message"})
             raw.append(bridge_rec(3, names[2], "first time here", now))
-        if i == 45:                                           # a returning sleeper wakes on the raw record
+        if i == 45:                                           # a returning chatter: `return` on the raw record
             append_chat({"id": "h-0004", "ts": epoch_to_iso(now), "user": names[0], "text": "back again", "user_id": 7})
             raw.append(bridge_rec(4, names[0], "back again", now))
         if i == 120:
@@ -573,8 +712,8 @@ def _selftest(run_dir: str) -> int:
     print("[clean] last counts: %r" % (s["last"]["counts"],))
     print("[clean] seed frames seen=%d, nameless (display_name None and key None)=%d; seed at frame %s, hatch at frame %s (hold 3 s = 90 frames); events %r" % (
         seed_frames, seed_frames_nameless, seed_frame, hatch_frame, dict(sorted(ev_types.items()))))
-    print("[clean] hatched_ever=%d awake=%d asleep=%d platform_counts=%r stats=%r" % (
-        scene.hatched_ever(), scene.awake_count(), scene.asleep_count(), scene.platform_counts(),
+    print("[clean] hatched_ever=%d present=%d on_land=%d platform_counts=%r stats=%r" % (
+        scene.hatched_ever(), scene.present_count(), len(scene.behaviour.on_land()), scene.platform_counts(),
         {k: scene.stats()[k] for k in ("frames", "errors", "honesty_violations", "test_pips", "entities")}))
     ok = True
     if s["violations"] != 0:
@@ -583,12 +722,19 @@ def _selftest(run_dir: str) -> int:
     if seed_frames == 0 or seed_frames != seed_frames_nameless:
         print("FAIL: a seed carried a name (%d/%d)" % (seed_frames_nameless, seed_frames))
         ok = False
-    if scene.hatched_ever() != 3 or s["last"]["counts"]["awake_real"] != 2 or s["last"]["counts"]["asleep"] != 1:
-        print("FAIL: expected 3 real hatched, 2 awake (a woke, c hatched), 1 asleep (b)")
+    if scene.hatched_ever() != 3 or s["last"]["counts"]["present_real"] != 2 or s["last"]["counts"]["on_land_real"] != 3 or s["last"]["counts"]["hidden_real"] != 0:
+        print("FAIL: expected 3 real hatched, 2 present (a returned, c hatched), 3 on the land, 0 hidden (b stands, away)")
+        ok = False
+    b_ent = scene.behaviour.get(names[1])
+    if b_ent is None or not b_ent.is_on_land() or b_ent.is_present() or b_ent.frame_name(t0 + n_clean / fps) == "sleep":
+        print("FAIL: b (away) should stand on the land, never the lying pose: %r" % (b_ent.to_dict(t0 + n_clean / fps) if b_ent else None,))
+        ok = False
+    if any(ev in ev_types for ev in ("sleep", "wake", "curl", "uncurl")):
+        print("FAIL: a sleep / wake / curl event fired: %r" % (ev_types,))
         ok = False
     if land_scene:
-        print("[clean] land: wear steps %d added %d (rule wear: 8 x steps + spill), camps %d, marks %d, camera cuts %d" % (
-            mon.wear_steps_total, mon.wear_added_total, len(scene.land.camps()), len(scene.land.marks), scene.camera.cuts))
+        print("[clean] land: wear steps %d added %d (rule wear: 8 x steps + spill), camps %d, marks %d, camera cuts %d, record events checked %d" % (
+            mon.wear_steps_total, mon.wear_added_total, len(scene.land.camps()), len(scene.land.marks), scene.camera.cuts, mon.record_events_checked))
         if scene.camera.cuts != 0:
             print("FAIL: the camera cut")
             ok = False
@@ -614,7 +760,7 @@ def _selftest(run_dir: str) -> int:
 
     # 1. a creature with a plausible origin but no record anywhere (a forged entity)
     ghost = Entity("ghost-nobody", "chat", now)
-    ghost.state, ghost.display_name, ghost.cleared = "awake", "ghost", True
+    ghost.state, ghost.display_name, ghost.cleared = "idle", "ghost", True
     if land_scene:
         ghost.x, ghost.y = float(scene.terrain.site[0]) + 4.0, float(scene.terrain.site[1]) + 4.0      # on the Moot green
     else:
@@ -630,7 +776,8 @@ def _selftest(run_dir: str) -> int:
     # 2. a pip record for someone who never chatted (planted in world.json), with an entity to match
     key = "never-chatted-x"
     scene.world.data["pips"][key] = _default_pip(key, "Never", "Never", None, now, P.genome(key, 0))
-    scene.behaviour.place_sleeper(key, 0, 0.6, 0, 3, "Never", t=now)
+    scene.world.data["pips"][key]["state"] = "idle"
+    scene.behaviour.place_settler(key, 0, 0.6, 0, None, "Never", t=now)
     rep = run_frames(2)
     caught["chat_jsonl (pip with no chat.jsonl record)"] = "chat_jsonl" in rep.rules()
     print("[fake 2] planted pip record with no chat.jsonl record -> %r" % (rep.violations,))
@@ -642,8 +789,8 @@ def _selftest(run_dir: str) -> int:
     # 2b. the same tamper under enforce=True: after ORPHAN_GRACE_S the entity is gone and the record is in quarantine
     key = "never-chatted-y"
     scene.world.data["pips"][key] = _default_pip(key, "Never", "Never", None, now, P.genome(key, 0))
-    scene.world.data["pips"][key]["state"] = "asleep"
-    scene.behaviour.place_sleeper(key, 0, 0.6, 0, 4, "Never", t=now)
+    scene.world.data["pips"][key]["state"] = "idle"
+    scene.behaviour.place_settler(key, 0, 0.6, 0, None, "Never", t=now)
     mon_e = HonestyMonitor(scene, enforce=True, log=lambda m: None)
     padded = scene.hatched_ever()
     for _ in range(int((ORPHAN_GRACE_S + 1.0) * fps)):
@@ -664,7 +811,7 @@ def _selftest(run_dir: str) -> int:
     with open(scene.world.path) as fh:
         doc = json.load(fh)
     doc["pips"]["phantom-nobody"] = _default_pip("phantom-nobody", "Phantom", "Phantom", 99, now, P.genome("phantom-nobody", 0))
-    doc["pips"]["phantom-nobody"]["state"] = "asleep"
+    doc["pips"]["phantom-nobody"]["state"] = "idle"
     doc["world"]["hatched_ever"] = len(doc["pips"])
     with open(scene.world.path, "w") as fh:
         json.dump(doc, fh)
@@ -703,12 +850,12 @@ def _selftest(run_dir: str) -> int:
     run_frames(1)
 
     # 5. a padded count
-    real_awake = scene.awake_count
-    scene.awake_count = lambda: real_awake() + 1
+    real_present = scene.present_count
+    scene.present_count = lambda: real_present() + 1
     rep = run_frames(1)
-    caught["counts (awake_count padded by 1)"] = "counts" in rep.rules()
-    print("[fake 5] awake_count() + 1 -> %r" % (rep.violations,))
-    scene.awake_count = real_awake
+    caught["counts (present_count padded by 1)"] = "counts" in rep.rules()
+    print("[fake 5] present_count() + 1 -> %r" % (rep.violations,))
+    scene.present_count = real_present
     run_frames(1)
 
     # 6. words the owner never typed
@@ -721,11 +868,118 @@ def _selftest(run_dir: str) -> int:
 
     # 7. a foreign origin (the scene's own guard should also fire)
     alien = Entity("alien-origin", "mascot", now)
-    alien.state, alien.display_name, alien.cleared = "awake", "mascot", True
+    alien.state, alien.display_name, alien.cleared = "idle", "mascot", True
     scene.behaviour.entities["alien-origin"] = alien
     rep = run_frames(1)
     caught["origin/scene (origin=mascot)"] = bool({"origin", "scene"} & rep.rules())
     print("[fake 7] entity origin=mascot -> %r (scene honesty_violations=%d)" % (rep.violations, scene.honesty_violations))
+
+    # 10. an AWAY settler given a bubble (b never chatted this session): agency, cleared under enforce
+    bb = scene.behaviour.get(names[1])
+    assert bb is not None and not bb.is_present(now), "b should be away"
+    bb.text, bb.speak_until, bb.spoke_t = "hi there", now + 6.0, now
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["agency (away settler with a bubble)"] = "agency" in rep.rules()
+    print("[fake 10] away settler with a bubble -> %r" % (rep.violations,))
+    mon_a = HonestyMonitor(scene, enforce=True, log=lambda m: None)
+    mon_a.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["enforce (away bubble cleared)"] = bb.text is None
+    bb.text, bb.speak_until, bb.spoke_t = None, 0.0, None
+    run_frames(1)
+
+    # 11. an AWAY settler standing at waystone B: agency (state voting) + counts (the embodied tally counts here voters only)
+    bb.state, bb.platform, bb.slot = "voting", "B", 5
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["agency + counts (away settler at waystone B)"] = {"agency", "counts"} <= rep.rules()
+    print("[fake 11] away settler at waystone B -> %r" % (rep.violations,))
+    mon_a.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["enforce (away vote dropped)"] = bb.state == "idle" and bb.platform is None
+    bb.state, bb.platform, bb.slot = "idle", None, None
+    run_frames(1)
+
+    # 12. roster: a hatched pip row with no settler on the land (planted in world.json, with a chat record so ONLY roster fires)
+    key = "row-no-settler"
+    with open(chat_path, "a") as fh:
+        fh.write(json.dumps({"id": "h-0012", "ts": epoch_to_iso(now - 900), "username": key, "content": "long ago"}) + "\n")
+    scene.world.data["pips"][key] = _default_pip(key, "Row", "Row", None, now - 900, P.genome(key, 0))
+    scene.world.data["pips"][key]["state"] = "idle"
+    rep = run_frames(int((ORPHAN_GRACE_S + 1.0) * fps))
+    caught["roster (hatched row with no settler)"] = "roster" in rep.rules()
+    print("[fake 12] pip row with no entity -> %r" % (rep.violations,))
+    scene.world.data["pips"].pop(key, None)
+    scene.world.data["world"]["hatched_ever"] = scene.world.hatched_ever
+    run_frames(int((ORPHAN_GRACE_S + 1.0) * fps))
+
+    # 13. roster: a settler on the land for a BANISHED key
+    key = "banished-nobody"
+    scene.world.data["banished"][key] = {"ts": epoch_to_iso(now), "by": "selftest"}
+    scene.behaviour.place_settler(key, 0, 0.6, 0, None, "Ban", t=now)
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["roster (entity for a banished key)"] = "roster" in rep.rules()
+    print("[fake 13] entity for a banished key -> %r" % (rep.violations,))
+    scene.behaviour.entities.pop(key, None)
+    scene.world.data["banished"].pop(key, None)
+    run_frames(1)
+
+    # 14. wear laid while ZERO settlers are present (every person's window pushed shut, then one real step through land.step)
+    saved_active = {k: e.last_active_t for k, e in scene.behaviour.entities.items()}
+    ps_ = scene.behaviour.present_s
+    for e in scene.behaviour.entities.values():
+        e.last_active_t = now - ps_ - 5.0
+    run_frames(1)                                            # the tick refreshes the flags: present 0, everyone still on the land
+    assert scene.present_count() == 0 and all(e.is_on_land() for e in scene.behaviour.entities.values() if e.state not in SEED_STATES)
+    ea = scene.behaviour.get(names[0])
+    scene.land.step(names[0], int(ea.x) + 1, int(ea.y) + 1)
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["wear (a step laid while zero settlers are present)"] = "wear" in rep.rules()
+    print("[fake 14] wear step with 0 present -> %r" % (rep.violations,))
+    for k, e in scene.behaviour.entities.items():
+        if k in saved_active:
+            e.last_active_t = saved_active[k]
+    run_frames(2)
+
+    # 15. a stone RECORD laid for an away settler (what rounds._expedition_watch did before the fix): agency, by the land diff
+    bb = scene.behaviour.get(names[1])
+    assert bb is not None and not bb.is_present(now), "b should be away"
+    stock_before = scene.land.stock
+    rec15, why15 = scene.land.stack(names[1], now)
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["agency (stone recorded for an away settler)"] = "agency" in rep.rules() and rec15 is not None and "stone recorded for %s who is away" % names[1] in str(rep.violations)
+    print("[fake 15] land.stack(away b) -> rec=%r why=%r stock %d->%d -> %r" % (rec15, why15, stock_before, scene.land.stock, rep.violations))
+    run_frames(1)
+    # 15b. the same stone for a HERE settler is no violation (a's record is inside present_s)
+    aa = scene.behaviour.get(names[0])
+    assert aa is not None and aa.is_present(now), "a should be here (gap %.1f s, present_s %.0f)" % (now - aa.last_active_t, scene.behaviour.present_s)
+    scene.land.stack(names[0], now)
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["agency (a here settler's stone passes)"] = "agency" not in rep.rules()
+    print("[fake 15b] land.stack(here a) -> %r" % (rep.violations,))
+    run_frames(1)
+    # 16. record-changing EVENTS naming an away actor: an expedition `go` + `stack`, and a verb-labelled walk
+    scene.events = list(scene.events) + [{"type": "go", "pip": names[1], "place": "ford"},
+                                         {"type": "stack", "pip": names[1], "expedition": True, "stock": scene.land.stock},
+                                         {"type": "walk", "pip": names[1], "to": "ford", "then": "idle"}]
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    vs = str(rep.violations)
+    caught["agency (go / stack / verb-walk events naming an away actor)"] = "agency" in rep.rules() and "go by away" in vs and "stack by away" in vs and "walk by away" in vs
+    print("[fake 16] events go / stack / walk(to='ford') for away b -> %r" % (rep.violations,))
+    scene.events = [ev for ev in scene.events if ev.get("pip") != names[1]]
+    run_frames(1)
+    # 16b. the same three events for the HERE settler a pass
+    scene.events = list(scene.events) + [{"type": "go", "pip": names[0], "place": "ford"},
+                                         {"type": "walk", "pip": names[0], "to": "ford", "then": "idle"}]
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["agency (a here settler's go / walk events pass)"] = "agency" not in rep.rules()
+    print("[fake 16b] events go / walk for here a -> %r" % (rep.violations,))
+    run_frames(1)
+    # 16c. the scene API itself refuses the away verb (defence in depth, steading.command) and the frame after is clean
+    if land_scene:
+        stock_c = scene.land.stock
+        ok16, why16 = scene.command("go", names[1], arg="ford", now=now)
+        okS, whyS = scene.command("stack", names[1], now=now)
+        rep = run_frames(1)
+        caught["scene (away go / stack refused by scene.command, no record)"] = (not ok16) and (not okS) and "away" in why16 and scene.land.stock == stock_c and rep.ok
+        print("[fake 16c] scene.command('go' / 'stack', away b) -> %r / %r; stock %d; next frame %r" % ((ok16, why16), (okS, whyS), scene.land.stock, rep.violations))
 
     # 8. after cleanup: violation-free again (the monitor does not get stuck)
     rep = run_frames(3)
@@ -736,7 +990,7 @@ def _selftest(run_dir: str) -> int:
     # 9. enforce mode removes a forged entity so it is never drawn
     mon2 = HonestyMonitor(scene, enforce=True, log=lambda m: None)
     ghost2 = Entity("ghost-two", "chat", now)
-    ghost2.state, ghost2.display_name, ghost2.cleared = "awake", "ghost2", True
+    ghost2.state, ghost2.display_name, ghost2.cleared = "idle", "ghost2", True
     scene.behaviour.entities["ghost-two"] = ghost2
     rep2 = mon2.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
     removed = "ghost-two" not in scene.behaviour.entities

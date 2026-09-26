@@ -55,7 +55,7 @@ Verbs (OPENWORLD.md 6: the exact-token rule plus the LEADING-VERB rule; parsed o
   arg=place|direction|"home"), plant -> ("plant", actor, arg=kind), camp/fire/wave/sit/dance/forget -> (verb,
   actor); `your pip is not awake yet` is retried for 3 s (the hatch lands a frame after the hold); other
   refusals go to the plank. Any `@word` inside a world reason is scrubbed before the plank (filtered names only).
-  feed/pet/gift at a sleeping or absent pip are recorded by the world in care_log and the plank says so
+  feed/pet/gift at an absent (away) pip are recorded by the world in care_log and the plank says so
   (`@kai left a berry at @lu's camp`).
   The world is reached by attach_world(scene) (explicit) or discovered from sys.modules (a stream.scenes /
   stream.panels module holding `SCENE`); verbs queue (bounded, 10 s) until a world is present.
@@ -223,8 +223,8 @@ VERB_COOLDOWN_S = {"go": 5.0, "fire": 600.0, "feed": 30.0, "pet": 30.0, "wave": 
                    "name": 600.0, "sing": 60.0, "explore": 60.0, "water": 60.0, "stack": 45.0, "swim": 30.0,
                    "teach": 300.0}
 PLANT_SESSION_CAP = {"flower": 3, "tree": 1, "reed": 3}   # OPENWORLD 6: trees 1 / flowers 3 per session (reeds as flowers)
-PLANT_CAP_COPY = {"flower": "three flowers a night · yours are planted", "tree": "one tree a night · yours is planted",
-                  "reed": "three reeds a night · yours are planted"}
+PLANT_CAP_COPY = {"flower": "three flowers a day · yours are planted", "tree": "one tree a day · yours is planted",
+                  "reed": "three reeds a day · yours are planted"}      # AGES 1.5: no night word on any surface
 CAMP_SESSION_CAP = 1
 GO_WHERE = "go where? north · south · east · west · river · ford · moot · fell · wood · shore · marsh · orchard · home · @name"
 SING_GLOBAL_S = 10.0
@@ -234,7 +234,7 @@ RESERVED_NICKS = {"keeper", "keepers", "mod", "mods", "moderator", "admin", "kic
 NAME_TOKEN_RE = re.compile(r"^[a-z0-9_]{1,25}$")
 TOKEN_TRIM = "!?.,;:"
 VERB_RETRY_S = 3.0           # `your pip is not awake yet` after the hold: the hatch lands a frame later
-RETRY_REASONS = ("your pip is not awake yet", "the cave is still waking", "the land is still waking")
+RETRY_REASONS = ("your pip is not awake yet", "your settler is still arriving", "the cave is still waking", "the land is still waking")
 VERB_WAIT_WORLD_S = 10.0     # no world attached: keep the verb this long, then drop it (logged)
 VERB_LOG_KEEP = 100
 WORLD_EVENTS_KEEP = 200
@@ -521,7 +521,7 @@ class ChatBridge(object):
         except Exception:
             self.builders = {}
         for k, b in self.builders.items():
-            # a chatter from a previous session already served their hold that night (and their sleeping pip is
+            # a chatter from a previous session already served their hold that day (and their standing settler is
             # labelled from world.json): only the live blocklist still applies. New chatters wait for show_t.
             self._first_show_t.setdefault(k, float("-inf"))
             if b.get("banished") is True:
@@ -1217,11 +1217,11 @@ class ChatBridge(object):
             if self._plant_used.get((key, kind), 0) >= PLANT_SESSION_CAP[kind]:
                 return PLANT_CAP_COPY[kind]
         if verb == "camp" and self._camp_used.get(key, 0) >= CAMP_SESSION_CAP:
-            return "camp once a night · yours is pitched"
+            return "camp once a day · yours is pitched"
         if verb == "stack" and self._stack_used.get(key, 0) >= 3:
-            return "three stones a night · the cairn has yours"
+            return "three stones a day · the cairn has yours"
         if verb == "sow" and key in self._sow_used:
-            return "one field a night · yours is sown"
+            return "one field a day · yours is sown"
         if verb == "name":
             w = (word or "")
             wl = w.lower()
@@ -1232,7 +1232,7 @@ class ChatBridge(object):
             if self._blocked(w):
                 return "that word is not allowed"
         if verb == "gift" and (key, target) in self._gift_used:
-            return "you already left %s a gift tonight" % self._at(target, now)
+            return "you already left %s a gift today" % self._at(target, now)
         cd = VERB_COOLDOWN_S.get(verb)
         if cd is not None:
             last = self._verb_last.get((key, verb))
@@ -1352,10 +1352,11 @@ class ChatBridge(object):
         if p.get("mod"):
             return self._apply_mod_world(world, p, now)
         if verb in ("feed", "pet", "gift"):
-            asleep = self._target_asleep(world, tgt or actor)
+            absent = self._target_absent(world, tgt or actor)
             ok, reason = world.command(verb, actor, target=(tgt or None), now=now)
             if ok:
-                p["asleep"] = asleep
+                p["absent"] = absent                       # the person is away (AGES 1.1); the care log plays back on their return
+                p["asleep"] = absent                       # legacy key, one release
             return ok, reason
         if verb == "go":
             # ("go", actor, target=key|None, arg=place|direction|"home"): the scene routes on the coarse grid
@@ -1374,12 +1375,15 @@ class ChatBridge(object):
         return False, "unknown verb"
 
     @staticmethod
-    def _target_asleep(world, key: str) -> bool:
+    def _target_absent(world, key: str) -> bool:
+        """The target's person is away (no record inside present_s): a gift waits at their camp, care plays back on return."""
         try:
             e = world.behaviour.get(key)
-            return e is None or not e.is_awake()
+            return e is None or not e.is_present()
         except Exception:
             return False
+
+    _target_asleep = _target_absent                            # legacy name, one release
 
     @staticmethod
     def _set_nickname(world, key: str, word: Optional[str]) -> Tuple[bool, str]:
@@ -1388,7 +1392,7 @@ class ChatBridge(object):
             ws = world.world
             p = ws.pip(key)
             if p is None:
-                return False, "your pip is not awake yet"
+                return False, "your settler is still arriving"
             p["nickname"] = word
             ws.dirty = True
             return True, "ok"
@@ -1451,8 +1455,8 @@ class ChatBridge(object):
             self._plank("%s's pip is called %s now" % (me, p["arg"]), now, "info", by=key)
         elif verb == "gift":
             self._plank("%s left a gift at %s's camp" % (me, self._at(tgt, now)), now, "info", by=key)
-        elif verb in ("feed", "pet") and p.get("asleep") and tgt and tgt != key:
-            what = "left a berry at %s's camp" if verb == "feed" else "petted %s's sleeping pip"
+        elif verb in ("feed", "pet") and (p.get("absent") or p.get("asleep")) and tgt and tgt != key:
+            what = "left a berry at %s's camp" if verb == "feed" else "petted %s's settler while they're away"
             self._plank("%s %s" % (me, what % self._at(tgt, now)), now, "info", by=key)
         elif verb == "go":
             # the plank says what was understood (OPENWORLD 15): the destination, filtered name if it is a person

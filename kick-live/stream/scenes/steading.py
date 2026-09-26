@@ -5,7 +5,8 @@
     img = scene.frame(ctx, size)                        # RGBA exactly `size`; the camera's crop of the painted land
     scene.events                                        # this frame's events (list of dicts; WORLD_API.md 5 + x, y cells)
     scene.entities()                                    # for the text layer: cells + screen boxes, names, states, bubbles
-    scene.awake_count() ; scene.asleep_count() ; scene.hatched_ever() ; scene.platform_counts()   # waystone slots
+    scene.present_count() ; scene.hatched_ever() ; scene.platform_counts()   # here people / people ever / waystone slots
+    scene.awake_count() (= present_count, alias) ; scene.asleep_count() (always 0)   # legacy names, one release
     scene.command(verb, actor, target=None, arg=None, now=None) -> (ok, reason)                  # verbs agent
     scene.sim_to_screen(x, y) -> (sx, sy) | None ; scene.scale ; scene.origin ; scene.degrade ; scene.stats()
     scene.camera ; scene.nature ; scene.terrain ; scene.land ; scene.world ; scene.behaviour
@@ -15,7 +16,7 @@ The scene draws NO text: names, bubbles, waystone letters, plates, the plank, th
 are the text layer's job at screen scale (nothing under 20 px). It draws the painted land (a crop of the memmapped
 ground bake), the per-frame modulation field (tint by the real hour with the 0.55 floor x cloud shadows x wind bands
 x the shadow layer x tide x sparkle), the glow buffer after dusk (honest sources only: a lit hearth, a real person's
-fire or window, the beacon on a fresh keeper heartbeat, awake pips), then the y-sorted live sprites from the art
+fire or window, the beacon on a fresh keeper heartbeat, HERE settlers), then the y-sorted live sprites from the art
 atlas (waystones, beacon, hearth, cairn, planted trees, camp fires, settlers, nameless tufts).
 
 How the frame is made (7.3): 1. BakeManager.want(season, sun octant, bake_ver) -> the CURRENT ready GroundBake (a
@@ -28,8 +29,8 @@ blits cache hits only. A settler whose sheet is not ready yet is drawn as the na
 rendered inline; sheets are requested at seed-drop time (the 3 s hold covers it) and at boot for known settlers.
 
 Frame flow: ingest ctx.chat_raw (tuft drifts in on the wind, nothing drawn from names) -> ctx.chat (moderated, past
-the hold: hatch with display_name, speak, wake) -> ctx.recent_votes (walk to a waystone) -> behaviour.tick ->
-persistence (positions in cells, camps on the first real sleep, camera every 5 s) -> camera.update -> render.
+the hold: hatch with display_name, speak, return) -> ctx.recent_votes (walk to a waystone) -> behaviour.tick ->
+persistence (positions in cells, camps via the `camp` verb / the land, camera every 5 s) -> camera.update -> render.
 `frame()` never raises: any error returns the last good frame (or a flat tinted meadow), one stderr line per burst.
 A failed schema-2 migration REFUSES to boot (OPENWORLD 5.4): every frame is the last good one and stats() says why.
 
@@ -40,7 +41,7 @@ layer off; > 20 labels_on_speak + plates stop rotating; > 24 bubbles_single; > 2
 POSITIONS: every coordinate the scene exposes is a MAP CELL (960x440, 1 cell = 4 px at 1x), straight from the 2-D
 behaviour (stream/world/behaviour.py: Entity.x / y are the feet cell, fx / fy the 8-direction facing, `side` the
 sprite mirror, frame_name() the atlas frame or a tuft frame). The behaviour owns motion (routes, the tuft's drift,
-standing slots, going home to sleep); the scene owns what is drawn, the persistence, the camera inputs, the bake and
+standing slots, the errands the land runs; nobody lies down, AGES 1); the scene owns what is drawn, the persistence, the camera inputs, the bake and
 the verbs' land side (camps, marks, fields, stones). A cave-era behaviour (no MAP_W) refuses to boot, loudly.
 Test hooks: KL_TEST_PIPS (only under /tmp in test mode), `force_zoom` (test mode only).
 `$PYTHON stream/scenes/steading.py --self-test` (RUN_DIR under /tmp, MODE=test).
@@ -92,7 +93,7 @@ NAME = "steading"
 SCREEN = (1280, 720)          # the world region = the whole frame (full-bleed land, journal 034; was 456)
 PPC = 4                                   # bake px per cell at 1x
 SAVE_S = 5.0
-FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "sleep", "hatch", "cairn_named")
+FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "hatch", "cairn_named")
 HISTORY_S = 60.0                          # a record older than this when first seen is boot/deploy history (ChatBridge.HISTORY_S)
 SEED_SINK_S = HOLD_S + 4.0
 HEARTBEAT_FRESH_S = 120.0
@@ -105,7 +106,7 @@ PROVENANCE_S = 5.0
 WEAR_REPAINT_S = 2.0                      # trail-threshold repaints are batched on the worker at most this often
 CHAT_RATE_WINDOW_S = 300.0
 DUSK_GLOW_AT = 0.15                       # night_amount above which the glow buffer runs
-EMBERS_S = 20 * 60.0                      # a camp fire burns while the owner is awake and for this long after
+EMBERS_S = 20 * 60.0                      # a camp fire burns while the owner is HERE and for this long after (AGES 1.2)
 SEED_RING = 30                            # a tuft lands inside this ring around the Moot centre (3.1)
 TUFT_W, TUFT_H = 20, 16
 MOOT_LAYOUT = {                           # cell offsets from the Moot centre; the waystones come from the behaviour
@@ -122,10 +123,9 @@ HOP_BODY_FRAMES = ("hop0", "hop1")            # drawn body-only over creatures.s
 SETTLER_SCALE = 1.2
 SETTLER_RENDER_ZOOM = 2
 LETTERS = ("A", "B", "C")
-SPRITE_PRIO_HATCH, SPRITE_PRIO_AWAKE, SPRITE_PRIO_SLEEP, SPRITE_PRIO_REST = 0, 1, 2, 3
-WORKER_PACE_S = 0.004                     # the worker sleeps this long between settler frames (GIL courtesy)
-FIRST_FRAMES = ("idle0", "idle1", "walk0", "walk1", "walk2", "walk3", "speak0", "speak1", "blink")
-SLEEP_FRAMES = ("sleep",)
+SPRITE_PRIO_HATCH, SPRITE_PRIO_AWAKE, SPRITE_PRIO_REST = 0, 1, 3
+WORKER_PACE_S = 0.004                     # the worker pauses this long between settler frames (GIL courtesy)
+FIRST_FRAMES = ("idle0", "idle1", "walk0", "walk1", "walk2", "walk3", "speak0", "speak1", "blink", "sit")   # no lying pose (AGES 8)
 _MOD_CMD_RE = re.compile(r"^\s*!(hide|unhide|pause|resume|kill|unkill|clear|banish|unbanish|rename)\b", re.IGNORECASE)
 
 
@@ -377,7 +377,7 @@ class SteadingScene(object):
         self._chat_ids_seen = 0
         self._pos: Dict[str, Tuple[float, float]] = {}
         self._boot_fail = 0
-        self._fires: Dict[str, float] = {}             # key -> epoch the owner lit their camp fire (embers after sleep)
+        self._fires: Dict[str, float] = {}             # key -> epoch the owner lit their camp fire (embers once the person is away)
         self._cairn_named_seen = False
         self._marks: Dict[str, Any] = {}
         self._marks_sig: Optional[Tuple] = None
@@ -458,22 +458,22 @@ class SteadingScene(object):
         self.log("boot: world.json %s schema %d, %d pips, chat.jsonl recompute %r, camera %s" % (
             "loaded" if self.world.loaded_ok else "fresh", self.world.schema, len(self.world.pips), rec,
             "resumed" if resumed else "at the Moot"))
-        # every known pip starts asleep at its camp (a real past chatter with a real last_seen); a message wakes it
+        # every known pip STANDS on the land where the record last saw it (AGES 8: nobody lies down); it is here iff its
+        # last record is inside the present window of this session (deploy continuity, journal 011: no event, no hop)
         cutoff = now - self.sleep_after_s
         for key, p in sorted(self.world.pips.items(), key=lambda kv: kv[1].get("last_seen_ts") or ""):
             if not p.get("_test") and not isinstance(p.get("camp"), dict) and p.get("state") not in ("seed", "hatching"):
-                self.world.ensure_camp(key, now)                   # slept before (real last_seen) -> a hollow, tier by the ladder
-            e = self.behaviour.place_sleeper(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
+                self.world.ensure_camp(key, now)                   # a past chatter (real last_seen) -> a hollow, tier by the ladder
+            last = iso_to_epoch(p.get("last_seen_ts"))
+            here = last is not None and last >= cutoff and self._in_session(last, ctx)
+            e = self.behaviour.place_settler(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
                                              int((p.get("genome") or {}).get("salt") or 0), p.get("camp"),
                                              p.get("display_name") or self.world.name_filter(p.get("name") or key), t=now,
-                                             x=p.get("x"), y=p.get("y"))
-            last = iso_to_epoch(p.get("last_seen_ts"))
-            if last is not None and last >= cutoff and self._in_session(last, ctx):
-                self._restore_awake(e, p, last, now)
-            else:
-                self.world.set_state(key, "asleep", e.x, e.y)
-            self.sprites.request(key, e.tier, self._octant, SLEEP_FRAMES if not e.is_awake() else FIRST_FRAMES,
-                                 SPRITE_PRIO_SLEEP if not e.is_awake() else SPRITE_PRIO_AWAKE)
+                                             x=p.get("x"), y=p.get("y"), last_seen=(last if here else None))
+            self._restore_pose(e, p, now)
+            self.world.set_state(key, e.state, e.x, e.y)
+            self.sprites.request(key, e.tier, self._octant, ("idle0",), SPRITE_PRIO_HATCH)   # the standing frame first
+            self.sprites.request(key, e.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
         for key, e in self.behaviour.entities.items():
             self.sprites.request(key, e.tier, self._octant, creatures.FRAMES, SPRITE_PRIO_REST)
         self.test_pips = test_pips_allowed(self.run_dir, ctx)
@@ -483,7 +483,7 @@ class SteadingScene(object):
                 if 5.0 <= sa < self.sleep_after_s:
                     self.sleep_after_s = sa
                     self.behaviour.sleep_after_s = sa
-                    self.log("TEST HOOK: KL_SLEEP_AFTER_S=%.0f (pips sleep after %.0f s of quiet, not %d min)" % (sa, sa, int(SLEEP_AFTER_S // 60)))
+                    self.log("TEST HOOK: KL_SLEEP_AFTER_S=%.0f (the here window is %.0f s of quiet, not %d min)" % (sa, sa, int(SLEEP_AFTER_S // 60)))
             except ValueError:
                 pass
         cam_log = os.environ.get("KL_CAMERA_LOG")
@@ -526,28 +526,16 @@ class SteadingScene(object):
         tier = int(e.tier) if e is not None else 0
         return self.sprites.has(key, tier, "idle0")
 
-    def _restore_awake(self, e, p: Dict[str, Any], last: float, now: float) -> None:
-        """Deploy continuity (journal 011): an owner who chatted inside the awake window resumes where world.json
-        last saw the pip, with the sleep timer counting from their real last message. No wake event, no hop."""
-        e.state = "awake"
-        e.sleep_t = None
-        e.wake_t = last
-        e.last_active_t = last
-        e.last_attention_t = last
-        e.spoke_t = last
-        e.vx = e.vy = 0.0
-        e.route, e.target, e.then = [], None, None
-        e.minutes_tonight = 0.0
-        px, py = p.get("x"), p.get("y")
-        if px is not None and py is not None:
-            e.x, e.y = self.behaviour.ground.nearest(float(px), float(py))
+    def _restore_pose(self, e, p: Dict[str, Any], now: float) -> None:
+        """Deploy continuity (journal 011): the settler keeps the facing world.json saved and, when its person is here and
+        it was STANDING at a stone, walks back to that letter. No event, no hop: nothing happened to the person."""
         f = p.get("facing")
         if isinstance(f, (list, tuple)) and len(f) >= 2:
             e.facing = (int(f[0]), int(f[1]))
-        e.pause_until = now + self._u(0.5, 2.0)
-        if p.get("state") == "voting" and p.get("vote") in LETTERS:
-            self.behaviour.walk_to(e.key, p["vote"], now)
-        self.world.set_state(e.key, e.state)
+        if e.is_present(now):
+            e.spoke_t = e.last_active_t
+            if p.get("state") == "voting" and p.get("vote") in LETTERS:
+                self.behaviour.walk_to(e.key, p["vote"], now)
 
     def _in_session(self, t: float, ctx) -> bool:
         started = iso_to_epoch((ctx.session or {}).get("started_ts"))
@@ -605,7 +593,7 @@ class SteadingScene(object):
     # ------------------------------------------------------------------ positions (cells)
     @staticmethod
     def _pos_of(e, now: float = 0.0) -> Tuple[float, float]:
-        """The entity's feet cell (the behaviour owns motion: sleepers lie at their camp, tufts ride the wind)."""
+        """The entity's feet cell (the behaviour owns motion: settlers walk the land, tufts ride the wind)."""
         return float(e.x), float(e.y)
 
     @staticmethod
@@ -652,19 +640,18 @@ class SteadingScene(object):
                     self.sprites.request(key, 0, self._octant, FIRST_FRAMES, SPRITE_PRIO_HATCH)   # the hold covers the render
                 else:                                             # known pip missing an entity (banish undo etc.)
                     p = w.pip(key)
-                    e2 = b.place_sleeper(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
+                    e2 = b.place_settler(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
                                          int((p.get("genome") or {}).get("salt") or 0), p.get("camp"), p.get("display_name"),
                                          t=now, x=p.get("x"), y=p.get("y"))
                     self.sprites.request(key, e2.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-                    b.message(key, now)
+                    b.message(key, now, seen_t=t)
             elif aged:
-                if e.state in ("asleep", "burrowed") and e.key not in hidden:
-                    self.sprites.request(key, e.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-                    b.message(key, now)                           # wake only; no hop for an old record
+                if e.is_present(now):
+                    e.last_active_t = max(e.last_active_t, t)     # an old record of someone already here: no hop
+                else:
+                    b.message(key, now, seen_t=t)                 # ... of someone away: a return (the record's own clock)
             else:
-                if e.state in ("asleep", "burrowed"):
-                    self.sprites.request(key, e.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-                b.message(key, now)
+                b.message(key, now)                               # here from this frame: hop, or a return after > present_s
         # 2. moderated records past the hold: hatch with the FILTERED display name, speak the owner's words, count.
         for m in (ctx.chat or []):
             mid = m.get("id")
@@ -688,9 +675,9 @@ class SteadingScene(object):
                     b.get(key).seed_t = now - self.hold_s      # the raw record was missed: hatch now, hold already served
                 self.sprites.request(key, int(p.get("tier") or 0), self._octant, FIRST_FRAMES, SPRITE_PRIO_HATCH)
                 self.sprites.request(key, int(p.get("tier") or 0), self._octant, creatures.FRAMES, SPRITE_PRIO_REST)
-            elif e.state in ("asleep", "burrowed"):
-                b.message(key, now)
-            if e is not None and e.is_awake() and e.display_name is None:
+            elif not e.is_present(now):
+                b.message(key, now, seen_t=t)                     # the raw record was missed: the moderated one makes them here
+            if e is not None and e.is_on_land() and e.display_name is None:
                 e.display_name = p.get("display_name")
             w.record_message(key, t, self.session_id, m.get("text_clean") or m.get("text"), history=False)
             w.visit(key, t)
@@ -703,7 +690,7 @@ class SteadingScene(object):
             text = m.get("text_clean") or ""
             if text and not ctx.mod_paused and (m.get("kind") in (None, "plain") or m.get("kind") == "vote"):
                 ent = b.get(key)
-                if ent is not None and ent.is_awake():
+                if ent is not None and ent.is_on_land():
                     b.speak(key, now, text if m.get("kind") != "vote" else text.upper())
                 elif ent is not None:
                     ent.text, ent.speak_until = text, now + 6.0   # speaks as it hatches
@@ -724,10 +711,11 @@ class SteadingScene(object):
                 self._votes_seen = {}
             self._round_no = rnd
         rule = ((ctx.micro or {}).get("colony_rule") or "free")
-        b.colony_rule = rule if rule in ("free", "follow", "scatter", "huddle") else "free"
-        # 4. hidden users lie down in the grass (no label, no plate); seeds past the hold with no clearance blow away
+        b.colony_rule = rule if rule in ("free", "huddle") else "free"      # follow / scatter are gone (AGES 1.3)
+        # 4. hidden users lie down in the grass (no label, no plate: the ONE lying pose, moderation not presence); seeds past
+        #    the hold with no clearance blow away
         for e in list(b.entities.values()):
-            if e.key in hidden and e.state not in ("burrowed", "seed", "hatching"):
+            if e.key in hidden and e.state not in BH.HIDDEN_STATES and e.state not in ("seed", "hatching"):
                 b.hide(e.key, now)                                # lies down in the grass, unlabelled (12)
             elif e.key in hidden and e.state in ("seed", "hatching"):
                 b.sink(e.key, now)
@@ -763,11 +751,11 @@ class SteadingScene(object):
                 b.sink(key, now)                                  # a stray seed for a history record never hatches
             if not p.get("_test") and not isinstance(p.get("camp"), dict):
                 w.ensure_camp(key, now)
-            e = b.place_sleeper(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
+            e = b.place_settler(key, int(p.get("tier") or 0), float(p.get("energy") or 0.6),
                                 int((p.get("genome") or {}).get("salt") or 0), p.get("camp"),
                                 p.get("display_name") or ("builder #%s" % (p.get("n") or "?")), t=now, x=p.get("x"), y=p.get("y"))
-            w.set_state(key, "asleep", e.x, e.y)
-            self.sprites.request(key, e.tier, self._octant, SLEEP_FRAMES, SPRITE_PRIO_SLEEP)
+            w.set_state(key, e.state, e.x, e.y)
+            self.sprites.request(key, e.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
         if self._in_session(t, ctx):
             w.record_message(key, t, self.session_id, None, history=True)
         else:
@@ -779,10 +767,9 @@ class SteadingScene(object):
         newt = w.update_tier(p)
         if newt is not None:
             b.set_tier(key, newt, now)
-        if e.state in ("asleep", "burrowed") and t >= now - self.sleep_after_s and self._in_session(t, ctx):
-            self.sprites.request(key, e.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-            b.message(key, now)                                   # awake = chatted in the last 20 min of this session
-        if e.is_awake() and e.display_name is None:
+        if not e.is_present(now) and t >= now - self.sleep_after_s and self._in_session(t, ctx):
+            b.message(key, now, seen_t=t)                         # here = chatted in the last 20 min of this session
+        if e.is_on_land() and e.display_name is None:
             e.display_name = p.get("display_name")
         self._chat_ids_seen += 1
 
@@ -817,11 +804,11 @@ class SteadingScene(object):
             p = w.pip(e.key)
             if p is None:
                 continue
-            if e.is_awake():
-                w.presence(e.key, dt)
-                if p.get("energy") != e.energy:
-                    p["energy"] = round(e.energy, 4)
-                    w.dirty = True
+            if e.is_present():
+                w.presence(e.key, dt)                              # minutes_present accrue for a HERE person only (AGES 1.1)
+            if e.is_on_land() and p.get("energy") != e.energy:
+                p["energy"] = round(e.energy, 4)
+                w.dirty = True
             x, y = self._pos.get(e.key) or self._pos_of(e, now)
             if p.get("state") != e.state:
                 w.set_state(e.key, e.state, None, None, None, e.platform if e.state == "voting" else None)
@@ -832,7 +819,7 @@ class SteadingScene(object):
             typ = ev.get("type")
             key = ev.get("pip") or ev.get("key")
             e = b.get(key) if key else None
-            if e is not None and (typ in ("hatch", "wake", "sleep", "seed", "seed_land", "walk", "arrive") or "x" in ev):
+            if e is not None and (typ in ("hatch", "return", "seed", "seed_land", "walk", "arrive") or "x" in ev):
                 if typ in ("seed", "seed_land") and getattr(e, "seed_to", None) is not None:
                     x, y = e.seed_to                                 # the LANDING spot (3.1): the camera eases there, never
                 else:                                                # to the tuft's start 150 cells upwind
@@ -841,12 +828,12 @@ class SteadingScene(object):
             if typ == "hatch":
                 p = w.pip(key)
                 if p is not None:
-                    p["state"] = "awake"
-            elif typ == "wake":
+                    p["state"] = "idle"
+            elif typ == "return":                                    # away -> here (the old wake): care log, gap, camp, fire
                 care = w.take_care_log(key)
                 ev["care_log"] = care
                 p = w.pip(key)
-                if p is not None:
+                if p is not None and ev.get("away_s") is None:           # the behaviour's own gap wins (touch_seen ran this frame)
                     last = iso_to_epoch(p.get("last_seen_ts"))
                     ev["away_s"] = (now - last) if last else None
                 camp = land.camp_of(key)
@@ -859,22 +846,13 @@ class SteadingScene(object):
                 if w.pip(key) is not None and not (w.pip(key) or {}).get("_test"):
                     if land.light_hearth(key, now):
                         b.events.append({"type": "hearth", "by": key, "x": self.moot_xy("hearth")[0], "y": self.moot_xy("hearth")[1]})
-            elif typ == "sleep":
-                p = w.pip(key)
-                if p is not None and not p.get("_test") and e is not None:
-                    before = land.camp_of(key)
-                    camp = w.ensure_camp(key, now, self.session_id, e.x, e.y)
-                    if isinstance(camp, dict):
-                        b.set_camp(key, camp["x"], camp["y"])        # the land may have moved a refused spot to the ring
-                        self._pos[key] = (float(e.x), float(e.y))    # entities() this frame sees the settled spot
-                        ev["camp"] = [camp["x"], camp["y"]]
-                        ev["x"], ev["y"] = float(e.x), float(e.y)
-                        w.set_pos(key, e.x, e.y, (e.fx, e.fy))
-                        if before is None:
-                            b.events.append({"type": "camp", "pip": key, "x": camp["x"], "y": camp["y"], "tier": camp.get("tier", 0), "first": True})
             elif typ == "place" and ev.get("kind") == "stone":
                 p = w.pip(key)
-                if p is not None and not p.get("_test"):
+                if p is not None and not p.get("_test") and e is not None and not e.is_present(now):
+                    # the person's window shut during the walk: the stone is set down but never recorded (AGES 1.1: an
+                    # away body `never adds a stone`; the honesty agency rule would flag the record otherwise)
+                    ev.update({"stacked": False, "reason": "away", "stock": land.stock})
+                elif p is not None and not p.get("_test"):
                     rec, why = land.stack(key, now)
                     lad = land.ladder()
                     ev.update({"stacked": rec is not None, "reason": why, "stock": lad.get("stock"), "ladder": lad})
@@ -1217,6 +1195,7 @@ class SteadingScene(object):
             t1 = _time.perf_counter()
             self._ingest(ctx, now)
             self._honesty_check(now)
+            self.behaviour.night = NAT.night_amount(self.nature.hour(now))   # the errand table's day / night weights
             ev = self.behaviour.tick(now, dt)
             self._idle_life(ev, now)
             self._layout(now)
@@ -1229,7 +1208,7 @@ class SteadingScene(object):
             if oct_ != self._octant:
                 self._octant = oct_                                  # ~every 1.75 h: sheets re-render on the worker
                 for k, e in self.behaviour.entities.items():
-                    self.sprites.request(k, e.tier, oct_, FIRST_FRAMES if e.is_awake() else SLEEP_FRAMES, SPRITE_PRIO_AWAKE)
+                    self.sprites.request(k, e.tier, oct_, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
                     self.sprites.request(k, e.tier, oct_, creatures.FRAMES, SPRITE_PRIO_REST)
             self._bake_sync(now)
             t3 = _time.perf_counter()
@@ -1255,13 +1234,14 @@ class SteadingScene(object):
             return self._fallback(w, h, float(getattr(ctx, "now", None) or _time.time()))
 
     def _idle_life(self, ev: List[Dict[str, Any]], now: float) -> None:
-        """Between messages: an idle awake pip mutters one of ITS OWNER'S real tokens (allowlist + blocklist)."""
+        """Between messages: an idle HERE pip mutters one of ITS OWNER'S real tokens (allowlist + blocklist). An away body
+        says nothing (AGES 1.3)."""
         b, w = self.behaviour, self.world
         for e_ in ev:
             if e_.get("type") == "mutter_due":
                 p = w.pip(e_.get("pip"))
                 ent = b.get(e_.get("pip"))
-                if p is None or ent is None or not ent.is_awake() or p.get("_test"):
+                if p is None or ent is None or not ent.is_present(now) or p.get("_test"):
                     continue
                 try:
                     from stream.chat_bridge import filter_words
@@ -1272,7 +1252,7 @@ class SteadingScene(object):
                     word = words[int(self.rng.integers(len(words)))]
                     was_active = ent.last_active_t
                     b.speak(ent.key, now, word)
-                    ent.last_active_t = was_active           # a mutter is the pip's, not the owner's: the sleep timer keeps counting
+                    ent.last_active_t = was_active           # a mutter is the pip's, not the owner's: the here window keeps counting
                     e_["type"], e_["text"] = "mutter", word
 
     def _layout(self, now: float) -> None:
@@ -1296,7 +1276,9 @@ class SteadingScene(object):
                 natural.append({"kind": kind, "x": p["x"], "y": p["y"], "name": p.get("label")})
         stops = self.land.survey_stops(natural)
         cam.allow_zoom = self.allow_zoom and self.degrade_level < 6
-        cam.update(now, dt, awake=inp["awake"], seeds=inp["seeds"], events=ev, moot=inp["moot"], stops=stops, lead_key=b.newest_speaker)
+        # a `return` is the old wake for the camera's EVENT hold (camera.py is untouched in this slice: ROAM is row 2)
+        cam_ev = [(dict(e_, type="wake") if e_.get("type") == "return" else e_) for e_ in ev]
+        cam.update(now, dt, awake=inp["awake"], seeds=inp["seeds"], events=cam_ev, moot=inp["moot"], stops=stops, lead_key=b.newest_speaker)
         if self.force_zoom in CAM.ZOOMS and self.test_pips:
             cam.zoom = cam.zoom_prev = cam.target_zoom = self.force_zoom
             cam._clamp_pos()
@@ -1420,20 +1402,22 @@ class SteadingScene(object):
         for c in land.camps():
             key = c["key"]
             e = self.behaviour.get(key)
+            here = e is not None and e.is_present(now)
             lit_t = self._fires.get(key)
-            if lit_t is not None and (e is not None and e.is_awake() or now - lit_t < EMBERS_S):
+            if lit_t is not None and (here or now - lit_t < EMBERS_S):          # burns while here, embers EMBERS_S after
                 fx, fy = self._fire_xy(c)
-                out.append((fx, fy - 1.5, 70, (255, 170, 80), (0.50 if e is not None and e.is_awake() else 0.22)))
-            if c["tier"] >= 2 and e is not None and (e.is_awake() or self._slept_tonight(key, ctx)):
+                out.append((fx, fy - 1.5, 70, (255, 170, 80), (0.50 if here else 0.22)))
+            if c["tier"] >= 2 and e is not None and (here or self._here_tonight(key, ctx)):   # lit window: here or chatted tonight
                 out.append((c["x"], c["y"] - 3, 22, (255, 214, 130), 0.30 + 0.12 * night))
         for k, e in self.behaviour.entities.items():
-            if e.is_awake():
+            if e.is_present(now):                                                  # light only where a real person IS
                 x, y = self._pos[k]
                 col = creatures.palette(k)["main"]
                 out.append((x, y - 3, 18, tuple(int(v) for v in col), 0.16 + 0.10 * e.energy))
         return out
 
-    def _slept_tonight(self, key: str, ctx) -> bool:
+    def _here_tonight(self, key: str, ctx) -> bool:
+        """The person chatted since this session started (the same test as before, renamed: nobody slept)."""
         p = self.world.pip(key) or {}
         last = iso_to_epoch(p.get("last_seen_ts"))
         started = self._session_started(ctx)
@@ -1497,11 +1481,11 @@ class SteadingScene(object):
             if lit_t is None:
                 continue
             e = b.get(c["key"])
-            if not (e is not None and e.is_awake() or now - lit_t < EMBERS_S):
+            if not (e is not None and e.is_present(now) or now - lit_t < EMBERS_S):
                 continue
             fx, fy = self._fire_xy(c)
             if visible(fx, fy):
-                live.append((fy, n, "fire", (fx, fy, e is not None and e.is_awake()))); n += 1
+                live.append((fy, n, "fire", (fx, fy, e is not None and e.is_present(now)))); n += 1
         for k, e in b.entities.items():
             x, y = self._pos[k]
             if visible(x, y):
@@ -1578,14 +1562,15 @@ class SteadingScene(object):
             sh = self.sprites.shadow(int(e.tier), used, self._octant, zoom)
             BK.blit(rgb, sh, int(round(sx - ax * k)), int(round(sy - ay * k)))
             lift = -e.hop_lift(now) * creatures.height(int(e.tier), SETTLER_RENDER_ZOOM) * k
-        if e.state in ("asleep", "burrowed"):
+        if e.state in BH.HIDDEN_STATES:
             spr = self._dimmed(spr, e.key, used, facing)
         BK.blit(rgb, spr, int(round(sx - ax * k)), int(round(sy - ay * k + lift)))
 
     _dim_cache: Dict[Tuple, np.ndarray] = {}
 
     def _dimmed(self, spr: np.ndarray, key: str, frame: str, facing: int) -> np.ndarray:
-        """A sleeper at 80 %: at rest, not absent (absence is never punished; the 0.55 floor keeps it visible)."""
+        """A HIDDEN settler (mod !hide) at 80 %: in the grass, unlabelled (the 0.55 floor keeps it visible). Nobody else is
+        ever dimmed: an away settler is drawn like a here one (AGES 1.1: presence is never drawn)."""
         ck = (key, frame, facing, spr.shape)
         out = self._dim_cache.get(ck)
         if out is None or out.shape != spr.shape:
@@ -1737,11 +1722,24 @@ class SteadingScene(object):
             out.append(pl)
         return out
 
+    def present_count(self) -> int:
+        """The `here` people (AGES 1.1): a len() over settlers whose person's record is inside present_s."""
+        return self.behaviour.present_count() if self.booted else 0
+
     def awake_count(self) -> int:
-        return self.behaviour.awake_count() if self.booted else 0
+        """Legacy name for present_count() (one release; compositor / rounds / audio / panels)."""
+        return self.present_count()
 
     def asleep_count(self) -> int:
-        return self.behaviour.asleep_count() if self.booted else 0
+        """Nobody sleeps: always 0 (kept one release for its callers)."""
+        return 0
+
+    def on_land(self):
+        return self.behaviour.on_land() if self.booted else []
+
+    @property
+    def present_s(self) -> float:
+        return self.sleep_after_s
 
     def hatched_ever(self) -> int:
         return self.world.hatched_ever if self.booted else 0
@@ -1771,7 +1769,8 @@ class SteadingScene(object):
                 "max_ms": round(float(arr.max()), 2) if arr is not None else None,
                 "sections_ms": {k: round(v, 2) for k, v in self.sections.items()},
                 "degrade": self.degrade, "entities": len(self.behaviour.entities) if self.booted else 0,
-                "awake": self.awake_count(), "asleep": self.asleep_count(), "hatched_ever": self.hatched_ever(),
+                "present": self.present_count(), "on_land": len(self.on_land()), "awake": self.present_count(),
+                "hatched_ever": self.hatched_ever(),
                 "honesty_violations": self.honesty_violations, "test_pips": self.test_pips,
                 "sprite_cache": creatures.cache_stats(), "sprites_ready": sum(len(v) for v in self.sprites.ready.values()),
                 "worker": {"pending": self.worker.pending(), "done": self.worker.done, "errors": self.worker.errors},
@@ -1782,7 +1781,7 @@ class SteadingScene(object):
                 "camps": len(self.land.camps()) if self.booted else 0}
 
     def distinct_recent_chatters(self, ctx, now: float) -> int:
-        """Honesty reference: distinct real chatters in the last sleep window of THIS session."""
+        """Honesty reference: distinct real chatters in the present window (sleep_after_s = present_s) of THIS session."""
         if not self.booted:
             return 0
         hidden = set(str(u).lower() for u in ((ctx.mod or {}).get("hidden_users") or []))
@@ -1823,7 +1822,7 @@ class SteadingScene(object):
             who = tgt if verb == "rename" else actor
             p = w.pip(who)
             if p is None:
-                return False, "your pip is not awake yet" if verb == "name" else "no such pip"
+                return False, "your settler is still arriving" if verb == "name" else "no such pip"
             nick = None
             if verb == "name" and arg:
                 nick = L.strip_non_bmp(str(arg))[:12] or None
@@ -1831,8 +1830,16 @@ class SteadingScene(object):
             w.dirty = True
             b.events.append({"type": "nickname" if nick else "rename", "pip": who, "nickname": nick, "by": actor})
             return True, "ok"
-        if me is None or not me.is_awake():
-            return False, "your pip is not awake yet"
+        if me is None or me.state in ("seed", "hatching"):
+            return False, "your settler is still arriving"
+        if not me.is_on_land():
+            return False, "no pip called @%s here" % actor
+        if verb != "credits" and not me.is_present(t):
+            # AGES 1.1 / 4.1, defence in depth: a verb is the person's, so no caller (a round card, a mod tool, a test) can
+            # move an away body or write a record in its name through the scene API. The bridge relays a verb only after
+            # the record itself made the person here (steading._ingest -> behaviour.message / speak), so a real chatter
+            # never meets this line; `credits` is stop.sh's, not a person's.
+            return False, "@%s is away · a settler acts only on its own person's words" % actor
         x, y = self._pos.get(actor) or self._pos_of(me, t)
         if verb in ("feed", "pet"):
             other = b.get(tgt)
@@ -1841,23 +1848,24 @@ class SteadingScene(object):
             w.care(tgt, actor, verb, t)
             if verb == "feed":
                 b.carry(actor, t)
-            if other is not None and other.is_awake():
-                b.care_received(tgt, t, actor)
+            here = other is not None and other.is_present(t)
+            if other is not None and other.is_on_land():
+                b.care_received(tgt, t, actor)                     # hearts on a here settler; an away one only looks (AGES 1.5)
                 if me.platform is None and tgt != actor:
                     ox, oy = self._pos.get(tgt) or self._pos_of(other, t)
                     b.walk_to(actor, (ox + (-6.0 if ox > x else 6.0), oy), t)
                 else:
                     b.hop(actor, t)
-                b.events.append({"type": verb, "pip": tgt, "by": actor, "asleep": False})
             else:
-                b.events.append({"type": verb, "pip": tgt, "by": actor, "asleep": True})
+                b.hop(actor, t)
+            b.events.append({"type": verb, "pip": tgt, "by": actor, "absent": not here, "asleep": not here})   # `asleep`: legacy key
             return True, "ok"
         if verb == "gift":
             other = b.get(tgt)
             if w.pip(tgt) is None:
                 return False, "no pip called @%s here" % tgt
-            if other is not None and other.is_awake():
-                return False, "gifts are for sleeping pips"
+            if other is not None and other.is_present(t):
+                return False, "@%s is here · a gift waits for someone who is away" % tgt
             w.gift(tgt, actor, t)
             b.events.append({"type": "gift", "pip": tgt, "by": actor})
             return True, "ok"
@@ -1880,7 +1888,7 @@ class SteadingScene(object):
             return True, "ok"
         if verb == "camp":
             # 5.3: the cell the pip stands on is its own pressed grass (one step = wear 8 = "on a trail"), so the bedroll
-            # goes on the nearest allowed cell within 6 (diagonals first, the same rule as the first sleep); the land's
+            # goes on the nearest allowed cell within 6 (diagonals first); the land's
             # own reason is kept when nothing nearby is allowed (water, the green, another's camp, a real road)
             cx_, cy_, reason = self._camp_near(actor, x, y)
             if cx_ is None:
@@ -1899,7 +1907,7 @@ class SteadingScene(object):
                     hx, hy = self.moot_xy("hearth")
                     b.events.append({"type": "hearth", "by": actor, "x": hx, "y": hy})
                     return True, "ok"
-                return False, "your pip is not awake yet"
+                return False, "the hearth did not take"
             camp = land.camp_of(actor)
             if not isinstance(camp, dict):
                 return False, "no camp to light a fire at. say `camp` first"
@@ -2073,7 +2081,7 @@ def _self_test() -> bool:                                       # pragma: no cov
         _time.sleep(0.01)
     check(sc.booted and not sc.refused, "booted (terrain thread + world.json schema %s) in %.0f ms; boot step %.0f ms" % (
         sc.world.schema if sc.world else None, (_time.perf_counter() - t_boot) * 1000, sc._boot_ms))
-    check(sc.camera.mode == "DRIFT" and sc.awake_count() == 0, "0 awake: camera %s at (%.0f, %.0f), nobody drawn" % (sc.camera.mode, sc.camera.cx, sc.camera.cy))
+    check(sc.camera.mode == "DRIFT" and sc.present_count() == 0, "0 present: camera %s at (%.0f, %.0f), nobody drawn" % (sc.camera.mode, sc.camera.cx, sc.camera.cy))
     from stream.world.honesty import HonestyMonitor
     from stream.world import keepers as _K
     mon = HonestyMonitor(sc, enforce=True, log=lambda m: print("    honesty: " + m))
@@ -2156,7 +2164,7 @@ def _self_test() -> bool:                                       # pragma: no cov
     check(keep.errors == 0 and getattr(sc, "keepers", None) is keep, "Keepers wrapper attached and ticked without errors (%d)" % keep.errors)
     check(tuft_in_view >= 20, "the tuft was in view for %d frames during the hold (camera eased to it)" % tuft_in_view)
     ref = sc.distinct_recent_chatters(mkctx(now, 899), now)
-    check(sc.awake_count() == ref == 2, "awake_count %d == distinct recent chatters %d == 2" % (sc.awake_count(), ref))
+    check(sc.present_count() == ref == 2, "present_count %d == distinct recent chatters %d == 2" % (sc.present_count(), ref))
     check(sc.camera.cuts == 0, "camera never cut (cuts=%d, max step speed %.1f cells/s <= 60)" % (sc.camera.cuts, sc.camera.max_step_speed))
     check(sc.camera.max_step_speed <= CAM.PAN_CAP + 1e-6, "pan cap held")
     check(sc.camera.mode in ("FOLLOW", "CLOSE", "EVENT"), "camera follows the real people (mode %s)" % sc.camera.mode)
@@ -2181,7 +2189,7 @@ def _self_test() -> bool:                                       # pragma: no cov
     print("    A: avg %.2f p95 %.2f max %.2f ms over %d frames; sections %s" % (arr.mean(), np.percentile(arr, 95), arr.max(), len(arr), sc.stats()["sections_ms"]))
     print("    A: entities %s" % [(e["key"], e["state"], e["x"], e["y"], e["sx"], e["sy"], e["in_view"]) for e in sc.entities(now)])
     print("    A: plates %s" % [(p["key"], p["word"], p["night"], p["x"], p["y"], p["in_view"]) for p in sc.plates(now)])
-    print("[A2] a vote stands at a waystone; 2 min of quiet -> both walk home and sleep at their camps; a message wakes one")
+    print("[A2] a vote stands at a waystone; 2 min of quiet -> both REMAIN on the land (present 0, DRIFT, wear delta 0, 0 violations); a message is a return")
     f0 = 900
     votes = [(names[1], "A", now0 + f0 / fps)]
     stood = None
@@ -2192,46 +2200,80 @@ def _self_test() -> bool:                                       # pragma: no cov
             stood = f
             img.save(os.path.join(run_dir, "A2_vote.png"))
     check(stood is not None and (stood - f0) / fps <= 8.0, "vote: %s walked to waystone A and stands there (platform_counts) after %.1f s" % (names[1], ((stood or f0) - f0) / fps))
-    slept, woke = [], None
     f = f0 + 240
     now = now0 + f / fps
-    # advance 130 s of world time at 0.5 s per frame (the behaviour's dt cap): quiet -> home -> sleep
+    camps_before = len(sc.land.camps())
+    # advance 130 s of world time at 0.5 s per frame (the behaviour's dt cap): quiet -> away, still on the land, erranding
+    bad_evs, states_away, frames_away, mon_bad2 = [], set(), 0, 0
+    wear_at_away = steps_at_away = None
+    errand_walks = 0
     for k in range(300):
         now += 0.5
         f += 1
-        img = sc.frame(mkctx(now, f), size)
+        ctx2 = mkctx(now, f)
+        img = sc.frame(ctx2, size)
+        rep = mon.check(ctx2, now)
+        mon_bad2 += len(rep.violations)
+        if rep.violations and mon_bad2 <= 5:
+            print("    honesty monitor (quiet): %r" % (rep.violations,))
         for ev in sc.events:
-            if ev.get("type") == "sleep":
-                slept.append((ev.get("pip"), ev.get("camp"), ev.get("new_camp")))
-                print("    sleep: %s at camp %s (new %s) · land camps %d" % (ev.get("pip"), ev.get("camp"), ev.get("new_camp"), len(sc.land.camps())))
-        if len(slept) >= 2 and sc.awake_count() == 0:
-            break
-    img.save(os.path.join(run_dir, "A2_asleep.png"))
-    check(len(slept) == 2 and sc.awake_count() == 0 and sc.asleep_count() == 2, "both slept (%d sleep events, %d awake, %d asleep)" % (len(slept), sc.awake_count(), sc.asleep_count()))
-    check(len(sc.land.camps()) == 2 and all(isinstance(sc.world.pip(n).get("camp"), dict) for n in names), "a first real sleep created a camp for each (%s)" % [(c["key"], c["x"], c["y"], c["kind"]) for c in sc.land.camps()])
+            if ev.get("type") in ("sleep", "wake", "curl", "uncurl", "camp_new"):
+                bad_evs.append(ev)
+            if ev.get("type") == "walk" and str(ev.get("then") or "").startswith(("errand:", "sit")):
+                errand_walks += 1
+        if sc.present_count() == 0:
+            if wear_at_away is None:
+                wear_at_away, steps_at_away = mon.wear_added_total, mon.wear_steps_total
+            frames_away += 1
+            states_away |= {e.state for e in sc.behaviour.entities.values()}
+    img.save(os.path.join(run_dir, "A2_quiet.png"))
     ents = sc.entities(now)
-    check(all(e["state"] == "asleep" and e.get("camp") and abs(e["x"] - e["camp"]["x"]) <= 1 for e in ents), "sleepers lie at their own camp: %s" % [(e["key"], e["x"], e["y"], e.get("camp")) for e in ents])
-    check(sc.camera.mode == "DRIFT", "0 awake again: the camera surveys (mode %s, stop %s)" % (sc.camera.mode, (sc.camera.drift_stop or {}).get("id")))
+    check(frames_away >= 60 and not bad_evs and sc.present_count() == 0 and len(sc.on_land()) == 2 and states_away <= set(BH.ON_LAND),
+          "2 min quiet: both remain on the land (states seen %s), present_count 0 for %d frames, no sleep / wake / camp_new event (%d)" % (
+              sorted(states_away), frames_away, len(bad_evs)))
+    check(errand_walks >= 2 and all(e["on_land"] and not e["present"] and e["frame"] != "sleep" for e in ents),
+          "the land moved them (%d errand walks); nobody lies down: %s" % (errand_walks, [(e["key"], e["state"], e["frame"], e["x"], e["y"]) for e in ents]))
+    check(wear_at_away is not None and mon.wear_added_total == wear_at_away and mon.wear_steps_total == steps_at_away,
+          "wear delta 0 while nobody is here (added %s -> %d, steps %s -> %d)" % (wear_at_away, mon.wear_added_total, steps_at_away, mon.wear_steps_total))
+    check(len(sc.land.camps()) == camps_before, "no camp pitched by the quiet (camps %d -> %d)" % (camps_before, len(sc.land.camps())))
+    check(sc.camera.mode == "DRIFT", "0 present: the camera surveys (mode %s, stop %s)" % (sc.camera.mode, (sc.camera.drift_stop or {}).get("id")))
+    check(mon_bad2 == 0 and sc.honesty_violations == 0, "0 honesty violations over the quiet (%d monitor, %d scene)" % (mon_bad2, sc.honesty_violations))
+    # AGES 1.1 / 4.1 defence in depth: no caller moves an away body or writes a record in its name through the scene API
+    stock_q = sc.land.stock
+    refused = {v: sc.command(v, names[1], arg=a, now=now) for v, a in (("go", "ford"), ("stack", None), ("feed", None), ("plant", "flower"))}
+    f += 1
+    now += 1 / fps
+    sc.frame(mkctx(now, f), size)
+    rep_q = mon.check(mkctx(now, f), now)
+    check(all(not ok for ok, _w in refused.values()) and all("away" in w for _ok, w in refused.values()) and sc.land.stock == stock_q
+          and not any(ev.get("type") in ("go", "walk", "stack", "feed") for ev in sc.events) and rep_q.ok,
+          "away settler: go / stack / feed / plant refused by scene.command (%s), stock %d unchanged, no verb event, monitor ok" % (
+              {v: w for v, (_ok, w) in refused.items()}, sc.land.stock))
     f += 1
     now += 1 / fps
     sc.frame(mkctx(now, f, [raw("m3", names[0], "back", now)]), size)
     chat_line("m3", names[0], "back", now)
-    wake_ev = [ev for ev in sc.events if ev.get("type") == "wake"]
-    check(len(wake_ev) == 1 and wake_ev[0].get("pip") == names[0] and wake_ev[0].get("camp"), "a raw record wakes the sleeper at its camp this frame: %s" % (wake_ev[0] if wake_ev else None))
-    check(sc.awake_count() == 1 and sc.camera.mode == "EVENT", "1 awake; the camera holds the wake (mode %s)" % sc.camera.mode)
+    ret_ev = [ev for ev in sc.events if ev.get("type") == "return"]
+    check(len(ret_ev) == 1 and ret_ev[0].get("pip") == names[0] and (ret_ev[0].get("away_s") or 0) >= 100 and not any(ev.get("type") == "wake" for ev in sc.events),
+          "a raw record is a `return` this frame (away_s %s), no wake event: %s" % ((ret_ev[0].get("away_s") if ret_ev else None), ret_ev[:1]))
+    check(sc.present_count() == 1 and sc.camera.mode == "EVENT", "1 present; the camera holds the return (mode %s)" % sc.camera.mode)
+    ok_r, why_r = sc.command("go", names[0], arg="ford", now=now)
+    ok_s, why_s = sc.command("go", names[1], arg="ford", now=now)
+    check(ok_r and not ok_s and "away" in why_s, "the returned settler's `go` is accepted (%s); the still-away one's is refused (%s)" % (why_r, why_s))
     for k in range(60):
         f += 1
         now += 1 / fps
         img = sc.frame(mkctx(now, f), size)
-    img.save(os.path.join(run_dir, "A2_woke.png"))
+    img.save(os.path.join(run_dir, "A2_returned.png"))
     check(sc.errors == 0 and sc.honesty_violations == 0, "A2 clean (errors %d, honesty %d)" % (sc.errors, sc.honesty_violations))
+    pos_before = {e["key"]: (e["x"], e["y"]) for e in sc.entities(now)}
     print("    A2: info %s" % {k: v for k, v in sc.info(now).items() if k in ("clock", "day_part", "wind", "season", "camera", "counts", "settled", "hearth_lit", "zoom")})
     print("    A2: stats %s" % {k: v for k, v in sc.stats().items() if k in ("frames", "errors", "avg300_ms", "p95_ms", "max_ms", "honesty_violations", "sprites_ready", "worker", "bake", "camps")})
     sc.world.save(now, force=True)
     cam_saved = dict(sc.land.camera() or {})
 
     # ------------------------------------------------------------------ B. hot-reload resume: a second scene on the same run dir
-    print("[B] hot-reload resume on the same run dir (camera continues, sleepers at camps, no wake)")
+    print("[B] hot-reload resume on the same run dir (camera continues, everyone standing where the record saw them, no return)")
     now_b = now + 0.5
     sc2 = SteadingScene(run_dir=run_dir, seed=7, log=lambda m: print("    scene2: " + m), sleep_after_s=120.0)
     t_boot = _time.perf_counter()
@@ -2251,11 +2293,15 @@ def _self_test() -> bool:                                       # pragma: no cov
     check(sc2._bake_ver_applied == sc2.land.bake_ver and sc2.bakes.current.bake_ver == sc2.land.bake_ver and not sc2.bakes.baking,
           "mark changes were REPAINTED into the existing bake and the file renamed to v%d (no whole bake started: %s)" % (
               sc2.land.bake_ver, sc2.bakes.current.stats()["path"]))
-    check(sc2.awake_count() == 1 and sc2.asleep_count() == 1 and not any(ev.get("type") == "wake" for ev in sc2.events),
-          "the owner who chatted inside the window resumed awake without a wake event, the other sleeps at its camp (%d awake, %d asleep)" % (sc2.awake_count(), sc2.asleep_count()))
-    e_sleep = next((e for e in sc2.entities(now_b) if e["state"] == "asleep"), None)
-    check(e_sleep is not None and e_sleep.get("camp") and abs(e_sleep["x"] - e_sleep["camp"]["x"]) <= 1, "the boot-placed sleeper lies at its camp: %s" % (
-        ((e_sleep or {}).get("key"), (e_sleep or {}).get("x"), (e_sleep or {}).get("camp")),))
+    check(sc2.present_count() == 1 and len(sc2.on_land()) == 2 and not any(ev.get("type") in ("wake", "return") for ev in sc2.events),
+          "the owner who chatted inside the window resumed here without a return event, the other stands on the land away (%d present, %d on the land)" % (
+              sc2.present_count(), len(sc2.on_land())))
+    e_away = next((e for e in sc2.entities(now_b) if not e["present"]), None)
+    check(e_away is not None and e_away["on_land"] and e_away["frame"] != "sleep" and e_away["key"] in pos_before
+          and math.hypot(e_away["x"] - pos_before[e_away["key"]][0], e_away["y"] - pos_before[e_away["key"]][1]) <= 4.0,
+          "the boot-placed away settler STANDS where the record last saw it: %s (saved %s)" % (
+              ((e_away or {}).get("key"), (e_away or {}).get("state"), (e_away or {}).get("x"), (e_away or {}).get("y")),
+              pos_before.get((e_away or {}).get("key"))))
     check(sc2.honesty_violations == 0 and sc2.errors == 0, "clean second boot")
     results["B"] = {"boot_ms": round(sc2._boot_ms), "camera": sc2.camera.stats(), "bake": sc2.bakes.current.stats() if sc2.bakes.current else None}
 
@@ -2320,8 +2366,8 @@ def _self_test() -> bool:                                       # pragma: no cov
             img = sc3.frame(mkctx(now, k + 800 + f, hb=now - 10), size)
             msc.append((_time.perf_counter() - t1) * 1000)
         arr = np.array(msc[10:])
-        drawn = sum(1 for e in sc3.entities(now) if e["awake"] and e.get("origin") == "test")
-        check(sc3.test_pips == n_pips and drawn == n_pips, "%d test pips awake and drawn (origin test, never persisted as real)" % drawn)
+        drawn = sum(1 for e in sc3.entities(now) if e["on_land"] and e.get("origin") == "test")
+        check(sc3.test_pips == n_pips and drawn == n_pips, "%d test pips on the land and drawn (origin test, never persisted as real)" % drawn)
         check(sc3.camera.zoom == zoom, "zoom pinned at %.2fx for the test (%s)" % (zoom, sc3.camera.zoom))
         limit = C_LIMIT[label]
         check(float(arr.mean()) < limit, "steady scene avg %.2f ms < %.0f ms (p95 %.2f, max %.2f) at %.2fx with %d pips; glow/clouds/shadows on, level %d" % (

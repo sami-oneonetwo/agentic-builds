@@ -236,19 +236,18 @@ class ColonyPanel(Panel):
 
     # ================================================================== row 3: the keeper state
     def _visitors(self, sc, m, ctx, now: float) -> Optional[str]:
-        """`2 sleep at their camps · last here: @atleastonce 14:19` from the world's real visits (0 awake only)."""
+        """`last here: @atleastonce 14:19` from the world's real visits (0 present only). Nobody sleeps (AGES 1.1): no count of
+        sleepers, no sleep word, only the visits record."""
         if not _names_on(ctx):
             return None
         try:
-            asleep = int(sc.asleep_count())
             visits = list((sc.world.data.get("world") or {}).get("visits") or [])[-3:]
             segs = []
             for v in reversed(visits):
                 nm = m.shown_name(v.get("name"))
                 if nm:
                     segs.append("@%s %s" % (nm, m.when_text(v.get("ts"), now)))
-            head = ("%d sleep%s at %s camp%s" % (asleep, "s" if asleep == 1 else "", "its" if asleep == 1 else "their",
-                                                  "" if asleep == 1 else "s")) if asleep else ""
+            head = ""
             cands = []
             for n in range(len(segs), 0, -1):
                 tail = "last here: " + " · ".join(segs[:n])

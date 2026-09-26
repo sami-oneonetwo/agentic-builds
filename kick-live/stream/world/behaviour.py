@@ -1,12 +1,19 @@
 """stream/world/behaviour.py - what pips do on the land, frame by frame (OPENWORLD.md 3, 4.4 gravity, 5.1, 6, 12; row 5
-of the build order). The 2D rewrite of the cave's state machine: the entity states, the hold timing, speak / hop /
-blink / curl, sleep / wake, care and credits are kept; positions are MAP CELLS (960x440, 1 cell = 4 px at 1x),
-targets are 2D with easing, walks follow terrain.py's coarse BFS route with a one-cell slide rule and a 3 s stuck
-detector, idle wander has Moot gravity, camps replace burrows, votes are standing slots at the three waystones, a
-pip can carry a berry or a stone, and a newcomer is a nameless tuft on the wind until the hold clears.
+of the build order; docs/AGES.md 1, 4, 8: nobody lies down). The 2D rewrite of the cave's state machine: the entity
+states, the hold timing, speak / hop / blink, care and credits are kept; positions are MAP CELLS (960x440, 1 cell =
+4 px at 1x), targets are 2D with easing, walks follow terrain.py's coarse BFS route with a one-cell slide rule and a
+3 s stuck detector, the idle life is an errand table (home / Moot / water / stroll) the land runs for here and away
+settlers alike, camps are homes, votes are standing slots at the three waystones, a pip can carry a berry or a
+stone, and a newcomer is a nameless tuft on the wind until the hold clears.
+
+TWO AXES (AGES 1.1). Presence is about the PERSON and is derived, never stored, never drawn as a count:
+`Entity.is_present(t)` = the owner's record landed within `present_s` (1200 s) of now (`t - last_active_t`); it gates
+every verb, bubble, mutter, hop, vote, mark, fire, wear and the camera's FOLLOW list. Activity is the body's state
+(`STATES`): a settler is `ON_LAND` (idle / walking / voting / sitting / hauling) from its hatch onward, forever minus
+`!banish`; `hidden` (mod !hide) is the ONE lying pose. Nobody sleeps, nobody walks home to lie down, nothing decays.
 
     from stream.world.behaviour import Behaviour, waystone_positions
-    b = Behaviour(seed=41370704, sleep_after_s=1200.0, hold_s=3.0,
+    b = Behaviour(seed=41370704, present_s=1200.0, hold_s=3.0,     # sleep_after_s= is the same knob (alias, one release)
                   terrain=T,                  # terrain.generate(4471): passable / cost / route / places (None = flat test land)
                   land=ws.land,               # wear under real footsteps via land.step() (None = no wear)
                   moot=T.site,                # the Moot green centre (seeds land here, wander gravity, waystones)
@@ -15,32 +22,45 @@ pip can carry a berry or a stone, and a newcomer is a nameless tuft on the wind 
     b.seed_drop(key, t)                        # a record landed: a nameless tuft drifts in from upwind toward a hashed spot on the green
     b.hold_cleared(key, t, display_name, tier, energy, salt, first_ever)   # the bridge cleared the hold: the tuft may pop
     b.sink(key, t)                             # hidden inside the hold / never cleared: the wind takes the tuft, nothing hatches
-    b.place_sleeper(key, tier, energy, salt, camp, display_name, t=now, x=None, y=None)   # boot: a past chatter asleep at its camp
-    b.message(key, t)                          # existing pip, record landed (pre-hold): hop + brighten; asleep -> stands up at camp
-    b.speak(key, t, text, learned_from=None)   # after the hold: bubble 8 s; awake pips within 50 cells look toward the speaker
+    b.place_settler(key, tier, energy, salt, camp, display_name, t=now, x=None, y=None, last_seen=None)   # boot: a past
+                                               # chatter STANDING where the record last saw it (else the camp door); here iff
+                                               # last_seen is inside present_s (place_sleeper is the same call, alias kept)
+    b.message(key, t, seen_t=None)             # existing pip, record landed (pre-hold): hop + brighten; a gap > present_s is a
+                                               # `return` (drop the errand, hop, face the camera); seen_t = the record's own time
+    b.speak(key, t, text, learned_from=None)   # after the hold: bubble 8 s; settlers within 50 cells look toward the speaker
     b.walk_to(key, "A"|"B"|"C"|(x, y), t, then="idle")   # vote at a waystone slot / walk somewhere; then = what to do on arrival
     b.go(key, "river"|"north"|"home"|"@name", t) -> (ok, reason)   # the `go` verb: places, 8 directions (60 cells), home, a person
     b.fetch(key, (px, py), (qx, qy), t, kind="stone")    # `stack`: walk to a stone, carry it, walk to the cairn, place it
     b.carry(key, t, "berry") ; b.drop(key, t) ; b.hop(key, t) ; b.emote(key, "wave"|"sit"|"dance", t)
-    b.care_received(key, t, by) ; b.set_camp(key, x, y) ; b.hide(key, t) ; b.stir(key, t) ; b.crowd_bounce("A", t)
+    b.care_received(key, t, by) ; b.set_camp(key, x, y) ; b.hide(key, t) ; b.crowd_bounce("A", t)
     b.release_votes(t) ; b.start_credits(t) ; b.set_tier(key, tier, t)
-    b.session_id = ctx.session["id"]           # with `land` bound: a sleep settles / records the camp via land.ws.ensure_camp()
-                                               # itself (5.3 rules; the bedroll cell is never pressed); unset -> the scene does it
-                                               # on the `sleep` / `camp_new` event and reconciles with b.set_camp(key, x, y)
+    b.session_id = ctx.session["id"]           # the scene's session (camps are the scene's / the land's business now)
+    b.night = 0.0                              # nature.night_amount (0 day .. 1 night) or a callable: the errand table's weights
     events = b.tick(t, dt)                     # advance one frame; returns this frame's events (EVENTS below)
-    b.entities ; b.awake() ; b.awake_count() ; b.asleep_count() ; b.platform_counts() ; b.newest_speaker
+    b.entities ; b.present() ; b.present_count() ; b.awake() (= on the land) ; b.platform_counts() ; b.newest_speaker
+    b.awake_count() (= present_count, alias one release) ; b.asleep_count() (always 0; goes once its callers are gone)
     b.waystones                                # [(x, y)] x3 for A / B / C on the Moot
-    b.camera_inputs(t, round_remaining=None)   # {"awake": [...], "seeds": [(x, y)], "moot": {...}} for Camera.update()
+    b.camera_inputs(t, round_remaining=None)   # {"awake": [HERE settlers], "seeds": [(x, y)], "moot": {...}} for Camera.update()
 
 EVENTS (dicts, `type` first; names kept from the cave so audio / text-layer / rounds consumers still match): seed,
-seed_land, sink, hatch, first_light (= the spec's "first breath"), wake, sleep, speak, hop, walk, arrive,
-leave_platform, blink, tier_up, curl, uncurl, emote, credits_start, credits, credits_end, mutter_due, burrowed,
-plus the land's new ones: stuck (QA counter; a reroute follows), pickup, place (a carried thing set down: the scene
-calls land.stack for a stone), camp_new (a first sleep chose a camp spot: the scene calls ws.ensure_camp). Every event
-carries `pip` (the lowercase key) except seed / seed_land / sink (`key` only: nothing about a tuft may be drawn as a
-name). `sleep` carries `camp` [x, y] and `new_camp`; `wake` carries `camp`; `walk` carries `to` (a letter, "camp", a
-place name, or [x, y]); `arrive` carries `at` (letter / then-tag), `gave_up` when the stuck detector ended a walk and
-`short` when the target lay across water and the pip stopped on the nearest reachable bank cell.
+seed_land, sink, hatch, first_light (= the spec's "first breath"), return (the old `wake`: away -> here; carries
+`camp`, `away_s`, `only_light`), speak, hop, walk, arrive, leave_platform, blink, tier_up, emote, credits_start,
+credits, credits_end, mutter_due, burrowed (a mod hid the user: state `hidden`), plus the land's: stuck (QA counter;
+a reroute follows), pickup, place (a carried thing set down: the scene calls land.stack for a stone). There is no
+`sleep`, `wake`, `curl` or `uncurl` event any more. Every event carries `pip` (the lowercase key) except seed /
+seed_land / sink (`key` only: nothing about a tuft may be drawn as a name). `walk` carries `to` (a letter, a place
+name, or [x, y]: an errand's `to` is always the cell pair) and `then` (`vote`, `idle`, `errand:<name>`, `sit`,
+`credits`, `pickup:...`, `place:...`); `arrive` carries `at` (letter / then-tag), `gave_up` when the stuck detector
+ended a walk and `short` when the target lay across water and the pip stopped on the nearest reachable bank cell.
+
+IDLE LIFE (AGES 1.3, the minimal table): once per dwell end (never per frame) `_pick_idle` draws an errand for a
+here or away settler alike: home (its camp door; 25 day / 55 night), moot (a free cell on the Moot ring 10-24 cells
+out; 20 / 10), water (the nearest bank within 160 cells, 50 % sit; 15 / 5), stroll (the old +/-8-40 cell hop with
+30 % Moot gravity and the 200-cell cap; 15). Never the same errand twice running; every weight shifts +/-30 % per
+name and a per-name `tempo` 0.75-1.3 scales the dwell and the 4-6 cells/s errand speed, so twenty idlers desync for
+free. An errand is the land's, not the person's: `then` = `errand:<name>` (or `sit`), `last_active_t` is untouched,
+no wear is laid unless the person is here, nothing is said, no stone is stood at. `huddle` (rounds) is kept one
+release: every errand aims at the Moot; `follow` and `scatter` are gone.
 
 PATHING: terrain.route() on the 60x28 block grid (a block is open at >= 50 % passable, so a river or the Wood's edge
 can still cut a leg); a clear straight line up to 48 cells skips it; the route is string-pulled; a leg the line cannot
@@ -49,18 +69,20 @@ one-cell slide rule skirts convex trunks and banks between refinements; 3 s with
 then the walk ends where the pip stands). Measured on this Mac: 60 test pips x 5 min of random `go` targets = 0 stuck,
 0 in water, tick 0.32 ms avg (see the self-test: `RUN_DIR=/tmp/lg-behaviour $PYTHON stream/world/behaviour.py`).
 
-HONESTY (OPENWORLD 12): an Entity exists only because `seed_drop` / `place_sleeper` was called for a real chat record
-(origin "chat") or by the test-pip hook (origin "test", refused outside test mode by the scene). Nothing here invents
-an entity. Nothing moves itself except a pip; the tuft is moved by the wind (a real vector from the real chat rate).
-Wear is written only from `_move` for an origin-"chat" pip through `land.step()` (which itself refuses test / unknown
-keys). Sleepers never walk, vote, speak or carry. Absence is never punished: energy decays only while awake and
-unattended, never below the curl floor, never while asleep; nothing here decays a mark. A pip is never teleported: a
-walk the stuck detector cannot finish ends where the pip stands. No position is ever committed on an impassable cell
-(water, trunks, boulders, the 12-cell edge margin), so a pip is never in the river except at the Ford.
+HONESTY (OPENWORLD 12, AGES 4): an Entity exists only because `seed_drop` / `place_settler` was called for a real
+chat record (origin "chat") or by the test-pip hook (origin "test", refused outside test mode by the scene). Nothing
+here invents an entity. Nothing moves itself except a pip; the tuft is moved by the wind (a real vector from the real
+chat rate); an away settler is moved by the land (the errand table) the way wind moves grass. Wear is written only
+from `_move` for a PRESENT origin-"chat" pip through `land.step()` (which itself refuses test / unknown keys). An
+away settler never speaks, mutters, hops, votes, carries, wears a trail or stands at a stone. Absence is never
+punished: nobody lies down, energy (the glow strength only) dims while unattended and never below the floor; nothing
+here decays a mark. A pip is never teleported: a walk the stuck detector cannot finish ends where the pip stands. No
+position is ever committed on an impassable cell (water, trunks, boulders, the 12-cell edge margin), so a pip is
+never in the river except at the Ford.
 
-Speeds (cells/s; 1 cell = 4 screen px at 1x): wander 5-10 (20-40 px/s), `go` 8, a vote walk max(10, dist / 2 s)
-capped at 30 so a far voter still arrives in a few seconds. Marsh and the Ford slow a walk to 0.6x, sand / hill to
-0.8x (terrain.cost). Everything eases in over ~9 frames. Python 3.9, numpy only; nothing here reads time.time().
+Speeds (cells/s; 1 cell = 4 screen px at 1x): errands 4-6 x tempo, `go` 8, a vote walk max(10, dist / 2 s) capped
+at 30 so a far voter still arrives in a few seconds. Marsh and the Ford slow a walk to 0.6x, sand / hill to 0.8x
+(terrain.cost). Everything eases in over ~9 frames. Python 3.9, numpy only; nothing here reads time.time().
 """
 from __future__ import annotations
 
@@ -80,8 +102,12 @@ from stream.world import land as LAND  # noqa: E402
 
 MAP_W, MAP_H, EDGE_MARGIN, DEFAULT_MOOT = LAND.MAP_W, LAND.MAP_H, LAND.EDGE_MARGIN, LAND.DEFAULT_MOOT
 
-STATES = ("seed", "hatching", "awake", "walking", "voting", "curled", "asleep", "burrowed")
-AWAKE_STATES = ("awake", "walking", "voting", "curled")
+STATES = ("seed", "hatching", "idle", "walking", "voting", "sitting", "hauling", "hidden")
+ON_LAND = ("idle", "walking", "voting", "sitting", "hauling")
+HIDDEN_STATES = ("hidden", "burrowed")             # the one lying pose (moderation, not presence); `burrowed` is the cave's name
+LEGACY_STATES = {"awake": "idle", "curled": "idle", "asleep": "idle", "burrowed": "hidden"}   # mapped on the way in (tick, load)
+_LEGACY_ON_LAND = ("awake", "curled")              # a consumer that still writes the cave's names is on the land until the tick maps it
+AWAKE_STATES = ON_LAND                             # legacy export (hollow.py); one release
 LETTERS = ("A", "B", "C")
 PLATFORM_LETTERS = LETTERS                  # the cave's name for the same three votes (rounds / hollow.py compat)
 WANDER_X = (EDGE_MARGIN, MAP_W - EDGE_MARGIN)   # legacy import (hollow.py); the wander range is now the whole passable land
@@ -92,7 +118,15 @@ FRAMES = ("idle0", "idle1", "blink", "look_l", "look_r", "walk0", "walk1", "walk
           "joy", "love")
 TUFT_FRAMES = ("tuft0", "tuft1", "tuft2")   # drifting, settled, splitting (1 Hz, OPENWORLD 3.1)
 
-SPEED_MIN, SPEED_MAX = 5.0, 10.0            # cells/s while wandering (20-40 screen px/s at 1x)
+SPEED_MIN, SPEED_MAX = 5.0, 10.0            # cells/s default for a plain walk_to (a verb's walk; the old wander range)
+ERRAND_SPEED = (4.0, 6.0)                   # cells/s for the land's errands (x tempo), slower than `go` (AGES 1.3)
+ERRANDS = ("home", "moot", "water", "stroll")
+ERRAND_WEIGHTS = {"home": (25.0, 55.0), "moot": (20.0, 10.0), "water": (15.0, 5.0), "stroll": (15.0, 15.0)}   # day / night
+ERRAND_DWELL = {"home": (30.0, 90.0), "moot": (10.0, 30.0), "water": (15.0, 40.0), "stroll": (1.0, 3.0)}      # s, x tempo
+SIT_DWELL = (20.0, 90.0)                    # s a sit from an errand is sticky (x tempo)
+TEMPO = (0.75, 1.3)                         # per-name tempo scaling pause length and errand speed
+MOOT_RING = (10.0, 24.0)                    # an errand to the Moot ends on this ring around the green's centre (never the centre)
+WATER_MAX_CELLS = 160                       # the water errand looks this far for a bank
 GO_SPEED = 8.0                              # cells/s for `go` (OPENWORLD 3.1)
 VOTE_WALK_S = 2.0                           # a vote walk aims to arrive in ~2 s ...
 VOTE_SPEED_CAP = 30.0                       # ... but never faster than this (a far voter takes a few seconds, no teleport)
@@ -108,25 +142,23 @@ LOCAL_BOX_MAX = 120                         # the fine search never covers more 
 STUCK_S = 3.0                               # no progress toward the leg for this long -> stuck (reroute once, then give up)
 STUCK_PROGRESS = 0.5                        # cells of progress that reset the stuck timer
 STUCK_GIVE_UP = 2                           # the second stuck on one walk ends it where the pip stands
-MOOT_GRAVITY = 0.30                         # 30 % of idle wanders head toward the Moot (4.4)
-IDLE_RADIUS = 200.0                         # idle wander never targets farther than this from the Moot
-WANDER_STEP = 40.0                          # cells: a wander hop is +/- this
+MOOT_GRAVITY = 0.30                         # 30 % of strolls head toward the Moot (4.4)
+IDLE_RADIUS = 200.0                         # an errand never targets farther than this from the Moot
+WANDER_STEP = 40.0                          # cells: a stroll is +/- this
 FACE_WIND_P = 0.2                           # an idle pause turns to face the wind this often
 
 BLINK_MIN, BLINK_MAX = 4.0, 7.0
 BLINK_LEN = 0.15
-LOOK_CELLS = 50.0                           # awake pips this close look toward a speaker (ART.md: ~200 px)
+LOOK_CELLS = 50.0                           # settlers this close look toward a speaker (ART.md: ~200 px; a look is a reaction)
 LOOK_S = 2.5
 SPEAK_S = 8.0                # a bubble is the only place a message is readable now the chat log is gone (journal 034: was 6)
 MOUTH_S = 1.0
 HOP_TICKS = (3, 6, 2)                       # hop0 x3, hop1 x6 on a parabola, hop0 x2 (ART.md 7)
 HOP_S = sum(HOP_TICKS) / 30.0
 HOP_LIFT = 0.27                             # of the standing height; the scene scales it by the tier's px height
-CURL_FLOOR = 0.2
+CURL_FLOOR = 0.2                            # energy (the glow strength) never dims below this; there is no curl state any more
 DECAY_PER_MIN = 0.01
 ATTENTION_S = 60.0
-TWITCH_MIN, TWITCH_MAX = 8.0, 15.0
-TWITCH_LEN = 0.2
 EMOTE_S = 2.0
 LOVE_S = 1.0
 JOY_S = 1.0
@@ -365,7 +397,7 @@ class Entity(object):
                  "love_until", "joy_until", "look_key", "look_until", "minutes_tonight", "first_ever", "wake_t",
                  "bob_phase", "born_t", "credits_done", "learned_from", "carry", "carry_until", "flash_until",
                  "next_mutter_t", "progress_t", "progress_best", "stuck_n", "stuck_total", "last_cell", "los_t",
-                 "cells_walked", "walk_speed", "short", "leg_t")
+                 "cells_walked", "walk_speed", "short", "leg_t", "present", "present_s", "tempo", "errand", "sit_until")
 
     def __init__(self, key: str, origin: str, t: float):
         self.key = key
@@ -384,7 +416,7 @@ class Entity(object):
         self.speed_max = SPEED_MIN
         self.target: Optional[Vec] = None       # the walk's final target (cells)
         self.route: List[Vec] = []              # waypoints still ahead, ending at target
-        self.then: Optional[str] = None         # what to do on arrival: idle / vote / sleep / credits / pickup:<k> / place:<k> / <tag>
+        self.then: Optional[str] = None         # what to do on arrival: idle / vote / errand:<name> / sit / credits / pickup:<k> / place:<k>
         self.platform: Optional[str] = None     # waystone letter while voting or walking to vote
         self.slot: Optional[int] = None
         self.camp: Optional[Tuple[int, int]] = None
@@ -406,8 +438,8 @@ class Entity(object):
         self.last_active_t = t
         self.last_attention_t = t
         self.spoke_t: Optional[float] = None
-        self.sleep_t: Optional[float] = None
-        self.twitch_t = t + TWITCH_MIN
+        self.sleep_t: Optional[float] = None    # inert legacy attributes (the cave scene still writes them); nothing reads them
+        self.twitch_t = 0.0
         self.twitch_until = 0.0
         self.emote: Optional[str] = None
         self.emote_until = 0.0
@@ -436,16 +468,31 @@ class Entity(object):
         self.walk_speed = 0.0
         self.short = False                      # the walk was shortened to the nearest reachable cell
         self.leg_t = -1e9                       # the frame the current leg was last refined at cell level
+        self.present = False                    # the here / away flag, refreshed every tick from last_active_t (AGES 1.1)
+        self.present_s = SLEEP_AFTER_S          # the window (the Behaviour's present_s, copied each tick)
+        self.tempo = TEMPO[0] + (TEMPO[1] - TEMPO[0]) * ((name_hash(key, ":tempo") % 1000) / 1000.0)   # 0.75-1.3 per name
+        self.errand: Optional[str] = None       # the last errand picked (never the same twice running)
+        self.sit_until = 0.0
 
     # -- read-only helpers ----------------------------------------------------------
-    def is_awake(self) -> bool:
-        return self.state in AWAKE_STATES
+    def is_on_land(self) -> bool:
+        """The body is on the land (idle / walking / voting / sitting / hauling): drawn standing, moved by the land, a camera
+        dead-zone point. Not a seed, not hidden."""
+        return self.state in ON_LAND or self.state in _LEGACY_ON_LAND
 
-    def is_present(self) -> bool:
-        """Awake AND not already on the way to lie down (`then` sleep / credits): the walk home after the quiet window
-        is the sleep animation, not a present person. Header / land line / honesty presence count this; sprites, wear,
-        fires and the camera use is_awake() (the pip is still moving on the land)."""
-        return self.state in AWAKE_STATES and self.then not in ("sleep", "credits")
+    def is_awake(self) -> bool:
+        """Legacy name for is_on_land() (one release): NOT presence. Use is_present() for anything the person could claim."""
+        return self.is_on_land()
+
+    def is_present(self, t: Optional[float] = None) -> bool:
+        """`here` (AGES 1.1): the owner's record landed within present_s of now (t - last_active_t <= present_s) and the body is
+        on the land. Without `t` the flag the last tick computed is returned (message() flips it the same frame). Every verb,
+        bubble, mutter, hop, vote, wear, fire and the camera's FOLLOW list are gated on this; nothing else about a person."""
+        if not self.is_on_land():
+            return False
+        if t is None:
+            return self.present
+        return (float(t) - self.last_active_t) <= self.present_s
 
     @property
     def facing(self) -> Tuple[int, int]:
@@ -502,9 +549,9 @@ class Entity(object):
                 return "tuft0"
             age = t - self.seed_t
             return "tuft1" if age < HOLD_S - 0.5 else "tuft2"
-        if st in ("asleep", "burrowed"):
-            return "sleep"
-        if st == "curled":
+        if st in HIDDEN_STATES:
+            return "sleep"                                              # the ONE lying pose: a mod hid the user (moderation, not presence)
+        if st == "sitting":
             return "sit"
         ph = self.hop_phase(t)
         if ph >= 0:
@@ -546,9 +593,10 @@ class Entity(object):
                 "walking": self.walking(), "then": self.then,
                 "text": self.text if t < self.speak_until else None, "speaking": t < self.speak_until,
                 "spoke_t": self.spoke_t, "learned_from": self.learned_from, "first_ever": self.first_ever,
-                "minutes_tonight": round(self.minutes_tonight, 2), "awake": self.is_awake(),
+                "minutes_tonight": round(self.minutes_tonight, 2), "present": self.is_present(),
+                "on_land": self.is_on_land(), "awake": self.is_on_land(), "errand": self.errand,
                 "carry": self.carry, "carrying": self.carry is not None, "flash": t < self.flash_until,
-                "hidden": self.state == "burrowed", "stuck": self.stuck_total}
+                "hidden": self.state in HIDDEN_STATES, "stuck": self.stuck_total}
 
 
 # ---------------------------------------------------------------------------- the behaviour
@@ -556,9 +604,10 @@ class Behaviour(object):
     def __init__(self, seed: int = 41370704, sleep_after_s: float = SLEEP_AFTER_S, hold_s: float = HOLD_S,
                  terrain=None, land=None, moot: Optional[Vec] = None,
                  wind: Union[None, Vec, Callable[[], Vec]] = None,
-                 sheet_ready: Optional[Callable[[str], bool]] = None, waystones: Optional[Sequence[Vec]] = None):
+                 sheet_ready: Optional[Callable[[str], bool]] = None, waystones: Optional[Sequence[Vec]] = None,
+                 present_s: Optional[float] = None):
         self.rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
-        self.sleep_after_s = float(sleep_after_s)
+        self.present_s = float(present_s if present_s is not None else sleep_after_s)   # the here window (AGES 1.1)
         self.hold_s = float(hold_s)
         self.ground = _Ground(terrain, moot)
         self.land = land
@@ -576,14 +625,30 @@ class Behaviour(object):
         self._credits_next_t = 0.0
         self._last_t: Optional[float] = None
         self.events: List[Dict[str, Any]] = []
-        self.colony_rule = "free"          # free / follow / scatter / huddle (rounds may set it)
-        self.session_id: Optional[str] = None   # set by the scene; with `land` bound, a sleep settles / records the camp
-                                                 # through land.ws.ensure_camp() itself (else the scene does it on `sleep`)
+        self.colony_rule = "free"          # free / huddle honoured (rounds may set follow / scatter: ignored, one release)
+        self.session_id: Optional[str] = None   # set by the scene (informational: camps are the scene's / the land's)
+        self.night: Union[float, Callable[[], float]] = 0.0   # nature.night_amount for the errand weights (the scene sets it)
         self.stats_routes = 0
         self.stats_stuck = 0
         self.stats_local = 0
 
     # ------------------------------------------------------------------ helpers
+    @property
+    def sleep_after_s(self) -> float:
+        """Legacy name for present_s (one release): the scene's test hook and the cave still set it."""
+        return self.present_s
+
+    @sleep_after_s.setter
+    def sleep_after_s(self, v: float) -> None:
+        self.present_s = float(v)
+
+    def _night(self) -> float:
+        try:
+            n = float(self.night() if callable(self.night) else self.night)
+        except Exception:
+            n = 0.0
+        return 0.0 if n < 0.0 else (1.0 if n > 1.0 else n)
+
     @property
     def moot(self) -> Vec:
         return self.ground.moot
@@ -621,16 +686,26 @@ class Behaviour(object):
         return self.entities.get((key or "").lower())
 
     def awake(self) -> List[Entity]:
-        return [e for e in self.entities.values() if e.is_awake()]
+        """Every settler ON THE LAND (here or away): what is drawn standing and moved by the land. Not a presence count."""
+        return [e for e in self.entities.values() if e.is_on_land()]
 
-    def awake_count(self) -> int:
-        """Present people: awake entities that are not already on their way to lie down (`then` sleep / credits). The
-        walk home after the quiet window is the sleep animation; counting it kept `N AWAKE` above the honesty
-        reference (distinct chatters in the window) for the length of the walk (fix pass, camera run frames 2187-2486)."""
+    def on_land(self) -> List[Entity]:
+        return self.awake()
+
+    def present(self) -> List[Entity]:
+        """The `here` settlers (AGES 1.1): owner's record within present_s. A len() over real entities, never a sample."""
+        return [e for e in self.entities.values() if e.is_present()]
+
+    def present_count(self) -> int:
         return sum(1 for e in self.entities.values() if e.is_present())
 
+    def awake_count(self) -> int:
+        """Legacy name for present_count() (one release; rounds / compositor / audio / panels still call it)."""
+        return self.present_count()
+
     def asleep_count(self) -> int:
-        return sum(1 for e in self.entities.values() if e.state in ("asleep", "burrowed"))
+        """Nobody sleeps (AGES 1.1): always 0. Deleted once rounds.py / panels stop calling it."""
+        return 0
 
     def hatched(self) -> List[Entity]:
         return [e for e in self.entities.values() if e.state not in ("seed", "hatching")]
@@ -639,10 +714,12 @@ class Behaviour(object):
         return [e for e in self.entities.values() if e.state in ("seed", "hatching")]
 
     def platform_counts(self) -> Dict[str, List[str]]:
-        """Who is STANDING at each waystone (state `voting`): the embodied tally, a len() per letter."""
+        """Who is STANDING at each waystone (state `voting`) AND here: the embodied tally, a len() per letter. A vote is
+        the person's (AGES 1.1: voting requires here); an away body at a stone is stepped off by the next tick and is
+        never counted."""
         out: Dict[str, List[str]] = {k: [] for k in LETTERS}
         for e in self.entities.values():
-            if e.state == "voting" and e.platform in out:
+            if e.state == "voting" and e.platform in out and e.is_present():
                 out[e.platform].append(e.key)
         return out
 
@@ -651,9 +728,11 @@ class Behaviour(object):
         return 0
 
     def camera_inputs(self, t: float, round_remaining: Optional[float] = None) -> Dict[str, Any]:
-        """The awake / seeds / moot arguments for Camera.update(), straight from the entities (no invention)."""
+        """The awake / seeds / moot arguments for Camera.update(), straight from the entities (no invention). The `awake`
+        list (the key is the camera's name) holds the HERE settlers only (AGES 1.4: FOLLOW weights apply to here settlers;
+        away bodies weigh 0 and the camera surveys at 0 present until ROAM, row 2)."""
         awake = [{"key": e.key, "x": e.x, "y": e.y, "fx": e.fx, "fy": e.fy, "walking": e.walking(), "spoke_t": e.spoke_t}
-                 for e in self.entities.values() if e.is_awake()]
+                 for e in self.entities.values() if e.is_present(t)]
         # a tuft is framed by where it will LAND (3.1: the camera eases toward the landing spot on the green), never by
         # its start 150 cells upwind, which would drag the frame off the people for the whole hold
         seeds = [tuple(e.seed_to) if not e.seed_landed and e.seed_to is not None else (e.x, e.y)
@@ -685,7 +764,7 @@ class Behaviour(object):
         e.state = "seed"
         e.seed_t = t
         self.entities[key] = e
-        if not self.first_light_done and self.first_light_pending is None and self.awake_count() == 0:
+        if not self.first_light_done and self.first_light_pending is None and self.present_count() == 0:
             self.first_light_pending = key           # the session's first MESSAGE is first breath, credited at hatch
         self._ev("seed", key=key, x=to[0], y=to[1], from_x=frm[0], from_y=frm[1])
         return e
@@ -718,20 +797,22 @@ class Behaviour(object):
         del self.entities[key]
         self._ev("sink", key=key)
         if self.first_light_pending == key:
-            self.first_light_pending = None          # the tuft never hatched: first breath goes to whoever is awake first
+            self.first_light_pending = None          # the tuft never hatched: first breath goes to whoever is here first
             if not self.first_light_done:
-                awake = sorted(self.awake(), key=lambda o: (o.wake_t if o.wake_t is not None else o.born_t))
-                if awake:
+                here = sorted(self.present(), key=lambda o: o.last_active_t)
+                if here:
                     self.first_light_done = True
-                    self._ev("first_light", pip=awake[0].key)
+                    self._ev("first_light", pip=here[0].key)
         return True
 
-    def place_sleeper(self, key: str, tier: int, energy: float, salt: int, camp=None, display_name: Optional[str] = None,
-                      origin: str = "chat", t: float = 0.0, x: Optional[float] = None, y: Optional[float] = None) -> Entity:
-        """Boot: a past chatter's pip asleep at its camp (real record, real last_seen; it never acts as present).
-        `camp` is the pip row's camp dict / (x, y) / None (an int is the cave's burrow slot: ignored). Without a camp
-        the pip lies where the record last saw it (x, y), else at its hashed Steading-ring spot; the camp itself is
-        created only by a real sleep (ws.ensure_camp on the `sleep` event)."""
+    def place_settler(self, key: str, tier: int, energy: float, salt: int, camp=None, display_name: Optional[str] = None,
+                      origin: str = "chat", t: float = 0.0, x: Optional[float] = None, y: Optional[float] = None,
+                      last_seen: Optional[float] = None) -> Entity:
+        """Boot: a past chatter's settler STANDING on the land (AGES 8: nobody lies down): at the saved (x, y) when that
+        cell is passable, else at its camp door, else at its hashed Steading-ring spot. `camp` is the pip row's camp dict
+        / (x, y) / None (an int is the cave's burrow slot: ignored). `last_seen` (epoch) is the owner's real last record:
+        `last_active_t` starts there, so the settler is here iff that record is inside present_s (the old _restore_awake
+        collapses into this call); None = away. The camp itself is the land's record (ws.ensure_camp)."""
         key = (key or "").lower()
         e = self.entities.get(key)
         if e is None:
@@ -747,73 +828,99 @@ class Behaviour(object):
             cx, cy = float(camp[0]), float(camp[1])
         if cx is not None:
             e.camp = (int(round(cx)), int(round(cy)))
-            e.x, e.y = float(e.camp[0]), float(e.camp[1])
+        if x is not None and y is not None and self.ground.ok(float(x), float(y)):
+            e.x, e.y = float(x), float(y)                      # where the record last saw it, standing
+        elif e.camp is not None:
+            e.x, e.y = self.ground.nearest(float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0)   # the camp door
         elif x is not None and y is not None:
             e.x, e.y = self.ground.nearest(float(x), float(y))
         else:
             taken = [o.camp for o in self.entities.values() if o.camp and o is not e]
             hx, hy = LAND.hashed_camp_spot(key, self.ground.moot, taken, self.ground.passable, self.ground.water)
             e.x, e.y = float(hx), float(hy)
-        e.state = "asleep"
-        e.sleep_t = t
+        e.state = "idle"
         e.vx = e.vy = 0.0
+        e.speed = 0.0
         e.route, e.target, e.then = [], None, None
-        e.twitch_t = t + self._u(TWITCH_MIN, TWITCH_MAX)
+        e.platform, e.slot = None, None
+        e.last_active_t = float(last_seen) if last_seen is not None else (t - self.present_s - 1.0)
+        e.last_attention_t = e.last_active_t
+        e.present_s = self.present_s
+        e.present = (t - e.last_active_t) <= self.present_s
+        e.minutes_tonight = 0.0
+        e.pause_until = t + self._u(0.5, 3.0)
+        e.next_blink_t = t + self._u(BLINK_MIN, BLINK_MAX)
+        e.next_mutter_t = (t + self._u(*MUTTER_FIRST)) if e.present else 1e18
+        e.fx, e.fy = 0, 1
         return e
 
+    def place_sleeper(self, *a, **kw) -> Entity:
+        """Legacy name for place_settler() (one release; hollow.py). Nobody is placed lying down."""
+        return self.place_settler(*a, **kw)
+
     def set_camp(self, key: str, x: float, y: float) -> bool:
-        """The land settled a camp spot (ws.ensure_camp may fall back to the hashed ring spot): remember it; a pip
-        that is asleep right now lies at it. Never moves an awake pip."""
+        """The land settled a camp spot (ws.ensure_camp may fall back to the hashed ring spot): remember it. Never moves
+        anyone (a camp is a home, not a bed)."""
         e = self.get(key)
         if e is None:
             return False
         e.camp = (int(round(x)), int(round(y)))
-        if e.state in ("asleep", "burrowed"):
-            e.x, e.y = float(e.camp[0]), float(e.camp[1])
         return True
 
-    def message(self, key: str, t: float) -> Optional[Entity]:
-        """A record from an existing pip's owner landed (pre-hold): hop + brighten within this frame; a sleeper wakes."""
+    def message(self, key: str, t: float, seen_t: Optional[float] = None) -> Optional[Entity]:
+        """A record from an existing pip's owner landed (pre-hold): the settler is HERE from this frame. A gap longer than
+        present_s (or a hidden settler let back) is a `return` (the old wake, renamed: drop the errand, hop, face the
+        camera); else a hop + brighten. `seen_t` is the record's own time when the scene ingests an older record (deploy
+        history), so presence flips with the same clock the honesty reference reads."""
         e = self.get(key)
         if e is None or e.state in ("seed", "hatching"):
             return e
-        e.last_active_t = t
+        gap = t - e.last_active_t
+        e.last_active_t = max(e.last_active_t, float(seen_t)) if seen_t is not None else t
         e.last_attention_t = t
         e.energy = min(1.0, e.energy + 0.15)
-        if e.state in ("asleep", "burrowed"):
-            self._wake(e, t)
+        e.present_s = self.present_s
+        if e.state == "hidden" or gap > self.present_s:
+            self._return(e, t, gap)
         else:
-            if e.state == "curled":
-                e.state = "awake"
-                self._ev("uncurl", pip=e.key)
             e.hop_t = t
             self._ev("hop", pip=e.key)
+        e.present = e.is_on_land() and (t - e.last_active_t) <= self.present_s
         return e
 
-    def _wake(self, e: Entity, t: float) -> None:
-        """Stands up at its camp (out of the tent flap), takes a step or two, and is awake."""
-        away_s = (t - e.sleep_t) if e.sleep_t is not None else None
-        e.state = "awake"
-        e.wake_t = t
-        e.sleep_t = None
+    def _return(self, e: Entity, t: float, away_s: Optional[float]) -> None:
+        """away -> here (AGES 1.1): drop the errand in one frame, hop, brighten, face the camera. Nothing moves: the settler
+        is wherever the land took it. The `return` event carries the camp and the gap for the plank, the care log and
+        the camera's hold."""
+        if e.state == "hidden":
+            e.state = "idle"
+        if e.state == "walking" and (e.then is None or e.then in ("idle", "sit") or str(e.then).startswith("errand:")):
+            e.route, e.target, e.then = [], None, None
+            e.state = "idle"
+        elif e.state == "sitting":
+            e.state = "idle"
         e.speed = 0.0
         e.vx = e.vy = 0.0
         e.pause_until = t + self._u(0.6, 1.5)
         e.minutes_tonight = 0.0
         e.credits_done = False
+        e.hop_t = t
         e.next_mutter_t = t + self._u(*MUTTER_FIRST)
-        e.fx, e.fy = 0, 1                            # faces the camera coming out of the tent
-        self._ev("wake", pip=e.key, camp=list(e.camp) if e.camp else None, burrow=None, x=e.x, y=e.y,
-                 away_s=(int(away_s) if away_s is not None else None), only_light=(self.awake_count() == 1))
-        if not self.first_light_done and self.first_light_pending is None and self.awake_count() == 1:
+        e.fx, e.fy = 0, 1                            # faces the camera
+        e.present = True
+        n_here = self.present_count()
+        self._ev("return", pip=e.key, camp=list(e.camp) if e.camp else None, x=e.x, y=e.y,
+                 away_s=(int(away_s) if away_s is not None else None), only_light=(n_here == 1))
+        if not self.first_light_done and self.first_light_pending is None and n_here == 1:
             # the session's first message came from a RETURNING chatter: that is first breath too
             self.first_light_done = True
             self._ev("first_light", pip=e.key)
 
     def speak(self, key: str, t: float, text: str, learned_from: Optional[str] = None) -> Optional[Entity]:
-        """After the hold: the owner's own words in a bubble for SPEAK_S; awake pips within 50 cells look toward it."""
+        """After the hold: the owner's own words in a bubble for SPEAK_S; settlers within 50 cells look toward it (a look
+        is a reaction the land allows an away body, AGES 1.3)."""
         e = self.get(key)
-        if e is None or e.state in ("seed", "hatching", "asleep", "burrowed"):
+        if e is None or e.state in ("seed", "hatching") or e.state in HIDDEN_STATES:
             return None
         e.text = text
         e.learned_from = learned_from
@@ -824,7 +931,7 @@ class Behaviour(object):
         e.next_mutter_t = t + self._u(*MUTTER_GAP)
         self.newest_speaker, self.newest_speaker_t = e.key, t
         for o in self.entities.values():
-            if o is not e and o.is_awake() and o.state != "walking":
+            if o is not e and o.is_on_land() and o.state != "walking":
                 d = math.hypot(e.x - o.x, e.y - o.y)
                 if d <= LOOK_CELLS:
                     o.look_key, o.look_until = e.key, t + LOOK_S
@@ -833,8 +940,9 @@ class Behaviour(object):
         return e
 
     def hop(self, key: str, t: float) -> None:
+        """A hop is the person's (here only, AGES 1.3)."""
         e = self.get(key)
-        if e is not None and e.is_awake():
+        if e is not None and e.is_present(t):
             e.hop_t = t
             self._ev("hop", pip=e.key)
 
@@ -849,40 +957,37 @@ class Behaviour(object):
 
     def emote(self, key: str, kind: str, t: float) -> bool:
         e = self.get(key)
-        if e is None or not e.is_awake() or kind not in ("wave", "sit", "dance"):
+        if e is None or not e.is_on_land() or kind not in ("wave", "sit", "dance"):
             return False
         e.emote, e.emote_until = kind, t + EMOTE_S
-        e.last_active_t = t
-        self._ev("emote", pip=e.key, kind=kind)
+        self._ev("emote", pip=e.key, kind=kind)     # the record that carried the verb already made the person here
         return True
 
     def care_received(self, key: str, t: float, by: Optional[str] = None) -> bool:
+        """feed / pet landed on this settler: a here settler hops with hearts; an away one only looks at the giver (AGES 1.5:
+        hearts on the doer only, the care log plays back on return)."""
         e = self.get(key)
-        if e is None:
+        if e is None or not e.is_on_land():
             return False
         e.last_attention_t = t
         e.energy = min(1.0, e.energy + 0.10)
-        if e.state == "curled":
-            e.state = "awake"
-            self._ev("uncurl", pip=e.key)
-        if e.is_awake():
+        if by:
+            o = self.get(by)
+            if o is not None:
+                self._face(e, o.x - e.x, o.y - e.y)
+        if e.is_present(t):
             e.hop_t = t
             e.love_until = t + HOP_S + LOVE_S
             e.flash_until = t + FLASH_S
-            if by:
-                o = self.get(by)
-                if o is not None:
-                    self._face(e, o.x - e.x, o.y - e.y)
         return True
 
     def carry(self, key: str, t: float, kind: str = "berry", dur: Optional[float] = CARRY_S) -> bool:
         """The pip carries a berry (eaten after `dur` with a 3-frame flash) or a stone / tool (until drop())."""
         e = self.get(key)
-        if e is None or not e.is_awake() or kind not in ("berry", "stone", "tool"):
+        if e is None or not e.is_on_land() or kind not in ("berry", "stone", "tool"):
             return False
         e.carry = kind
         e.carry_until = (t + dur) if (dur is not None and kind == "berry") else float("inf")
-        e.last_active_t = t
         return True
 
     def drop(self, key: str, t: float) -> Optional[str]:
@@ -894,19 +999,11 @@ class Behaviour(object):
             e.flash_until = t + FLASH_S
         return kind
 
-    def stir(self, key: str, t: float) -> bool:
-        """A sleeper stirs once (the blanket twitch, now). Honest: it stays asleep; nothing acts as present."""
-        e = self.get(key)
-        if e is None or e.state not in ("asleep", "burrowed"):
-            return False
-        e.twitch_until = t + TWITCH_LEN
-        e.twitch_t = t + self._u(TWITCH_MIN, TWITCH_MAX)
-        return True
-
     def hide(self, key: str, t: float, reason: str = "hidden by mod") -> bool:
-        """A mod hid the user: the pip lies down in the grass where it stands (no label, no plate), state `burrowed`."""
+        """A mod hid the user: the pip lies down in the grass where it stands (no label, no plate), state `hidden`: the ONE
+        lying pose, moderation not presence. The event keeps the cave's name `burrowed` for its consumers."""
         e = self.get(key)
-        if e is None or e.state in ("seed", "hatching", "burrowed"):
+        if e is None or e.state in ("seed", "hatching") or e.state in HIDDEN_STATES:
             return False
         if e.state == "voting":
             self._ev("leave_platform", pip=e.key, platform=e.platform)
@@ -914,8 +1011,9 @@ class Behaviour(object):
         e.route, e.target, e.then = [], None, None
         e.vx = e.vy = 0.0
         e.carry = None
-        e.state = "burrowed"
-        e.sleep_t = t
+        e.text, e.speak_until = None, 0.0
+        e.state = "hidden"
+        e.present = False
         self._ev("burrowed", pip=e.key, reason=reason)
         return True
 
@@ -1016,16 +1114,19 @@ class Behaviour(object):
         e.progress_best = float("inf")
         e.los_t = t
         e.emote = None
-        if then not in ("sleep", "credits", "idle"):
-            e.last_active_t = t                      # a verb is activity; a wander or the walk home is not
+        if e.state == "sitting":
+            e.sit_until = 0.0
+        # presence is the PERSON'S record (message / speak), never a derived verb: the record that carried this walk
+        # already made them here, and moving last_active_t here would outrun the honesty reference (last_seen_ts)
         self._ev("walk", pip=e.key, to=(to_label if to_label is not None else [target[0], target[1]]), then=then)
         return True
 
     def walk_to(self, key: str, target, t: float, then: str = "idle", speed: Optional[float] = None) -> bool:
-        """target: a waystone letter (vote), an (x, y) in cells, or (legacy) a bare x. Sleepers never walk (honest: the
-        owner is absent). `then` names what happens on arrival (idle / pickup:<kind> / place:<kind> / any tag)."""
+        """target: a waystone letter (vote), an (x, y) in cells, or (legacy) a bare x. Seeds and hidden settlers never walk.
+        `then` names what happens on arrival (idle / pickup:<kind> / place:<kind> / any tag). A verb: the caller's person
+        is here (the scene / bridge gate on it); this call marks the activity."""
         e = self.get(key)
-        if e is None or not e.is_awake():
+        if e is None or not e.is_on_land():
             return False
         if isinstance(target, str) and target.upper() in LETTERS:
             letter = target.upper()
@@ -1035,7 +1136,7 @@ class Behaviour(object):
                 self._ev("leave_platform", pip=e.key, platform=e.platform)
                 e.platform, e.slot = None, None
             stone = self.waystones[LETTERS.index(letter)]
-            taken = {o.slot for o in self.entities.values() if o is not e and o.platform == letter and o.is_awake() and o.slot is not None}
+            taken = {o.slot for o in self.entities.values() if o is not e and o.platform == letter and o.is_on_land() and o.slot is not None}
             i = 0
             while i in taken and i < 60:
                 i += 1
@@ -1054,13 +1155,15 @@ class Behaviour(object):
         return self._start_walk(e, (tx, ty), t, then, speed=speed)
 
     def go(self, key: str, where: str, t: float) -> Tuple[bool, str]:
-        """The `go` verb (6): a place, one of 8 directions (up to 60 cells), `home` (the camp) or `@name` (that pip, or
-        its camp when asleep). Walks at 8 cells/s along the coarse route; the camera leads it; wear follows."""
+        """The `go` verb (6): a place, one of 8 directions (up to 60 cells), `home` (the camp door) or `@name` (that
+        settler, wherever the land took it). Walks at 8 cells/s along the coarse route; the camera leads it; wear follows."""
         e = self.get(key)
         if e is None:
             return False, "no pip called @%s here" % (key or "?")
-        if not e.is_awake():
-            return False, "your pip is not awake yet"
+        if e.state in ("seed", "hatching"):
+            return False, "your settler is still arriving"
+        if not e.is_on_land():
+            return False, "no pip called @%s here" % (key or "?")
         w = (where or "").strip().lower().lstrip("!")
         if w.startswith("the "):
             w = w[4:]
@@ -1072,7 +1175,7 @@ class Behaviour(object):
                 return False, "no pip called %s here" % w
             if o is e:
                 return False, "you are already there"
-            if o.is_awake():
+            if o.is_on_land():
                 dx, dy = e.x - o.x, e.y - o.y
                 d = math.hypot(dx, dy) or 1.0
                 tx, ty = o.x + dx / d * 6.0, o.y + dy / d * 6.0
@@ -1083,7 +1186,7 @@ class Behaviour(object):
             label = w
         elif w in ("home", "camp"):
             if not e.camp:
-                return False, "you have no camp yet · sleep once, or type camp"
+                return False, "you have no camp yet · type camp"
             tx, ty = float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0
             label = "home"
         elif w in DIRECTIONS:
@@ -1118,12 +1221,32 @@ class Behaviour(object):
 
     def fetch(self, key: str, pick: Vec, place: Vec, t: float, kind: str = "stone") -> bool:
         """`stack` (6): walk to `pick`, carry a `kind` (event pickup), walk to `place`, set it down (event place; the
-        scene then calls land.stack for a stone). Sleepers never fetch."""
+        scene then calls land.stack for a stone). Seeds and hidden settlers never fetch."""
         e = self.get(key)
-        if e is None or not e.is_awake() or kind not in ("stone", "berry", "tool"):
+        if e is None or not e.is_on_land() or kind not in ("stone", "berry", "tool"):
             return False
         then = "pickup:%s:%d:%d" % (kind, int(round(place[0])), int(round(place[1])))   # the place target rides in `then`
         return self._start_walk(e, (float(pick[0]), float(pick[1])), t, then, speed=GO_SPEED, to_label=[pick[0], pick[1]])
+
+    def gather_to(self, key: str, target, t: float) -> bool:
+        """A gathering card (AGES 1.3: `the gathering card and an age build` move away bodies like rain, and neither writes
+        a record): the land walks this settler, here or away, toward `target` (cells) at errand speed with then=`gather`.
+        NOT a verb: no record, `last_active_t` untouched, no wear unless the person is here (the walk's own rule), and a
+        standing voter keeps its stone (a vote is the person's). Seeds and hidden settlers never walk."""
+        e = self.get(key)
+        if e is None or not e.is_on_land():
+            return False
+        if e.state == "voting" or (e.state == "walking" and e.then == "vote"):
+            return False
+        if e.state == "sitting":
+            e.state = "idle"
+        h = name_hash(e.key, ":gather")
+        ang = (h % 3600) / 3600.0 * 2.0 * math.pi
+        rad = 6.0 + ((h >> 16) % 1000) / 1000.0 * 10.0
+        tx, ty = float(target[0]) + rad * math.cos(ang), float(target[1]) + rad * math.sin(ang) * 0.7
+        tgt = self.ground.nearest(*LAND.clamp_cell(tx, ty), 12)
+        spd = self._u(ERRAND_SPEED[0], ERRAND_SPEED[1]) * e.tempo
+        return self._start_walk(e, tgt, t, "gather", speed=spd)
 
     def release_votes(self, t: float) -> None:
         """A new round opened: everyone standing at a waystone steps off and wanders."""
@@ -1132,7 +1255,7 @@ class Behaviour(object):
                 had = e.platform
                 e.platform, e.slot = None, None
                 if e.state == "voting":
-                    e.state = "awake"
+                    e.state = "idle"
                     e.pause_until = t + self._u(0.2, 1.5)
                     self._ev("leave_platform", pip=e.key, platform=had)
                 elif e.state == "walking" and e.then == "vote":
@@ -1142,7 +1265,9 @@ class Behaviour(object):
         if self.credits_active:
             return
         self.credits_active = True
-        self._credits_queue = [e.key for e in sorted(self.awake(), key=lambda e: e.x)]
+        for e in self.entities.values():
+            e.credits_done = False
+        self._credits_queue = [e.key for e in sorted(self.on_land(), key=lambda e: e.x)]
         self._credits_next_t = t
         self._ev("credits_start", count=len(self._credits_queue))
 
@@ -1150,7 +1275,7 @@ class Behaviour(object):
         e = self.get(key)
         if e is not None and int(tier) != e.tier:
             e.tier = int(tier)
-            if e.is_awake():
+            if e.is_on_land():
                 e.joy_until = t + JOY_S
             self._ev("tier_up", pip=e.key, tier=e.tier)
 
@@ -1160,13 +1285,18 @@ class Behaviour(object):
             dt = 1.0 / 30.0 if self._last_t is None else max(0.0, min(0.5, t - self._last_t))
         self._last_t = t
         for e in list(self.entities.values()):
+            st = LEGACY_STATES.get(e.state)
+            if st is not None:
+                e.state = st                                       # the cave's names, mapped on the way in (one release)
             st = e.state
+            e.present_s = self.present_s
+            e.present = st in ON_LAND and (t - e.last_active_t) <= self.present_s
             if st == "seed" or st == "hatching":
                 self._tick_seed(e, t)
-            elif st in ("asleep", "burrowed"):
-                self._tick_sleeper(e, t)
+            elif st in HIDDEN_STATES:
+                e.vx = e.vy = 0.0                                  # lies in the grass until a mod lets the person back
             else:
-                self._tick_awake(e, t, dt)
+                self._tick_body(e, t, dt)
         if self.credits_active:
             self._tick_credits(t)
         out, self.events = self.events, []
@@ -1198,11 +1328,13 @@ class Behaviour(object):
     def _hatch(self, e: Entity, t: float) -> None:
         e.x, e.y = e.seed_to if not e.seed_landed else (e.x, e.y)
         e.seed_landed = True
-        e.state = "awake"
+        e.state = "idle"
         e.hatch_t = t
         e.born_t = t
         e.last_active_t = t
         e.last_attention_t = t
+        e.present = True
+        e.present_s = self.present_s
         e.spoke_t = t
         e.pause_until = t + self._u(1.0, 2.5)
         e.next_blink_t = t + self._u(BLINK_MIN, BLINK_MAX)
@@ -1210,167 +1342,159 @@ class Behaviour(object):
         e.next_mutter_t = t + self._u(*MUTTER_FIRST)
         e.fx, e.fy = 0, 1
         first_light = not self.first_light_done and (self.first_light_pending == e.key or
-                                                     (self.first_light_pending is None and self.awake_count() == 1))
+                                                     (self.first_light_pending is None and self.present_count() == 1))
         self._ev("hatch", pip=e.key, display_name=e.display_name, first_ever=e.first_ever, x=e.x, y=e.y,
-                 only_light=(self.awake_count() == 1))
+                 only_light=(self.present_count() == 1))
         if first_light:
             self.first_light_done = True
             self.first_light_pending = None
             self._ev("first_light", pip=e.key)
         for o in self.entities.values():
-            if o is not e and o.is_awake() and o.state != "walking" and math.hypot(e.x - o.x, e.y - o.y) <= LOOK_CELLS:
+            if o is not e and o.is_on_land() and o.state != "walking" and math.hypot(e.x - o.x, e.y - o.y) <= LOOK_CELLS:
                 self._face(o, e.x - o.x, e.y - o.y)
                 o.look_key, o.look_until = e.key, t + LOOK_S
 
-    def _tick_sleeper(self, e: Entity, t: float) -> None:
-        if t >= e.twitch_t:
-            e.twitch_until = t + TWITCH_LEN
-            e.twitch_t = t + self._u(TWITCH_MIN, TWITCH_MAX)
-
-    def _tick_awake(self, e: Entity, t: float, dt: float) -> None:
-        e.minutes_tonight += dt / 60.0
+    def _tick_body(self, e: Entity, t: float, dt: float) -> None:
+        """Every hatched, unhidden settler, here or away (AGES 1.1 / 1.3): blink, the glow's slow dim, the berry, the mutter
+        (here only), then the walk / the stand at a stone (here only) / the sit / the next errand. Nobody lies down and
+        nothing here reads the quiet as a reason to go home."""
+        if e.present:
+            e.minutes_tonight += dt / 60.0
         if t >= e.next_blink_t:                                   # blink every 4-7 s
             e.blink_until = t + BLINK_LEN
             e.next_blink_t = t + self._u(BLINK_MIN, BLINK_MAX)
             self._ev("blink", pip=e.key)
-        if t - e.last_attention_t > ATTENTION_S:                  # cosmetic dim: -0.01 per unattended minute
-            e.energy = max(0.0, e.energy - DECAY_PER_MIN * dt / 60.0)
-        if e.state == "awake" and e.energy < CURL_FLOOR:
-            e.state = "curled"
-            e.vx = e.vy = 0.0
-            self._ev("curl", pip=e.key)
+        if t - e.last_attention_t > ATTENTION_S:                  # cosmetic dim (the glow strength): -0.01 per unattended minute
+            e.energy = max(CURL_FLOOR, e.energy - DECAY_PER_MIN * dt / 60.0)
         if e.carry == "berry" and t >= e.carry_until:              # the berry is eaten
             self.drop(e.key, t)
-        # 20 min of silence -> walk home and sleep (a voter leaves the stone: a sleeper cannot vote). A walk in progress
-        # finishes first (a wander leg is <= ~8 s: 8-40 cells at 5-10 cells/s); the honesty presence rule allows that leg.
-        if not self.credits_active and e.state != "walking" and t - e.last_active_t >= self.sleep_after_s and e.then != "sleep":
-            self._go_home(e, t, reason="quiet")
-        if e.is_awake() and e.state != "walking" and t >= e.speak_until and t >= e.next_mutter_t and not self.credits_active:
+        if e.state == "voting" and not e.present:
+            # a vote is the person's (AGES 4.2 agency): the body of an away person steps off the stone at once
+            self._ev("leave_platform", pip=e.key, platform=e.platform)
+            e.platform, e.slot = None, None
+            e.state = "idle"
+            e.pause_until = t + self._u(0.5, 2.0)
+        if e.present and e.state in ("idle", "sitting") and t >= e.speak_until and t >= e.next_mutter_t and not self.credits_active:
             e.next_mutter_t = t + self._u(*MUTTER_GAP)
             self._ev("mutter_due", pip=e.key)            # the scene answers with one of the owner's OWN allowlisted words
         if e.state == "walking":
             self._move(e, t, dt)
         elif e.state == "voting":
             e.vx = e.vy = 0.0
-        elif e.state == "awake" and t >= e.pause_until:
-            self._pick_wander(e, t)
+        elif e.state == "sitting":
+            e.vx = e.vy = 0.0
+            if t >= e.sit_until:
+                e.state = "idle"
+                e.pause_until = t + self._u(0.5, 2.5)
+        elif e.state == "idle" and t >= e.pause_until and not (self.credits_active and e.credits_done):
+            self._pick_idle(e, t)
 
-    def _go_home(self, e: Entity, t: float, reason: str) -> None:
-        """Walk to the camp and lie down; a pip without a camp chooses one where it stands (5.3), or, if the land
-        refuses that spot (green / water / another's camp), at its hashed Steading-ring spot."""
-        then = "sleep" if reason == "quiet" else "credits"
-        if e.camp:
-            tgt: Vec = (float(e.camp[0]), float(e.camp[1]))
-        else:
-            tgt = self._camp_spot(e)
-        if math.hypot(tgt[0] - e.x, tgt[1] - e.y) <= ARRIVE_R + 0.5:
-            if self.ground.ok(*tgt):
-                e.x, e.y = tgt                                    # lies down on the chosen cell (<= 1 cell, no wear)
-            e.then = then
-            self._fall_asleep(e, t)
-            return
-        if not self._start_walk(e, tgt, t, then, to_label="camp"):
-            e.then = then
-            self._fall_asleep(e, t)                        # no way home: lie down here (never teleport)
-
-    def _camp_spot(self, e: Entity) -> Vec:
-        """Where a camp-less pip lies down for its first sleep (5.3): the nearest cell within 6 of where it stands that
-        the land accepts (not water, not the green, not another's camp, not a trail: the cell it just stepped on is
-        already pressed grass, so the bedroll goes one cell beside its own footsteps), else its hashed Steading-ring
-        spot. Without a Land (harness) it lies where it stands."""
-        land = self.land
-        if land is None or e.origin != "chat":
-            return e.pos()
-        cx, cy = e.cell()
-        try:
-            for r in range(0, 7):
-                cands = []
-                for dx in range(-r, r + 1):
-                    for dy in range(-r, r + 1):
-                        if max(abs(dx), abs(dy)) == r:
-                            cands.append((cx + dx, cy + dy))
-                cands.sort(key=lambda c: (-(abs(c[0] - cx) == abs(c[1] - cy)), abs(c[0] - cx) + abs(c[1] - cy)))   # diagonals first (no spill)
-                for (x, y) in cands:
-                    if self.ground.ok(x + 0.5, y + 0.5) and land.camp_allowed(e.key, x, y)[0]:
-                        return (float(x) + 0.5, float(y) + 0.5)
-            taken = [(c["x"], c["y"]) for c in land.camps() if c.get("x") is not None]
-            hx, hy = LAND.hashed_camp_spot(e.key, self.ground.moot, taken, self.ground.passable, self.ground.water)
-            return (float(hx) + 0.5, float(hy) + 0.5)
-        except Exception:
-            return e.pos()
-
-    def _fall_asleep(self, e: Entity, t: float) -> None:
-        act = e.then or "sleep"
+    def _stand_at_camp(self, e: Entity, t: float) -> None:
+        """Credits (stop.sh --credits): the settler walks home and STANDS at the door with its name and minutes (AGES 1.1).
+        Without a camp it stands where it is. Nobody lies down, no camp is pitched."""
         if e.state == "voting":
             self._ev("leave_platform", pip=e.key, platform=e.platform)
-        e.platform, e.slot = None, None
-        e.route, e.target, e.then = [], None, None
-        e.vx = e.vy = 0.0
-        e.carry = None
-        new_camp = e.camp is None
-        if new_camp:
-            e.camp = e.cell()
-        land = self.land
-        if land is not None and e.origin == "chat" and self.session_id:
-            try:                                                   # the land settles the spot (5.3 rules) and records the night
-                ws = getattr(land, "ws", None)
-                c = ws.ensure_camp(e.key, t, self.session_id, e.camp[0], e.camp[1]) if ws is not None else None
-                if isinstance(c, dict) and c.get("x") is not None:
-                    e.camp = (int(c["x"]), int(c["y"]))
-            except Exception:
-                pass
-        if new_camp:
-            self._ev("camp_new", pip=e.key, x=e.camp[0], y=e.camp[1])
-        e.x, e.y = float(e.camp[0]) + 0.5, float(e.camp[1]) + 0.5   # lies on the camp cell (a lie-down, never a teleport)
-        e.state = "asleep"
-        e.sleep_t = t
-        e.twitch_t = t + self._u(TWITCH_MIN, TWITCH_MAX)
-        if act == "credits":
-            e.credits_done = True
-            self._ev("credits", pip=e.key, minutes_tonight=round(e.minutes_tonight, 1), camp=list(e.camp))
+            e.platform, e.slot = None, None
+        if e.state == "sitting":
+            e.state = "idle"
+        if e.camp:
+            tgt: Vec = (float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0)
         else:
-            self._ev("sleep", pip=e.key, camp=list(e.camp), new_camp=new_camp, x=e.x, y=e.y, burrow=None,
-                     quiet_s=int(t - e.last_active_t))
+            tgt = e.pos()
+        if math.hypot(tgt[0] - e.x, tgt[1] - e.y) <= ARRIVE_R + 0.5 or not self._start_walk(e, tgt, t, "credits", speed=GO_SPEED):
+            e.route, e.target, e.then = [], None, "credits"
+            self._arrive(e, t)                                     # already there / no way home: the credits land where it stands
 
-    def _pick_wander(self, e: Entity, t: float) -> None:
-        """Idle wander in 2D: +/- 40 cells, 30 % biased toward the Moot, never targeting farther than 200 cells from
-        it; colony rules huddle / scatter / follow as in the cave. A pause turns to face the wind now and then."""
+    def _nearest_bank(self, x: float, y: float, r: int = WATER_MAX_CELLS) -> Optional[Vec]:
+        """The passable cell beside the nearest water cell within `r` of (x, y), or None (flat harness / no water near)."""
+        W = self.ground.water
+        if W is None:
+            return None
+        xi, yi = int(x), int(y)
+        x0, x1 = max(0, xi - r), min(self.ground.w, xi + r + 1)
+        y0, y1 = max(0, yi - r), min(self.ground.h, yi + r + 1)
+        ys, xs = np.nonzero(W[y0:y1, x0:x1])
+        if len(xs) == 0:
+            return None
+        dd = (xs + x0 - x) ** 2 + (ys + y0 - y) ** 2
+        k = int(np.argmin(dd))
+        if dd[k] > r * r:
+            return None
+        wx, wy = float(xs[k] + x0), float(ys[k] + y0)
+        d = math.hypot(wx - x, wy - y) or 1.0
+        bank = self.ground.nearest(wx - (wx - x) / d * 1.5, wy - (wy - y) / d * 1.5, 8)   # one step back toward the settler
+        return bank if self.ground.ok(*bank) else None
+
+    def _pick_idle(self, e: Entity, t: float) -> None:
+        """The land moves the settler (AGES 1.3, the minimal table): once per dwell end, here or away alike, draw an errand
+        by the day / night weights (never the same twice running, +/-30 % per name), walk at 4-6 cells/s x tempo and
+        dwell on arrival (`_arrive`). The errand is the land's, not the person's: `then` is `errand:<name>` (or `sit`),
+        `last_active_t` is untouched, no wear unless the person is here. `huddle` (rounds) aims every errand at the Moot."""
+        n = self._night()
         mx, my = self.ground.moot
-        r = self.rng.random()
+        opts: List[Tuple[str, float]] = []
+        for name in ERRANDS:
+            if name == e.errand or (name == "home" and not e.camp) or (name == "water" and self.ground.water is None):
+                continue
+            d, nt = ERRAND_WEIGHTS[name]
+            w = (d * (1.0 - n) + nt * n) * (0.7 + 0.6 * (((name_hash(e.key, ":w:" + name) >> 8) % 1000) / 1000.0))
+            if w > 0:
+                opts.append((name, w))
+        if not opts:
+            opts = [("stroll", 1.0)]
+        r = self.rng.random() * sum(w for _, w in opts)
+        pick = opts[-1][0]
+        for name, w in opts:
+            r -= w
+            if r <= 0:
+                pick = name
+                break
+        then = "errand:" + pick
         if self.colony_rule == "huddle":
             tx, ty = mx + self._u(-20, 20), my + self._u(-14, 14)
-        elif self.colony_rule == "scatter":
-            ang, rad = self._u(0, 2 * math.pi), self._u(20, IDLE_RADIUS)
-            tx, ty = mx + rad * math.cos(ang), my + rad * math.sin(ang)
-        elif (self.colony_rule == "follow" or r < 0.25) and self.newest_speaker and self.newest_speaker != e.key \
-                and self.newest_speaker in self.entities and self.entities[self.newest_speaker].is_awake():
-            s = self.entities[self.newest_speaker]
-            tx, ty = s.x + self._u(-14, 14), s.y + self._u(-10, 10)
-        elif r < 0.25 + MOOT_GRAVITY:
-            f = self._u(0.2, 0.6)
-            tx, ty = e.x + (mx - e.x) * f + self._u(-8, 8), e.y + (my - e.y) * f + self._u(-6, 6)
-        else:
-            ang, rad = self._u(0, 2 * math.pi), self._u(8, WANDER_STEP)
-            tx, ty = e.x + rad * math.cos(ang), e.y + rad * math.sin(ang) * 0.7
+        elif pick == "home":
+            tx, ty = float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0                          # the door, as `go home`
+        elif pick == "moot":
+            ang, rad = self._u(0, 2 * math.pi), self._u(MOOT_RING[0], MOOT_RING[1])
+            tx, ty = mx + rad * math.cos(ang), my + rad * math.sin(ang) * 0.7
+            for sx, sy in self.waystones:                                                     # never a standing slot
+                if math.hypot(tx - sx, ty - (sy + STAND_Y0 + STAND_DY)) < 6.0:
+                    ty += 8.0
+        elif pick == "water":
+            bank = self._nearest_bank(e.x, e.y)
+            if bank is None:
+                e.errand = pick                                                               # not retried at once
+                e.pause_until = t + self._u(1.0, 3.0)
+                return
+            tx, ty = bank
+            if self.rng.random() < 0.5:
+                then = "sit"
+        else:                                                                                 # stroll: the old hop
+            if self.rng.random() < MOOT_GRAVITY:
+                f = self._u(0.2, 0.6)
+                tx, ty = e.x + (mx - e.x) * f + self._u(-8, 8), e.y + (my - e.y) * f + self._u(-6, 6)
+            else:
+                ang, rad = self._u(0, 2 * math.pi), self._u(8, WANDER_STEP)
+                tx, ty = e.x + rad * math.cos(ang), e.y + rad * math.sin(ang) * 0.7
         d = math.hypot(tx - mx, ty - my)
         if d > IDLE_RADIUS:                                         # 4.4 gravity cap: life stays findable
             tx, ty = mx + (tx - mx) * IDLE_RADIUS / d, my + (ty - my) * IDLE_RADIUS / d
         tx, ty = LAND.clamp_cell(tx, ty)
         tgt = self.ground.nearest(tx, ty, 12)
+        e.errand = pick
         if math.hypot(tgt[0] - e.x, tgt[1] - e.y) < 2.0 or not self.ground.ok(*tgt):
-            e.pause_until = t + self._u(1.0, 3.0)
+            e.pause_until = t + self._u(1.0, 3.0) * e.tempo
             if self.rng.random() < FACE_WIND_P:
                 wx, wy = self.wind_vector()
                 self._face(e, -wx, -wy)
             return
-        if not self._start_walk(e, tgt, t, "idle"):
+        spd = self._u(ERRAND_SPEED[0], ERRAND_SPEED[1]) * e.tempo
+        if not self._start_walk(e, tgt, t, then, speed=spd):
             e.pause_until = t + self._u(1.0, 3.0)
-            return
-        e.last_active_t = e.last_active_t                           # a wander is not activity (the sleep timer keeps counting)
 
     def _move(self, e: Entity, t: float, dt: float) -> None:
         if e.target is None or not e.route:
-            e.state = "awake"
+            e.state = "idle"
             e.vx = e.vy = 0.0
             return
         g = self.ground
@@ -1443,14 +1567,15 @@ class Behaviour(object):
             self._wear(e, x, y)
 
     def _wear(self, e: Entity, x: float, y: float) -> None:
-        """A real pip entered a new cell: +8 wear there through land.step() (the ONLY writer of wear, 12)."""
+        """A real, PRESENT pip entered a new cell: +8 wear there through land.step() (the ONLY writer of wear, 12). An away
+        settler is moved by the land and wears no trail (AGES 1.3 / 4.2: zero wear while zero settlers are here)."""
         cell = (int(math.floor(x)), int(math.floor(y)))
         if cell == e.last_cell:
             return
         e.last_cell = cell
         e.cells_walked += 1
-        if e.then in ("sleep", "credits") and e.target is not None and cell == (int(math.floor(e.target[0])), int(math.floor(e.target[1]))):
-            return                                                 # the bedroll's cell stays unpressed (camp_allowed refuses a trail)
+        if not e.is_present():
+            return
         if self.land is not None and e.origin == "chat":
             try:
                 self.land.step(e.key, cell[0], cell[1])
@@ -1510,9 +1635,21 @@ class Behaviour(object):
             self._face(e, stone[0] - e.x, stone[1] - e.y)
             self._ev("arrive", pip=e.key, at=e.platform)
             return
-        if act in ("sleep", "credits"):
-            e.then = act
-            self._fall_asleep(e, t)
+        if act == "credits":
+            e.platform, e.slot = None, None
+            e.state = "idle"
+            e.credits_done = True
+            e.fx, e.fy = 0, 1                                      # stands at the door, facing out, with name + minutes
+            e.pause_until = t + self._u(1.0, 4.0)
+            self._ev("credits", pip=e.key, minutes_tonight=round(e.minutes_tonight, 1),
+                     camp=list(e.camp) if e.camp else None, x=e.x, y=e.y)
+            return
+        if act == "sit" and not gave_up:
+            e.platform, e.slot = None, None
+            e.state = "sitting"                                    # sticky 20-90 s x tempo; a message or a round event ends it
+            e.sit_until = t + self._u(*SIT_DWELL) * e.tempo
+            self._ev("arrive", pip=e.key, at=act, x=e.x, y=e.y, gave_up=gave_up, short=e.short)
+            e.short = False
             return
         if act.startswith("pickup:") and not gave_up:
             parts = act.split(":")
@@ -1521,11 +1658,11 @@ class Behaviour(object):
             self._ev("pickup", pip=e.key, kind=kind, x=e.x, y=e.y)
             if len(parts) >= 4:
                 px, py = float(parts[2]), float(parts[3])
-                e.state = "awake"
+                e.state = "idle"
                 e.pause_until = t + 0.4
                 if self._start_walk(e, (px, py), t, "place:%s" % kind, speed=GO_SPEED, to_label=[px, py]):
                     return
-            e.state = "awake"
+            e.state = "idle"
             e.pause_until = t + self._u(1.0, 3.0)
             return
         if act.startswith("place:") and not gave_up:
@@ -1535,12 +1672,22 @@ class Behaviour(object):
             e.hop_t = t
             self._ev("place", pip=e.key, kind=kind, x=e.x, y=e.y)
         e.platform, e.slot = None, None
-        e.state = "awake"
-        e.pause_until = t + self._u(1.0, 4.0)
-        if not act.startswith("place:") and self.newest_speaker and self.newest_speaker in self.entities and self.newest_speaker != e.key:
+        e.state = "idle"
+        if act.startswith("errand:") or act == "gather":
+            name = act.split(":", 1)[1] if ":" in act else "moot"      # a gathering ends like the Moot errand: stand and look
+            lo, hi = ERRAND_DWELL.get(name, (1.0, 3.0))
+            e.pause_until = t + self._u(lo, hi) * e.tempo          # the dwell: stand / look, then the next errand
+            if name == "home":
+                e.fx, e.fy = 0, 1                                  # stands at the door facing out
+            elif name == "moot":
+                mx, my = self.ground.moot
+                self._face(e, mx - e.x, my - e.y)                  # looks at the monument / board / beacon
+        else:
+            e.pause_until = t + self._u(1.0, 4.0)
+        if not act.startswith(("place:", "errand:", "gather")) and self.newest_speaker and self.newest_speaker in self.entities and self.newest_speaker != e.key:
             s = self.entities[self.newest_speaker]
             if math.hypot(s.x - e.x, s.y - e.y) <= LOOK_CELLS:
-                self._face(e, s.x - e.x, s.y - e.y)
+                self._face(e, s.x - e.x, s.y - e.y)                # a look (reaction), never a walk target
         self._ev("arrive", pip=e.key, at=act, x=e.x, y=e.y, gave_up=gave_up, short=e.short)
         e.short = False
 
@@ -1550,11 +1697,11 @@ class Behaviour(object):
         while self._credits_queue:
             k = self._credits_queue.pop(0)
             e = self.entities.get(k)
-            if e is not None and e.is_awake() and e.then != "credits":
-                self._go_home(e, t, reason="credits")
+            if e is not None and e.is_on_land() and not e.credits_done and e.then != "credits":
+                self._stand_at_camp(e, t)
                 self._credits_next_t = t + CREDITS_GAP_S
                 return
-        if not any(e.is_awake() for e in self.entities.values()):
+        if not any(e.is_on_land() and not e.credits_done for e in self.entities.values()):
             self.credits_active = False
             self._ev("credits_end")
 
@@ -1564,7 +1711,8 @@ class Behaviour(object):
         return sum(1 for e in self.entities.values() if e.state not in ("seed", "hatching") and not self.ground.ok(e.x, e.y))
 
     def stats(self) -> Dict[str, Any]:
-        return {"entities": len(self.entities), "awake": self.awake_count(), "asleep": self.asleep_count(),
+        return {"entities": len(self.entities), "present": self.present_count(), "on_land": len(self.on_land()),
+                "awake": self.present_count(),
                 "seeds": len(self.seeds()), "routes": self.stats_routes, "local_paths": self.stats_local, "stuck": self.stats_stuck,
                 "in_water": self.in_water_count(), "voting": sum(len(v) for v in self.platform_counts().values())}
 
@@ -1619,7 +1767,7 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
           and hatch_t is not None and 3.9 <= hatch_t - now <= 4.2, "land %.2f hatch %.2f" % (landed_t - now, hatch_t - now))
     check("first_light credited to the tuft's hatch", "first_light" in evs and evs.index("first_light") == evs.index("hatch") + 1)
     e = b.get("newcomer_one")
-    check("hatched pip stands on the landing spot, passable", T.is_passable(e.x, e.y) and e.state in ("awake", "walking"))
+    check("hatched pip stands on the landing spot, passable, here", T.is_passable(e.x, e.y) and e.is_on_land() and e.is_present(t))
     # grace: a sheet that never comes still hatches at hold + 4 s
     b2 = Behaviour(seed=8, hold_s=3.0, terrain=T, moot=moot, sheet_ready=lambda k: False)
     b2.seed_drop("slow_sheet", now)
@@ -1684,25 +1832,46 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
     b.release_votes(t)
     check("release_votes empties the tally", sum(len(v) for v in b.platform_counts().values()) == 0)
 
-    # ---- 4. sleep after quiet -> camp where it stood (camp_new), wake by message stands up at the camp
+    # ---- 4. 2 min quiet (AGES 1.1 / 8): nobody lies down. The settler stays on the land standing or erranding, present
+    #         False, wear delta 0 (no land here: the wear gate is section 7); a message is a `return`, not a wake
     ev_types = []
+    states = set()
+    errand_walks = 0
+    walk_thens = []
     for i in range(int(75 * FPS)):
         t += DT
         for ev in b.tick(t, DT):
             if ev.get("pip") == "voter_c":
-                ev_types.append(ev)
-    slept = [ev for ev in ev_types if ev["type"] == "sleep"]
+                ev_types.append(ev["type"])
+                if ev["type"] == "walk":
+                    walk_thens.append(str(ev.get("then") or ""))
+                    if walk_thens[-1].startswith(("errand:", "sit")):
+                        errand_walks += 1
+        states.add(b.get("voter_c").state)
     e = b.get("voter_c")
-    check("quiet 60 s -> sleep with a new camp where it stood", bool(slept) and slept[0]["new_camp"] and e.state == "asleep" and e.camp is not None
-          and e.cell() == e.camp, "%r" % (slept[:1],))
+    check("quiet 60 s: voter_c stays on the land (states %s), present False, no sleep / wake / curl event, never the lying pose" % sorted(states),
+          e.is_on_land() and not e.is_present(t) and states <= set(ON_LAND) and not ({"sleep", "wake", "curl", "camp_new"} & set(ev_types))
+          and e.frame_name(t) != "sleep" and e.platform is None and e.camp is None, "events %r" % sorted(set(ev_types)))
+    check("the land moved it: >= 1 errand walk (then errand:* / sit), no verb-tagged walk while away", errand_walks >= 1
+          and all(w.startswith(("errand:", "sit")) for w in walk_thens), "%d errand walks, thens %r" % (errand_walks, sorted(set(walk_thens))))
+    check("everyone quiet -> present_count 0, all still on the land", b.present_count() == 0 and len(b.on_land()) == 5 and b.asleep_count() == 0,
+          "present %d on_land %d" % (b.present_count(), len(b.on_land())))
     b.message("voter_c", t)
-    woke = [ev for ev in b.tick(t + DT, DT) if ev["type"] == "wake"]
-    check("message wakes the sleeper at its camp", woke and woke[0]["camp"] == list(e.camp) and e.is_awake())
+    ret = [ev for ev in b.tick(t + DT, DT) if ev["type"] == "return"]
+    e = b.get("voter_c")
+    check("a message after > present_s is a `return` (away_s >= 60), the settler is here, hops, keeps its place",
+          len(ret) == 1 and ret[0]["pip"] == "voter_c" and (ret[0]["away_s"] or 0) >= 60 and e.is_present(t + DT) and e.hop_phase(t + DT) >= 0
+          and b.present_count() == 1, "%r" % (ret[:1],))
     ok, why = b.go("voter_c", "home", t + 1)
-    check("go home accepted once a camp exists", ok, why)
+    check("go home still refused without a camp (nobody slept one into being)", not ok and "camp" in why, why)
+    b.set_camp("voter_c", int(e.x) + 6, int(e.y) + 4)
+    ok, why = b.go("voter_c", "home", t + 1)
+    check("go home accepted once the land recorded a camp", ok, why)
+    rets = []
     for k in ("voter_a", "voter_b", "voter_d", "newcomer_one"):
-        b.message(k, t)                               # their owners chat again: they stand up at their camps
-    b.tick(t + DT, DT)
+        b.message(k, t + 1)                           # their owners chat again: each is a return where it stands
+    rets = [ev for ev in b.tick(t + 1 + DT, DT) if ev["type"] == "return"]
+    check("four more returns, no wake event, present_count 5", len(rets) == 4 and b.present_count() == 5, "%d returns" % len(rets))
     ok, why = b.go("voter_a", "@voter_c", t + 1)
     check("go @name accepted", ok, why)
 
@@ -1728,19 +1897,27 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
         b.tick(t, DT)
     check("berry gone after CARRY_S", b.get("voter_a").carry is None)
 
-    # ---- 6. credits: everyone walks home one by one, minutes tonight
+    # ---- 6. credits: everyone walks home one by one and STANDS at the door (or where it is) with its minutes; nobody lies down
     for k in ("voter_a", "voter_b", "voter_c", "voter_d", "newcomer_one"):
         b.message(k, t)
     b.tick(t + DT, DT)
-    n_awake = b.awake_count()
+    n_land = len(b.on_land())
     b.start_credits(t)
     creds = []
+    ended = False
     for i in range(int(90 * FPS)):
         t += DT
         for ev in b.tick(t, DT):
             if ev["type"] == "credits":
                 creds.append(ev)
-    check("credits: every awake pip slept at a camp", len(creds) == n_awake >= 4 and b.awake_count() == 0 and not b.credits_active, "%d credits of %d awake" % (len(creds), n_awake))
+            elif ev["type"] == "credits_end":
+                ended = True
+    ec = b.get("voter_c")
+    check("credits: one `credits` event per settler, all still standing on the land, credits_end, no sleep event",
+          len(creds) == n_land >= 4 and ended and not b.credits_active and all(e.is_on_land() and e.frame_name(t) != "sleep" for e in b.hatched()),
+          "%d credits of %d on the land" % (len(creds), n_land))
+    check("the settler with a camp stands at its door", ec.camp is not None and math.hypot(ec.x - (ec.camp[0] + 2), ec.y - (ec.camp[1] + 3)) <= 3.0,
+          "at %r, camp %r" % ((round(ec.x), round(ec.y)), ec.camp))
 
     # ---- 7. wear honesty with a real schema-2 WorldState in RUN_DIR: only chat pips write wear, 8 per step + spill
     from stream.world.state import WorldState
@@ -1773,61 +1950,55 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
     check("wear: real pip steps == land steps, 8..16 per step; test pip wrote nothing",
           steps_total == real_cells and real_cells > 20 and 8 * steps_total <= added_total <= 16 * steps_total and test_cells > 0
           and int(ws.land.wear.sum()) == added_total, "steps %d (test walked %d) added %d" % (steps_total, test_cells, added_total))
-    # the real pip goes quiet: it camps beside its own trail and the land's record matches the entity
+    # the real pip's person goes quiet (present_s 30 s): the settler stays on the land, is moved by the land (errands), and
+    # lays NO wear while away (AGES 1.3 / 4.2: zero wear while zero settlers are here); the person's next message brings it
+    # back and its steps wear the land again
     ws.begin_session("sess-b", tw)
     bw.session_id = "sess-b"
-    bw.sleep_after_s = 30.0
-    stood = None
-    slept_ev = None
-    for i in range(int(120 * FPS)):
+    bw.present_s = 30.0
+    away_states = set()
+    away_frames = walking_away = errand_walks = 0
+    steps_away = added_away = 0
+    for i in range(int(90 * FPS)):
         tw += DT
         e = bw.get("walker_real")
-        for ev in bw.tick(tw, DT):
-            if ev["type"] == "walk" and ev["pip"] == "walker_real" and ev.get("to") == "camp":
-                stood = e.cell()                                   # where it stood when it decided to sleep
-            if ev["type"] == "sleep" and ev["pip"] == "walker_real":
-                slept_ev = ev
-                if stood is None:
-                    stood = e.cell()
-        if slept_ev:
-            break
+        evs = bw.tick(tw, DT)
+        a, s = ws.land.take_wear_added()
+        if not e.is_present(tw):
+            away_frames += 1
+            steps_away += s
+            added_away += a
+            away_states.add(e.state)
+            if e.walking():
+                walking_away += 1
+            errand_walks += sum(1 for ev in evs if ev["type"] == "walk" and ev["pip"] == "walker_real"
+                                and str(ev.get("then") or "").startswith(("errand:", "sit")))
     e = bw.get("walker_real")
-    camp = ws.pips["walker_real"].get("camp")
-    dm = math.hypot(camp["x"] - moot[0], camp["y"] - moot[1]) if camp else -1
-    on_green = stood is not None and math.hypot(stood[0] - moot[0], stood[1] - moot[1]) <= LAND.MOOT_GREEN_R + 6
-    near = camp is not None and stood is not None and math.hypot(camp["x"] - stood[0], camp["y"] - stood[1]) <= 8.0
-    ring = LAND.STEADING_RING[0] - 1 <= dm <= LAND.STEADING_RING[1] + 8
-    check("first real sleep: land camp == entity camp; beside its trail (<= 8 cells) or, from the green, in the Steading ring; unpressed cell",
-          slept_ev is not None and camp is not None and (camp["x"], camp["y"]) == e.camp and (near or (on_green and ring))
-          and ws.land.wear_at(camp["x"], camp["y"]) < 8 and camp["nights"] == ["sess-b"] and e.state == "asleep" and bw.ground.ok(e.x, e.y),
-          "stood %r (on green: %s) camp %r (%.0f from the Moot) wear %d nights %r" % (stood, on_green, ((camp or {}).get("x"), (camp or {}).get("y")), dm,
-                                                                                    ws.land.wear_at(camp["x"], camp["y"]) if camp else -1, (camp or {}).get("nights")))
-    # a second real pip off the green: camps beside its own footsteps
-    ws.ensure_pip("walker_two", "walker_two", "walker_two", 6, tw)
-    bw.seed_drop("walker_two", tw - 10)
-    bw.hold_cleared("walker_two", tw - 10, "w2", 1, 0.6, 0, True)
-    bw.tick(tw, DT)
-    bw.go("walker_two", "orchard", tw)
-    stood2 = slept2 = None
-    for i in range(int(150 * FPS)):
+    check("quiet 30 s: walker_real stays on the land (states %s), erranded (%d errand walks, %d walking frames), present False, "
+          "wear delta 0 while away (steps %d added %d), no camp pitched" % (sorted(away_states), errand_walks, walking_away, steps_away, added_away),
+          away_frames > 30 * FPS and away_states <= set(ON_LAND) and errand_walks >= 1 and walking_away > 0 and steps_away == 0 and added_away == 0
+          and not e.is_present(tw) and ws.pips["walker_real"].get("camp") is None and bw.ground.ok(e.x, e.y))
+    bw.message("walker_real", tw)
+    ret = [ev for ev in bw.tick(tw + DT, DT) if ev["type"] == "return" and ev["pip"] == "walker_real"]
+    ws.land.take_wear_added()
+    bw.go("walker_real", "orchard", tw + DT)
+    steps_back = 0
+    for i in range(int(8 * FPS)):
         tw += DT
-        e2 = bw.get("walker_two")
-        if e2.state == "awake" and e2.then is None and tw - e2.last_active_t > 20.0:
-            e2.last_active_t = tw - bw.sleep_after_s - 0.1        # goes quiet right where it arrived (not on the green)
-        for ev in bw.tick(tw, DT):
-            if ev["type"] == "walk" and ev["pip"] == "walker_two" and ev.get("to") == "camp":
-                stood2 = e2.cell()
-            if ev["type"] == "sleep" and ev["pip"] == "walker_two":
-                slept2 = ev
-        if slept2:
-            break
-    e2 = bw.get("walker_two")
-    camp2 = ws.pips["walker_two"].get("camp")
-    check("off the green: camp within 8 cells of where it stood, unpressed, land == entity",
-          slept2 is not None and camp2 is not None and (camp2["x"], camp2["y"]) == e2.camp and stood2 is not None
-          and math.hypot(camp2["x"] - stood2[0], camp2["y"] - stood2[1]) <= 8.0 and ws.land.wear_at(camp2["x"], camp2["y"]) < 8,
-          "stood %r camp %r wear %d" % (stood2, ((camp2 or {}).get("x"), (camp2 or {}).get("y")), ws.land.wear_at(camp2["x"], camp2["y"]) if camp2 else -1))
-    check("no provenance violations on the land after two real camps", ws.land.provenance_violations() == [], "%r" % ws.land.provenance_violations())
+        bw.tick(tw, DT)
+        a, s = ws.land.take_wear_added()
+        steps_back += s
+    check("a message returns the settler (event `return`, away_s >= 30) and its steps wear the land again",
+          len(ret) == 1 and (ret[0]["away_s"] or 0) >= 30 and bw.get("walker_real").is_present(tw) and steps_back > 10,
+          "return %r steps_back %d" % (ret[:1], steps_back))
+    # a camp is the land's record (ws.ensure_camp / the `camp` verb), never a lie-down: the entity follows the record
+    camp = ws.ensure_camp("walker_real", tw, "sess-b", int(e.x) + 3, int(e.y) + 3)
+    if isinstance(camp, dict):
+        bw.set_camp("walker_real", camp["x"], camp["y"])
+    check("ensure_camp records a camp for the real pip; the entity remembers it and stays standing where it is",
+          isinstance(camp, dict) and bw.get("walker_real").camp == (camp["x"], camp["y"]) and bw.get("walker_real").is_on_land()
+          and camp.get("nights") == ["sess-b"], "%r" % (camp,))
+    check("no provenance violations on the land", ws.land.provenance_violations() == [], "%r" % ws.land.provenance_violations())
     ws.save(tw, force=True)
     check("world.json flushed in RUN_DIR", os.path.exists(os.path.join(run_dir, "world.json")))
 
@@ -1893,7 +2064,28 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
     check("idle wander stays within 200 cells of the Moot", far_idle <= IDLE_RADIUS + 2, "%.0f cells" % far_idle)
     print("[frames] sample:", sorted({e.frame_name(tg) for e in bg.entities.values()}))
     check("every frame name is in the atlas set", all(e.frame_name(tg) in FRAMES for e in bg.entities.values()))
-    print("[legacy] AWAKE_STATES / WANDER_X / PLATFORM_LETTERS exported:", AWAKE_STATES, WANDER_X, PLATFORM_LETTERS)
+    print("[states] STATES / ON_LAND / HIDDEN_STATES:", STATES, ON_LAND, HIDDEN_STATES)
+    check("nobody lies down: no hatched pip ever draws the lying pose unless hidden",
+          all(e.frame_name(tg) != "sleep" for e in bg.entities.values()) and all(e.frame_name(th) != "sleep" for e in bh.entities.values()))
+    print("[legacy] AWAKE_STATES (= ON_LAND) / WANDER_X / PLATFORM_LETTERS exported:", AWAKE_STATES, WANDER_X, PLATFORM_LETTERS)
+    # --- gather_to (the bonfire / gathering card, AGES 1.3): moves an AWAY body without a record; a voter keeps its stone
+    for e in bg.entities.values():
+        e.last_active_t = tg - bg.present_s - 30.0                  # everyone away
+    bg.tick(tg, DT)
+    ga = bg.entities["test-pip-00"]
+    la0 = ga.last_active_t
+    ok_g = bg.gather_to(ga.key, moot, tg)
+    check("gather_to walks an away settler toward the Moot with then='gather' (no record: last_active_t untouched, still away)",
+          ok_g and ga.state == "walking" and ga.then == "gather" and ga.last_active_t == la0 and not ga.is_present(tg),
+          "ok=%s state=%s then=%s present=%s" % (ok_g, ga.state, ga.then, ga.is_present(tg)))
+    ev_g = bg.tick(tg + DT, DT)
+    wg = [ev for ev in ev_g if ev.get("type") == "walk" and ev.get("pip") == ga.key]
+    check("gather walk event carries then='gather' and a cell pair, never a place label",
+          len(wg) == 1 and wg[0].get("then") == "gather" and isinstance(wg[0].get("to"), list), str(wg))
+    gv = bg.entities["test-pip-01"]
+    gv.last_active_t = tg
+    bg.walk_to(gv.key, "A", tg)
+    check("gather_to refuses a voter on its way to / standing at a stone (a vote is the person's)", not bg.gather_to(gv.key, moot, tg) and gv.then == "vote", "then=%s" % gv.then)
     print("RESULT:", "PASS" if ok_all else "FAIL")
     return 0 if ok_all else 1
 

@@ -2,11 +2,10 @@
 composited LAST by the compositor (region key starts with "header") so it is drawn over every world state.
 
   header_center 0,0,880,66    THE THUMBNAIL. Headline Arial Black 56 at x 16, glyphs centred on y 33:
-                              awake == 0 -> `SAY ANYTHING` (the instruction; 484 px, wider than `NOBODY AWAKE` so it
-                              survives the 320x180 directory tile better); awake >= 1 -> `3 AWAKE` (the live count is
-                              the honest signal, and the flip SAY ANYTHING -> 1 AWAKE is the newcomer's first ack).
-                              Before the world boots / on a stale state.json: `SAY ANYTHING`, never a number, never
-                              `NOBODY AWAKE`, never `-- AWAKE`.
+                              always `SAY ANYTHING` (the instruction; 484 px, survives the 320x180 directory tile).
+                              AGES 1.1 / 4.1: being here is never shown as a word or a count, so the old `N AWAKE`
+                              headline is gone (the compositor copy check bans the word). Before the world boots / on
+                              a stale state.json: the same line, never a number.
                               Right of the headline (x = 16 + headline + 16) a two-row Menlo 22 column at y 7 / 36:
                               awake == 0: `a creature walks out` / `with your name` (text colour);
                               awake >= 1: `say anything` / `a creature walks out with your name` (text2);
@@ -128,12 +127,10 @@ class HeaderCenter(Panel):
 
     @staticmethod
     def headline(ctx) -> Tuple[str, str]:
-        """(text, colour role): `SAY ANYTHING` at 0 awake, before boot and on a stale state; `N AWAKE` once anyone is in.
-        Never a number before boot, never `NOBODY AWAKE`, never `-- AWAKE` (the tile hook, OPENWORLD 3.1 / 8)."""
-        awake, _asleep, _hatched = _world_counts()
-        if awake is None or awake <= 0:
-            return SAY, "text"
-        return "%d AWAKE" % awake, "text"
+        """(text, colour role): `SAY ANYTHING`, always. Being here is never shown as a word or a count (AGES 1.1 / 4.1;
+        the compositor copy check bans the old headline word), so the only headline is the call to action. Never a
+        number before boot (the tile hook, OPENWORLD 3.1 / 8)."""
+        return SAY, "text"
 
     @staticmethod
     def column(ctx) -> Tuple[str, str, str]:

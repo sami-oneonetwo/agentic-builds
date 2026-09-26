@@ -864,7 +864,7 @@ class Compositor(object):
         # the tile gate's per-frame facts (from panel stats, not pixels)
         try:
             sc = wm.scene()
-            awake = int(sc.awake_count()) if sc is not None else 0
+            awake = int((getattr(sc, "present_count", None) or sc.awake_count)()) if sc is not None else 0   # the HERE count
             cam = getattr(sc, "camera", None)
             mode = getattr(cam, "mode", None)
             stop = getattr(cam, "drift_stop", None) or {}
@@ -1154,7 +1154,7 @@ class Compositor(object):
         if ts["zero_frames"]:
             ok_z = ts["zero_ok"] == ts["zero_frames"]
             tile_ok = tile_ok and ok_z
-            log("tile gate: 0 awake in %d frames, a real mark / sleeper / the sign in view in %d -> %s" % (ts["zero_frames"], ts["zero_ok"], "PASS" if ok_z else "FAIL"))
+            log("tile gate: 0 present in %d frames, a real mark / an away settler / the sign in view in %d -> %s" % (ts["zero_frames"], ts["zero_ok"], "PASS" if ok_z else "FAIL"))
         if ts["moot_frames"]:
             ok_m = ts["moot_ok"] == ts["moot_frames"]
             tile_ok = tile_ok and ok_m
@@ -1189,10 +1189,10 @@ class Compositor(object):
                     bad = int(hs.get("violations") or 0) + int(sc_st.get("honesty_violations") or 0) + int(st.get("honesty_violations") or 0)
                     last = (hs.get("last") or {}).get("counts") or {}
                     log("honesty check: %s (%d frames checked, %d violation(s) %s, scene removed %d, panel unknown-name draws %d; "
-                        "entities %s awake %s asleep %s hatched %s recent chatters %s test pips %s)" % (
+                        "entities %s present %s on land %s hatched %s recent chatters %s test pips %s)" % (
                             "PASS" if bad == 0 else "FAIL", int(hs.get("frames") or 0), int(hs.get("violations") or 0),
                             json.dumps(hs.get("by_rule") or {}), int(sc_st.get("honesty_violations") or 0), int(st.get("honesty_violations") or 0),
-                            last.get("entities"), last.get("awake"), last.get("asleep"), last.get("hatched_ever"),
+                            last.get("entities"), last.get("present_real"), last.get("on_land_real"), last.get("hatched_ever"),
                             last.get("recent_chatters"), last.get("test_pips")))
                     if bad:
                         rc = 1

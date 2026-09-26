@@ -66,6 +66,7 @@ SCHEMA_V1 = 1                     # PIP HOLLOW (the cave); still read and writte
 SCHEMA = 2                        # LONGGRASS (OPENWORLD.md 5)
 IDENTITY_FIELDS = ("name", "n", "colour_idx", "genome", "born_ts")   # byte-identical across the migration (5.4)
 FLUSH_S = 5.0
+_STATE_MAP = {"asleep": "idle", "curled": "idle", "awake": "idle", "burrowed": "hidden"}   # load-time map (AGES 1.1 / 8); schema stays 2
 DIG_W = 5                         # a dig pocket is 5 wide x 3 tall sim cells (20 x 12 px on screen)
 DIG_CAP = 45                      # cells per user per session (3 full pockets)
 BAK_KEEP = 7
@@ -297,6 +298,10 @@ class WorldState(object):
             base["world"].setdefault(k, v)
         base["schema"] = sch
         base["pips"] = {str(k).lower(): v for k, v in base["pips"].items() if isinstance(v, dict) and not v.get("_test")}
+        for p in base["pips"].values():                      # AGES 1.1 / 8: nobody lies down. The cave's / the old land's state
+            st = p.get("state")                              # names are mapped on the way in (schema stays 2); never written back
+            if st in _STATE_MAP:                             # as the old name because _persist writes the entity's state each frame
+                p["state"] = _STATE_MAP[st]
         return base
 
     def _load_bak(self) -> bool:
@@ -528,6 +533,8 @@ class WorldState(object):
             self.dirty = True
 
     def presence(self, key: str, dt_s: float) -> None:
+        """minutes_present accrues for a PRESENT settler only (AGES 1.1: the caller, steading._persist, gates on
+        Entity.is_present(); an away body moved by the land earns its person nothing)."""
         p = self.pip(key)
         if p is not None and dt_s > 0:
             p["minutes_present"] = float(p.get("minutes_present") or 0.0) + dt_s / 60.0
@@ -944,7 +951,7 @@ class WorldState(object):
             p, created = self.ensure_pip(key, b.get("name") or m["name"], None, self.builder_n(key), t)
             if created:
                 out["new_pips"] += 1
-                p["state"] = "asleep"
+                p["state"] = "idle"                            # a past chatter stands on the land (AGES 8); the scene places it
                 if b.get("first_seen"):
                     p["first_seen_ts"] = b["first_seen"]
             if self.add_session(p, sid):
@@ -1250,7 +1257,7 @@ def migrate_v2_doc(old: Dict[str, Any], moot: Tuple[float, float] = LAND.DEFAULT
         else:
             q["camp"], q["home"], q["x"], q["y"] = None, None, None, None
         if q.get("state") == "voting":
-            q["state"], q["vote"] = "asleep", None
+            q["state"], q["vote"] = "idle", None
         pips2[key] = q
         report["pips"] += 1
     new["pips"] = pips2
@@ -1522,7 +1529,7 @@ def _self_test() -> bool:
     check(ws3.schema == 2 and ws3.migration_ok and len(ws3.pips) == 0, "fresh schema-2 document")
     p, created = ws3.ensure_pip("newbie", "Newbie", "Newbie", 9, now)
     check(created and "camp" in p and "burrow" not in p and p["colour"], "ensure_pip creates a v2 row")
-    p["state"] = "awake"
+    p["state"] = "idle"
     ws3.set_pos("newbie", ws3.land.moot[0] + 30, ws3.land.moot[1] + 5, facing=(0.7, -0.7))
     check(ws3.pips["newbie"]["facing"] == [1, -1], "set_pos quantises facing to 8 directions")
     camp = ws3.ensure_camp("newbie", now, "sess-1")

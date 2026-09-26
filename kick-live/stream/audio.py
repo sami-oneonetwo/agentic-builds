@@ -780,11 +780,12 @@ class AudioEngine(object):
                 started = _iso_to_epoch((getattr(ctx, "session", None) or {}).get("started_ts"))
             if land.hearth_lit(started) and cam.in_view(float(land.moot[0]), float(land.moot[1]), pad=20.0):
                 return True
-            awake = {e.key for e in scene.behaviour.awake()}
+            b = scene.behaviour
+            here = {e.key for e in (getattr(b, "present", None) or b.awake)()}   # HERE owners (AGES 1.1), never awake() = on the land
             for c in land.camps():
-                # a hut (tier >= 2) has a hearth and a window lit while its owner is awake (5.3); a hollow or a tent has
-                # a bedroll and a bell, no fire of its own
-                if c["key"] in awake and int(c.get("tier") or 0) >= 2 and c["x"] is not None and cam.in_view(float(c["x"]), float(c["y"]), pad=10.0):
+                # a hut (tier >= 2) has a hearth and a window lit while its owner is HERE (5.3 / AGES 1.2): the picture
+                # (steading._glow_sources) lights it for is_present, so the crackle follows the same test
+                if c["key"] in here and int(c.get("tier") or 0) >= 2 and c["x"] is not None and cam.in_view(float(c["x"]), float(c["y"]), pad=10.0):
                     return True
         except Exception:
             return False
@@ -1358,7 +1359,7 @@ class AudioEngine(object):
             self.stats["hatches"] += 1
         elif typ == "drip_land":
             self._plink(ev.get("x"))
-        elif typ == "wake":
+        elif typ in ("wake", "return"):                  # away -> here (AGES 1.1 `return`; `wake` is the camera shim's name)
             deg = self._pip_degree(scene, key)
             self._sting("wake%d" % deg, lambda: self._third(deg, LVL_WAKE, True))
             gifts = sum(1 for c in (ev.get("care_log") or []) if isinstance(c, dict) and c.get("verb") == "gift")
@@ -1420,9 +1421,6 @@ class AudioEngine(object):
             if len(self._events) > 200:
                 del self._events[:-200]
             self.stats["land_stings"] += 1
-        elif typ == "sleep":
-            deg = self._pip_degree(scene, key)
-            self._sting("sleep%d" % deg, lambda: self._third(deg, LVL_WAKE, False, octave=0.5, d1=0.20, d2=0.30))
         elif typ == "tier_up":
             deg = self._pip_degree(scene, key)
             self._sting("tier%d" % deg, lambda: self._third(deg, LVL_TIER, True, d1=0.14, d2=0.30))
@@ -1515,7 +1513,7 @@ class AudioEngine(object):
                             self.errors += 1
                             if self.errors % 100 == 1:
                                 self.log("world event %r failed (%r)" % (ev.get("type") if isinstance(ev, dict) else ev, e))
-            awake = int(scene.awake_count() or 0)
+            awake = int((getattr(scene, "present_count", None) or scene.awake_count)() or 0)   # voices = the HERE count
         except Exception as e:
             self.detect_errors += 1
             if self.detect_errors % 100 == 1:

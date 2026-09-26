@@ -64,7 +64,7 @@ scene = SteadingScene(run_dir=None, seed=None, log=None, sleep_after_s=1200.0, h
 | `booted` | bool | True after the first frame booted the world (the panels read nothing before that) |
 | `events` | `list[dict]` | events produced by THIS frame (§6); read after `frame()`, replaced next frame |
 | `entities(now=None) -> list[dict]` | | one per entity (§5). Seeds have `display_name: None` and `key: None`. |
-| `awake_count()`, `asleep_count()`, `hatched_ever()` | int | `len()` over real records; `awake` = state in (awake, walking, voting, curled). Test pips never count. |
+| `present_count()`, `on_land()`, `hatched_ever()` | int / list / int | `len()` over real records: `present` = the HERE settlers (owner's record within `present_s`, AGES 1.1), `on_land()` = every settler on the land (here or away; state in idle / walking / voting / sitting / hauling). `awake_count()` is a one-release alias of `present_count()`; `asleep_count()` returns 0 (nobody sleeps). Test pips never count. |
 | `platform_counts() -> {"A": [keys], "B": [...], "C": [...]}` | | who STANDS at each waystone (state `voting`); the embodied tally the rounds read (API name kept) |
 | `command(verb, actor, target=None, arg=None, now=None) -> (ok, reason)` | | §7 |
 | `verbs() -> tuple[str]` *(optional)* | | the verb words `command()` implements in THIS build. The ticker legend draws only these; when the scene has no `verbs()` it reads `stream.chat_bridge.VERBS` minus `LATER_VERBS` (the words the parser accepts and acts on), so the legend never advertises a verb that would be refused (§2.1). |
@@ -349,13 +349,13 @@ any error with one stderr line.
 - `/tmp/lg-copy-panels/test_panels.py`: the strips against a schema-2 world migrated from a copy of the live file
   (camps from migration), a chatter created through `ensure_pip`, a `_test` row that must never count, a real bake
   thread for the readout flag, `!kill`, the compressed-day line, the degrade flags, widths, font sizes, hot reload.
-- `SteadingScene(sleep_after_s=60)` shortens the 20 min sleep window for a harness; `hold_s` likewise (never on air).
+- `SteadingScene(sleep_after_s=60)` (alias of `present_s`) shortens the 20 min HERE window for a harness; `hold_s` likewise (never on air).
 - `KL_CAMERA_LOG=path` (test mode, `/tmp` run dir): the scene appends one CSV row per frame (`frame, now, mode, cx, cy,
   zoom, speed, awake, awake_in_view, awake_in_safe, seeds, seeds_in_view, awake_under_hud, hud_nudge, framed,
   framed_under_hud`) for the camera QA (integration 2026-09-26: whenever anyone is awake, at least one awake settler is
   in view and inside the safe band after a 2.5 s settle; fix pass: no framed point under a top HUD chip once settled).
-- `KL_SLEEP_AFTER_S=N` (test mode, `/tmp` run dir, 5 ≤ N < 1200): pips sleep after N s of quiet so a 60 s harness sees
-  FOLLOW -> DRIFT -> FOLLOW hand-overs; logged as a TEST HOOK; never on air.
+- `KL_SLEEP_AFTER_S=N` (test mode, `/tmp` run dir, 5 ≤ N < 1200): the here window (`present_s`) is N s so a 60 s harness sees
+  FOLLOW -> DRIFT -> FOLLOW hand-overs (nobody sleeps: quiet settlers stay on the land, erranding); logged as a TEST HOOK; never on air.
 - `KL_FORCE_ZOOM=0.75|1|1.5` (with `KL_TEST_PIPS`): pins the camera zoom for the budget gate.
 - `scene.save_now(now=None)`: forced world.json + camera flush; the compositor calls it on exit (self-test and stream)
   and the world panel calls it on the scene being replaced by a hot-reload swap. A camp / mark / sleep / hatch event

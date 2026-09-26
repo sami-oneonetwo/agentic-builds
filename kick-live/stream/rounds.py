@@ -59,12 +59,18 @@ line, never drawn: the board shows a land pick as muted amber). Ship effects lan
 (scene.command / Behaviour / Land methods, never world.json):
   weather      land.set_weather + nature.weather.set_round for the round window (the scene reads micro.weather too);
                rain also passes a RAIN_BOOST_S growth boost to every field (land.advance_fields)
-  expedition   every awake pip is sent with scene.command("go", key, arg=<place>); micro.expedition records the
-               walkers; a walker arriving within EXPEDITION_ARRIVE_CELLS of the landmark inside the round places
-               one cairn stone in its own name (land.stack) — the Migration idea as a round outcome
-  bonfire      the hearth is lit ONLY when a real person picked the card (land.light_hearth(picked_by)); every awake
-               pip walks to the Moot and is fed at once (care_received + `feed` events = the feast chord + hearts)
-  harvest day  every gold field is harvested through land.harvest (sowers credited in the text); everyone awake fed
+  expedition   every HERE settler (behaviour.present(), AGES 1.1: a verb is the person's) is sent with
+               scene.command("go", key, arg=<place>); micro.expedition records the walkers; a walker still here and
+               arriving within EXPEDITION_ARRIVE_CELLS of the landmark inside the round places one cairn stone in its
+               own name (land.stack) — the Migration idea as a round outcome. An away body is never sent and never
+               gets a stone (AGES 4.1 `never adds a stone`).
+  bonfire      the hearth is lit ONLY when a real person picked the card (land.light_hearth(picked_by)); every here
+               settler walks to the Moot (`go moot`) and is fed at once (care_received + `feed` events = the feast
+               chord + hearts); away bodies are drawn to the Moot by the land (behaviour.gather_to, AGES 1.3: the
+               gathering card moves bodies like rain and writes no record), never fed, never through a verb
+  harvest day  every gold field whose owner is HERE is harvested through land.harvest (sowers credited in the text);
+               everyone here fed; an away owner's field keeps growing (AGES 9: the cards touch records only through
+               here settlers)
   raising day  micro.raising_day == "on" for one round: RoundEngine.stones_double(micro, now) tells the stack verb
                to record two stones per stack (THE COMMONS graft)
   colony_rule  behaviour.colony_rule (unchanged semantics in 2D)
@@ -404,6 +410,28 @@ def _land_of(sc):
         w = getattr(sc, "world", None)
         land = getattr(w, "land", None) if w is not None else None
     return land if (land is not None and hasattr(land, "camps")) else None
+
+
+def _present_of(b) -> List:
+    """The HERE settlers (AGES 1.1): behaviour.present() when the build has it, else the legacy awake() (a scene duck
+    or the cave's rollback tree, where awake() was the presence set)."""
+    fn = getattr(b, "present", None) or getattr(b, "awake", None)
+    try:
+        return list(fn()) if callable(fn) else []
+    except Exception:
+        return []
+
+
+def _is_here(e, now: float) -> bool:
+    """Entity.is_present(now) (here: the person's record within present_s), falling back to is_awake() on a duck."""
+    fn = getattr(e, "is_present", None)
+    if callable(fn):
+        try:
+            return bool(fn(now))
+        except TypeError:
+            return bool(fn())
+    fa = getattr(e, "is_awake", None)
+    return bool(fa()) if callable(fa) else False
 
 
 def _places_of(sc) -> Dict[str, Dict]:
@@ -869,15 +897,12 @@ class RoundEngine(object):
         u = iso_to_epoch(micro.get("raising_day_until"))
         return u is None or now < u
 
-    def _send_awake(self, sc, verb: str, arg: str, now: float) -> Tuple[List[str], List[str]]:
-        """scene.command(verb, key, arg=...) for every awake pip; (sent keys, refusal reasons). Nothing else moves them."""
+    def _send_present(self, sc, verb: str, arg: str, now: float) -> Tuple[List[str], List[str]]:
+        """scene.command(verb, key, arg=...) for every HERE settler (behaviour.present(), never awake() = on the land incl.
+        away); (sent keys, refusal reasons). A verb is the person's (AGES 1.1); nothing else moves a here body."""
         sent: List[str] = []
         reasons: List[str] = []
-        try:
-            awake = list(sc.behaviour.awake())
-        except Exception:
-            awake = []
-        for e in awake:
+        for e in _present_of(sc.behaviour):
             key = getattr(e, "key", None)
             if not key:
                 continue
@@ -891,14 +916,41 @@ class RoundEngine(object):
                 reasons.append(str(why))
         return sent, reasons
 
+    _send_awake = _send_present                                   # legacy name (one release)
+
+    def _gather_away(self, sc, now: float) -> int:
+        """The gathering card (AGES 1.3): every AWAY body on the land is drawn to the Moot by the land itself through
+        Behaviour.gather_to (then=`gather`: no record, no wear, no verb); returns how many set off. A scene without
+        gather_to (a duck, the cave) gathers nobody who is away."""
+        b = sc.behaviour
+        gather = getattr(b, "gather_to", None)
+        land = _land_of(sc)
+        if not callable(gather) or land is None or not getattr(land, "moot", None):
+            return 0
+        try:
+            on_land = list(b.awake())
+        except Exception:
+            return 0
+        n = 0
+        for e in on_land:
+            if _is_here(e, now):
+                continue
+            try:
+                if gather(e.key, (float(land.moot[0]), float(land.moot[1])), now):
+                    n += 1
+            except Exception:
+                continue
+        return n
+
     def _feast(self, sc, now: float, by: Optional[str]) -> int:
-        """Every awake pip fed at once through Behaviour.care_received (+ a `feed` event each: the chord and hearts)."""
+        """Every HERE settler fed at once through Behaviour.care_received (+ a `feed` event each: the chord and hearts).
+        Care is a here thing on both sides of a card (AGES 1.1): an away body is never fed by a round."""
         b = sc.behaviour
         fed = 0
-        for e in list(b.awake()):
+        for e in _present_of(b):
             try:
                 if b.care_received(e.key, now, by):
-                    b.events.append({"type": "feed", "pip": e.key, "by": by, "asleep": False, "feast": True})
+                    b.events.append({"type": "feed", "pip": e.key, "by": by, "absent": not _is_here(e, now), "asleep": False, "feast": True})
                     fed += 1
             except Exception:
                 continue
@@ -949,16 +1001,16 @@ class RoundEngine(object):
             place = str(value)
             if sc is None:
                 return None
-            sent, reasons = self._send_awake(sc, "go", place, now)
-            n_awake = len(list(sc.behaviour.awake())) if hasattr(sc.behaviour, "awake") else 0
+            sent, reasons = self._send_present(sc, "go", place, now)
             micro["expedition"] = {"to": place, "ts": epoch_to_iso(now), "by": by, "walkers": sent, "arrived": [],
                                    "until": epoch_to_iso(now + self.round_s)}
             label = PLACE_LABELS.get(place, place)
+            # the copy counts the walkers (a len() over records); no here count is ever spoken (AGES 4.1)
             if sent:
-                text = "expedition to %s: %d of %d awake set off (%s)" % (label, len(sent), n_awake, self._shown_many(sc, sent))
+                text = "expedition to %s: %d set off (%s)" % (label, len(sent), self._shown_many(sc, sent))
             else:
                 why = (" · %s" % reasons[0][:60]) if reasons else ""
-                text = "expedition to %s: nobody set off (%d awake)%s" % (label, n_awake, why)
+                text = "expedition to %s: nobody set off%s" % (label, why)
         elif param == "bonfire":
             if sc is None:
                 return None
@@ -968,18 +1020,20 @@ class RoundEngine(object):
                     lit = bool(land.light_hearth(by, now))
                 except Exception as e:
                     self.log("land.light_hearth failed: %r" % (e,))
-            sent, _reasons = self._send_awake(sc, "go", "moot", now)
+            sent, _reasons = self._send_present(sc, "go", "moot", now)     # here: the verb walk
+            drawn = self._gather_away(sc, now)                              # away: the land draws them, no record
             fed = self._feast(sc, now, by)
-            micro["bonfire"] = {"ts": epoch_to_iso(now), "by": by, "lit": lit, "gathered": sent,
+            gathered = len(sent) + drawn
+            micro["bonfire"] = {"ts": epoch_to_iso(now), "by": by, "lit": lit, "gathered": sent, "drawn": drawn,
                                 "until": epoch_to_iso(now + self.round_s)}
             if lit:
-                text = "bonfire: @%s lit the hearth · %d gathered · %d fed" % (self._display(sc, by), len(sent), fed)
+                text = "bonfire: @%s lit the hearth · %d gathered · %d fed" % (self._display(sc, by), gathered, fed)
             elif by:
-                text = "bonfire: %d gathered · %d fed · no hearth here to light" % (len(sent), fed)
+                text = "bonfire: %d gathered · %d fed · no hearth here to light" % (gathered, fed)
             else:
-                text = "bonfire: nobody voted, so nobody lit the hearth · %d gathered · %d fed" % (len(sent), fed)
+                text = "bonfire: nobody voted, so nobody lit the hearth · %d gathered · %d fed" % (gathered, fed)
             try:
-                sc.behaviour.events.append({"type": "bonfire", "by": by, "lit": lit, "gathered": len(sent), "fed": fed})
+                sc.behaviour.events.append({"type": "bonfire", "by": by, "lit": lit, "gathered": gathered, "fed": fed})
             except Exception:
                 pass
         elif param == "harvest_day":
@@ -988,8 +1042,11 @@ class RoundEngine(object):
             reaped: List[str] = []
             if land is not None:
                 try:
+                    here_keys = {str(getattr(e, "key", "")).lower() for e in _present_of(sc.behaviour)}
                     for f in list(land.fields()):
                         k = str(f.get("owner") or "")
+                        if k.lower() not in here_keys:
+                            continue                        # an away owner's field keeps growing (AGES 9: cards act through here settlers)
                         ok_h, _why = land.harvest(k, now)
                         if ok_h:
                             reaped.append(k)
@@ -1093,8 +1150,8 @@ class RoundEngine(object):
             if key in arrived:
                 continue
             e = sc.behaviour.get(key)
-            if e is None or not e.is_awake():
-                continue
+            if e is None or not _is_here(e, now):
+                continue                                    # the arrival stone is here-gated (AGES 1.1): an away walker lays none
             ex_, ey_ = float(getattr(e, "x", 0.0)), float(getattr(e, "y", 0.0))
             if (ex_ - px) ** 2 + (ey_ - py) ** 2 > r * r:
                 continue
@@ -2037,8 +2094,8 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     stale = engine._zero_vote_copy({"agent": {"heartbeat_ts": epoch_to_iso(now[0] - 600)}}, "B", now[0])
     check("zero-vote copy: the same world-voice line whatever the heartbeat", fresh == stale == "nobody stood at a stone · the land chose B", "%s | %s" % (fresh, stale))
     ex = d["micro"].get("expedition")
-    check("ship 3: expedition on the cave: `go` refused for every pip -> 'nobody set off (3 awake)', walkers [] (no fake walkers)",
-          isinstance(ex, dict) and ex.get("to") == "ford" and ex.get("walkers") == [] and "nobody set off (3 awake)" in str(lr.get("world")), str(lr.get("world")))
+    check("ship 3: expedition on the cave: `go` refused for every pip -> 'nobody set off', walkers [] (no fake walkers)",
+          isinstance(ex, dict) and ex.get("to") == "ford" and ex.get("walkers") == [] and "nobody set off" in str(lr.get("world")), str(lr.get("world")))
     over = run_until(lambda: disk()["micro"].get("expedition") is None, ROUND_S + 2, "expedition over")
     acts = [json.loads(ln) for ln in open(os.path.join(run_dir, "activity.jsonl"), encoding="utf-8") if ln.strip()]
     check("expedition record closed after one round with an activity line", over and any(a.get("actor") == "world" and "expedition to the Ford over" in a.get("text", "") for a in acts))
@@ -2177,9 +2234,13 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
             self.key, self.x, self.y, self.state = key, float(x), float(y), "awake"
             self.energy = 0.5
             self.facing = (1, 0)
+            self.here = True                                  # the person's record within present_s (AGES 1.1)
 
         def is_awake(self):
-            return self.state == "awake"
+            return self.state == "awake"                     # on the land (here or away), as the build's is_awake()
+
+        def is_present(self, t=None):
+            return self.state == "awake" and self.here
 
     class _Beh(object):
         def __init__(self):
@@ -2188,18 +2249,29 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
             self.colony_rule = "free"
             self.walks: List[Tuple[str, str]] = []
             self.cared: List[Tuple[str, Optional[str]]] = []
+            self.gathers: List[str] = []
 
         def awake(self):
             return [e for e in self.entities.values() if e.is_awake()]
 
+        def present(self):
+            return [e for e in self.entities.values() if e.is_present()]
+
+        def present_count(self):
+            return len(self.present())
+
         def awake_count(self):
-            return len(self.awake())
+            return self.present_count()
 
         def get(self, key):
             return self.entities.get(key)
 
         def care_received(self, key, t, by=None):
             self.cared.append((key, by))
+            return True
+
+        def gather_to(self, key, target, t):
+            self.gathers.append(key)
             return True
 
     class _Scene(object):
@@ -2215,6 +2287,7 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
             self.events: List[Dict] = []
             self.pending: List[Tuple[str, str]] = []
             self.refuse_go = False
+            self.slow_walkers: set = set()
             self.standing: Dict[str, List[str]] = {"A": [], "B": [], "C": []}
 
         def platform_counts(self):
@@ -2233,14 +2306,19 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
             return False, "unknown verb"
 
         def frame(self, ctx, size):
-            """The walk itself is the behaviour agent's; here a `go` arrives on the next frame (teleport, test only)."""
+            """The walk itself is the behaviour agent's; here a `go` arrives on the next frame (teleport, test only); a walker
+            in `slow_walkers` stays on the way until the test releases it (the mid-walk case)."""
             self.frames += 1
+            held = []
             for actor, arg in self.pending:
+                if actor in self.slow_walkers:
+                    held.append((actor, arg))
+                    continue
                 pl = T.places.get(arg)
                 e = self.behaviour.get(actor)
                 if pl and e is not None:
                     e.x, e.y = float(pl["x"]), float(pl["y"])
-            self.pending = []
+            self.pending = held
             self.events = list(self.behaviour.events)
             self.behaviour.events = []
 
@@ -2325,9 +2403,9 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
     d = disk()
     ex = d["micro"].get("expedition") or {}
     stackers = land.stackers()
-    check("expedition: 3 of 3 awake set off via scene.command('go', key, arg='ford'); walkers recorded",
+    check("expedition: 3 here set off via scene.command('go', key, arg='ford'); walkers recorded; copy '3 set off' (no here count spoken)",
           sorted(ex.get("walkers") or []) == sorted(names) and sorted(scene.behaviour.walks) == sorted((n, "ford") for n in names)
-          and "3 of 3 awake set off" in str(lr.get("world")), str(lr.get("world")))
+          and "3 set off" in str(lr.get("world")) and "awake" not in str(lr.get("world")), str(lr.get("world")))
     check("expedition: one cairn stone per arrived walker, in the walker's name (land.stack), stock +3",
           land.stock == stock0 + 3 and sorted(ex.get("arrived") or []) == sorted(names) and all(stackers.get(n) == 1 for n in names),
           "stock %d->%d stackers %s arrived %s" % (stock0, land.stock, stackers, ex.get("arrived")))
@@ -2366,21 +2444,72 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
     lr = ship_with("colony_rule", "huddle", voter="lu")
     check("colony rule: behaviour.colony_rule huddle, copy 'gather on the Moot'", scene.behaviour.colony_rule == "huddle" and "gather on the Moot" in str(lr.get("world")))
 
+    # --- 5b. AWAY bodies (AGES 1.1 / 4.1): lu's person is quiet past present_s -> never sent on an expedition, never a stone,
+    #         drawn to the bonfire by the land (gather_to, no verb), never fed; harvest day skips an away owner's field
+    scene.behaviour.entities["lu"].here = False
+    stock_b = land.stock
+    st_lu = land.stackers().get("lu", 0)
+    scene.behaviour.walks = []
+    lr = ship_with("expedition", "ford", voter="sami")
+    step(3)
+    ex = disk()["micro"].get("expedition") or {}
+    check("expedition with lu AWAY: walkers == [sami, kai] (behaviour.present(), not awake()); lu got no `go` and no stone; stock +2",
+          sorted(ex.get("walkers") or []) == ["kai", "sami"] and ("lu", "ford") not in scene.behaviour.walks
+          and land.stock == stock_b + 2 and land.stackers().get("lu", 0) == st_lu and "2 set off" in str(lr.get("world")),
+          "walkers %s walks %s stock %d->%d lu stones %d->%d | %s" % (ex.get("walkers"), scene.behaviour.walks, stock_b, land.stock, st_lu, land.stackers().get("lu", 0), lr.get("world")))
+    while disk()["micro"].get("expedition") is not None:
+        step(1)
+    # a walker whose person goes quiet past present_s DURING the walk: it reaches the landmark but lays no stone
+    scene.behaviour.entities["lu"].here = True
+    for i, nm in enumerate(names):                                  # everyone back at the Moot first (the duck never walks home)
+        scene.behaviour.entities[nm].x, scene.behaviour.entities[nm].y = float(T.site[0] + 10 * (i - 1)), float(T.site[1] + 30)
+    stock_c = land.stock
+    st_kai = land.stackers().get("kai", 0)
+    scene.slow_walkers = {"kai"}                                    # kai is still on the way when the others arrive
+    lr = ship_with("expedition", "ford", voter="lu")
+    step(2)
+    mid = dict((disk()["micro"].get("expedition") or {}))
+    scene.behaviour.entities["kai"].here = False                    # the person goes quiet past present_s mid-walk
+    scene.slow_walkers = set()                                      # ... and the body still walks into the Ford
+    step(3)
+    ex = disk()["micro"].get("expedition") or {}
+    check("a walker that went away mid-walk stands at the landmark but gets no arrival stone (is_present gate in _expedition_watch): walkers 3, arrived [lu, sami], stock +2",
+          sorted(ex.get("walkers") or []) == sorted(names) and sorted(mid.get("arrived") or []) == ["lu", "sami"] and sorted(ex.get("arrived") or []) == ["lu", "sami"]
+          and land.stock == stock_c + 2 and land.stackers().get("kai", 0) == st_kai
+          and abs(scene.behaviour.entities["kai"].x - float(T.places["ford"]["x"])) < 1.0,
+          "mid-walk arrived %s, final arrived %s, stock %d->%d, kai stones %d->%d, kai at (%.0f, %.0f)" % (mid.get("arrived"), ex.get("arrived"), stock_c, land.stock, st_kai, land.stackers().get("kai", 0),
+                                                                          scene.behaviour.entities["kai"].x, scene.behaviour.entities["kai"].y))
+    scene.behaviour.entities["kai"].here = True
+    while disk()["micro"].get("expedition") is not None:
+        step(1)
+    scene.behaviour.entities["lu"].here = False
+    scene.behaviour.walks = []
+    scene.behaviour.gathers = []
+    n_feed0 = sum(1 for e in events if e.get("type") == "feed" and e.get("feast"))
+    lr = ship_with("bonfire", "now", voter="sami")
+    step(1)
+    feast = [e for e in events if e.get("type") == "feed" and e.get("feast")][n_feed0:]
+    check("bonfire with lu AWAY: sami + kai `go moot` (verb), lu drawn by gather_to (no verb), 3 gathered, 2 fed (never the away body)",
+          sorted(scene.behaviour.walks) == [("kai", "moot"), ("sami", "moot")] and scene.behaviour.gathers == ["lu"]
+          and "3 gathered · 2 fed" in str(lr.get("world")) and sorted(e["pip"] for e in feast) == ["kai", "sami"],
+          "walks %s gathers %s feast %s | %s" % (scene.behaviour.walks, scene.behaviour.gathers, [e["pip"] for e in feast], lr.get("world")))
+    scene.behaviour.entities["lu"].here = True
+
     # --- 6. `go` refused by the scene -> honest 'nobody set off', no walkers, no stones
     scene.refuse_go = True
     stock1 = land.stock
     lr = ship_with("expedition", "fell", voter="sami")
     step(3)
-    check("expedition with `go` refused: 'nobody set off (3 awake)', walkers [], stock unchanged",
-          "nobody set off (3 awake)" in str(lr.get("world")) and (disk()["micro"].get("expedition") or {}).get("walkers") == [] and land.stock == stock1, str(lr.get("world")))
+    check("expedition with `go` refused: 'nobody set off', walkers [], stock unchanged",
+          "nobody set off" in str(lr.get("world")) and (disk()["micro"].get("expedition") or {}).get("walkers") == [] and land.stock == stock1, str(lr.get("world")))
 
     # --- 7. provenance: every mark / stone / hearth lighter resolves to a real pip; state stays in the run dir
     viol = land.provenance_violations()
     check("provenance: no mark, stone or hearth lighter without a real pip row", viol == [], str(viol))
     ws.save(now[0], force=True)
     wj = json.load(open(os.path.join(run_dir, "world.json"), encoding="utf-8"))
-    check("world.json (schema 2) in the isolated run dir: 3 real pips, %d stones, hearth by lu" % land.stock,
-          wj.get("schema") == 2 and sorted(wj["pips"].keys()) == sorted(names) and len(wj["world"]["stones"]) == land.stock and wj["world"]["hearth"]["by"] == "lu")
+    check("world.json (schema 2) in the isolated run dir: 3 real pips, %d stones, hearth by sami (the last bonfire's real picker)" % land.stock,
+          wj.get("schema") == 2 and sorted(wj["pips"].keys()) == sorted(names) and len(wj["world"]["stones"]) == land.stock and wj["world"]["hearth"]["by"] == "sami")
     tick_ms.sort()
     print("engine tick over %d frames: avg %.3f ms, p95 %.3f ms, max %.3f ms" % (len(tick_ms), sum(tick_ms) / len(tick_ms), tick_ms[int(len(tick_ms) * 0.95)], tick_ms[-1]))
     print("ships.jsonl lines: %d  world effects: %d  stones: %d  run_dir: %s" % (len(read_ships(os.path.join(run_dir, "ships.jsonl"))), engine.world_effects, land.stock, run_dir))

@@ -45,14 +45,14 @@ owner's rule mechanical).
     bubbles      Menlo 22 in #11151D, 1 px #1C2130 border, max 408 px, 3 lines, 8 s, ONE per pip: the person's own
                  moderated words verbatim (the on-frame echo of chat now the log is gone)
     plates       HN Medium 22 on wood, ONE at a time over the marks in view, whole inside the frame, 5 s rotation:
-                 `@sami's tent · night 4` (a DRIFT dwell adds ` · last here yesterday`, a day word, never a clock),
+                 `@sami's tent · 4 days here` (a DRIFT dwell adds ` · last here yesterday`, a day word, never a clock),
                  `flower · @moss_m · today`, `tree · @moss_m · sapling · 3 days`, `field · @moss_m · gold`, `the Shore ·
                  first reached by @kai`, the cairn's plate `3 have walked here · 2 more and the cairn is named` (pinned
                  10 s after every hatch and during the DRIFT Moot dwell; at 0 the forward form `3 more and the cairn is
                  named`) / `cairn · @a @b @c`, a raising `raising · the Ford bridge · for @moss_m` (pinned at its site,
                  the beacon flares) then `the Ford bridge · raised for @moss_m · today` (10 min); a failure: nothing.
-                 A camp plate rotates only while its owner is awake or when the DRIFT stop pins it.
-    edge arrows  `@kai · 210 paces →` Menlo 22 in their colour on wood at the nearest frame edge for awake pips outside
+                 A camp plate rotates only while its owner is here or when the DRIFT stop pins it.
+    edge arrows  `@kai · 210 paces →` Menlo 22 in their colour on wood at the nearest frame edge for here settlers outside
                  the window
     beacon / hearth / cairn are the scene's sprites: the keeper presence is the beacon, lit or dark, no words.
     degrade      labels_on_speak / bubbles_single from scene.degrade; plates stop rotating at level >= 2; density
@@ -410,11 +410,17 @@ def honesty_summary() -> Optional[Dict[str, Any]]:
 
 
 def world_counts() -> Tuple[Optional[int], Optional[int], Optional[int]]:
-    """(awake, asleep, hatched_ever) as len() over the scene's real records, or (None, None, None) before boot."""
+    """(present, 0, hatched_ever) as len() over the scene's real records, or (None, None, None) before boot. The middle
+    slot was `asleep`: nobody sleeps (AGES 1.1); it stays 0 one release for its callers."""
     sc = scene()
     if sc is None or not getattr(sc, "booted", False):
         return None, None, None
-    return sc.awake_count(), sc.asleep_count(), sc.hatched_ever()
+    return _present_count(sc), 0, sc.hatched_ever()
+
+
+def _present_count(sc) -> int:
+    fn = getattr(sc, "present_count", None) or getattr(sc, "awake_count")
+    return int(fn())
 
 
 def world_info(now: Optional[float] = None) -> Optional[Dict[str, Any]]:
@@ -442,7 +448,8 @@ def world_info(now: Optional[float] = None) -> Optional[Dict[str, Any]]:
         bk = getattr(sc, "bakes", None) or getattr(sc, "bake", None)
         if bk is not None:
             out["baking"] = bool(getattr(bk, "baking", False))
-        out["awake"], out["asleep"], out["settled_pips"] = sc.awake_count(), sc.asleep_count(), sc.hatched_ever()
+        out["present"], out["awake"], out["asleep"], out["settled_pips"] = _present_count(sc), _present_count(sc), 0, sc.hatched_ever()
+        out["on_land"] = len(sc.on_land()) if hasattr(sc, "on_land") else None
     except Exception:
         pass
     return out
@@ -1176,29 +1183,24 @@ class WorldPanel(Panel):
                             # WORLD.md 2.2 T+4 to T+10 s: one second after the hatch, for a SEEN 8 s (sticky), above every world line
                             self._notice(now, "that's you. try: feed · pet · dig · plant", L.COLORS["text"], dur=8.0, named=False,
                                          start=now + 1.0, prio=PRIO_YOU, sticky=True)
-                            self._notice(now, "your pip sleeps here when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
+                            self._notice(now, "your pip stays here when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
                                          named=False, start=now + 9.0, prio=PRIO_LIGHT, sticky=True)
                             self._notice(now, "stay ten minutes and your pip grows a row of pixels.", L.COLORS["text2"], dur=6.0,
                                          named=False, start=now + 17.0, prio=PRIO_LIGHT, sticky=True)
                 elif typ == "speak":
-                    # the cave answers `is anyone here` with the sleepers; the land says nothing (no idle captions, journal 034)
-                    if not land_mode and sc.awake_count() == 1 and _LONELY_RE.search(str(ev.get("text") or "")):
+                    # the cave answers `is anyone here` with the others; the land says nothing (no idle captions, journal 034)
+                    if not land_mode and _present_count(sc) == 1 and _LONELY_RE.search(str(ev.get("text") or "")):
                         self._sleepers_lit_until = now + SLEEPERS_LIT_S
                         self._lonely_plank(sc, ev.get("pip"), now, asked=True, land_mode=land_mode)
                 elif typ in ("first_light", "first_breath"):
                     nm = self._shown(sc, ev.get("pip"))
                     if nm and not land_mode:
-                        self._notice(now, "@%s woke the Hollow · %s" % (nm, _time.strftime("%H:%M", _time.localtime(now))), accent,
+                        self._notice(now, "@%s is back in the Hollow · %s" % (nm, _time.strftime("%H:%M", _time.localtime(now))), accent,
                                      dur=FIRST_LIGHT_S, prio=PRIO_LIGHT)
-                elif typ == "wake":
+                elif typ in ("wake", "return"):                    # away -> here (AGES 1.1): the care log, `back after N days`
                     self._care_line(sc, ev, now)
                     if ev.get("only_light") and ev.get("pip") and not land_mode:
                         self._only_light = (ev["pip"], now + ONLY_ONE_S)
-                elif typ == "sleep":
-                    nm = self._shown(sc, ev.get("pip"))
-                    if nm:
-                        q = int(round(float(ev.get("quiet_s") or getattr(sc, "sleep_after_s", 1200.0)) / 60.0))
-                        self._label_override[ev["pip"]] = ("@%s · asleep · quiet %d min" % (nm, q), now + 8.0)
                 elif typ == "tier_up":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
@@ -1213,7 +1215,7 @@ class WorldPanel(Panel):
                         nm = self._shown(sc, ev.get("pip"))
                         if nm:
                             verb = "lay down in the grass" if land_mode else "burrowed"
-                            self._notice(now, "@%s's %s %s: %s" % (nm, "creature" if land_mode else "pip", verb, reason or "for tonight"), L.COLORS["warn"], prio=PRIO_VERB)
+                            self._notice(now, "@%s's %s %s: %s" % (nm, "creature" if land_mode else "pip", verb, reason or "for now"), L.COLORS["warn"], prio=PRIO_VERB)
                 elif typ in ("feed", "pet", "gift"):
                     by = self._shown(sc, ev.get("by"))
                     nm = self._shown(sc, ev.get("pip"))
@@ -1223,7 +1225,7 @@ class WorldPanel(Panel):
                             line = ("@%s's %s ate a berry" % (nm, who)) if typ == "feed" else ("@%s petted their own %s" % (nm, who))
                         else:
                             verb = {"feed": "fed", "pet": "petted", "gift": "left a gift for"}[typ]
-                            tail = " (asleep · it will know on wake)" if ev.get("asleep") or typ == "gift" else ""
+                            tail = " (away · they'll know when they're back)" if ev.get("absent") or ev.get("asleep") or typ == "gift" else ""
                             line = "@%s %s @%s%s" % (by, verb, nm, tail)
                         self._notice(now, line, L.COLORS["text"], prio=PRIO_VERB)
                 elif typ == "dig":
@@ -1247,7 +1249,9 @@ class WorldPanel(Panel):
                 elif typ == "camp_raised":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        self._notice(now, "@%s's camp · %s · night %d" % (nm, str(ev.get("word") or "camp"), int(ev.get("night") or ev.get("nights") or 1)),
+                        days = int(ev.get("night") or ev.get("nights") or 0)                       # a len() (camp.nights / sessions)
+                        line = "@%s's camp · %s" % (nm, str(ev.get("word") or "camp"))
+                        self._notice(now, (line + " · %d day%s here" % (days, "" if days == 1 else "s")) if days > 0 else line,
                                      accent, dur=6.0, prio=PRIO_VERB)
                 elif typ in ("fire", "hearth"):
                     nm = self._shown(sc, ev.get("pip") or ev.get("by"))
@@ -1311,15 +1315,15 @@ class WorldPanel(Panel):
                 elif typ == "credits_start":
                     n = int(ev.get("count") or 0)
                     if land_mode:
-                        self._notice(now, "goodnight · %d walk%s home" % (n, "s" if n == 1 else ""), L.COLORS["text"], dur=3.0, named=False, prio=PRIO_CREDITS)
+                        self._notice(now, "%d walk%s home" % (n, "s" if n == 1 else ""), L.COLORS["text"], dur=3.0, named=False, prio=PRIO_CREDITS)
                     else:
-                        self._notice(now, "goodnight. %d pip%s walk home." % (n, "" if n == 1 else "s"), L.COLORS["text"], dur=3.0, named=False, prio=PRIO_CREDITS)
+                        self._notice(now, "%d pip%s walk home." % (n, "" if n == 1 else "s"), L.COLORS["text"], dur=3.0, named=False, prio=PRIO_CREDITS)
                 elif typ == "credits":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        self._notice(now, "@%s · %d min tonight" % (nm, int(round(float(ev.get("minutes_tonight") or 0)))), L.COLORS["text"], dur=1.5, prio=PRIO_CREDITS)
+                        self._notice(now, "@%s · %d min here" % (nm, int(round(float(ev.get("minutes_tonight") or 0)))), L.COLORS["text"], dur=1.5, prio=PRIO_CREDITS)
                 elif typ == "credits_end":
-                    where = "the land sleeps" if land_mode else "the Hollow sleeps. see you next time."
+                    where = "the land keeps every mark" if land_mode else "the Hollow keeps every mark. see you next time."
                     self._notice(now, where, L.COLORS["text2"], dur=20.0, named=False, prio=PRIO_CREDITS)
                 # -- keepers (stream/world/keepers.py events ride in scene.events): NOT on the plank. The plank is the
                 #    person-facing slot (WORLD.md 2.2); the keeper strip and the land strip show these.
@@ -1331,37 +1335,33 @@ class WorldPanel(Panel):
         for d in (self._care, self._hatch_tag, self._label_override):
             for k in [k for k, v in d.items() if v[1] <= now]:
                 d.pop(k, None)
-        if self._only_light and (self._only_light[1] <= now or sc.awake_count() > 1):
+        if self._only_light and (self._only_light[1] <= now or _present_count(sc) > 1):
             self._only_light = None                       # `you are the only light` is a fact only while it is one
 
     def _lonely_plank(self, sc, key: Optional[str], now: float, asked: bool = False, land_mode: bool = False) -> None:
-        """WORLD.md 10 `one person, dead night` (the CAVE): the plank answers loneliness with the real colony. `N sleep
-        here` is a len(); the sleeper named is the one nearest the awake pip (a real past chatter); the nearest sleeper
-        stirs once. The land says nothing (journal 034: no idle captions; `the wind was already blowing` is a wind word)."""
+        """WORLD.md 10 `one person, dead night` (the CAVE): the plank answers loneliness with the real colony. `N here
+        before you` is a len() over the AWAY settlers (real past chatters); the one named is the nearest. The land says
+        nothing (journal 034: no idle captions; `the wind was already blowing` is a wind word). Nobody sleeps (AGES 1.1)."""
         if land_mode:
             return
-        sleepers = [e for e in sc.behaviour.entities.values() if e.state == "asleep" and e.display_name]
+        others = [e for e in sc.behaviour.entities.values() if e.is_on_land() and not e.is_present() and e.display_name]
         me = sc.behaviour.get(key) if key else None
-        n = len(sleepers)
-        if me is not None and sleepers:
-            near = min(sleepers, key=lambda e: math.hypot(e.x - me.x, float(getattr(e, "y", 0.0)) - float(getattr(me, "y", 0.0))))
+        n = len(others)
+        if me is not None and others:
+            near = min(others, key=lambda e: math.hypot(e.x - me.x, float(getattr(e, "y", 0.0)) - float(getattr(me, "y", 0.0))))
             nm = self._shown(sc, near.key)
-            try:
-                sc.behaviour.stir(near.key, now)
-            except Exception:
-                pass
         else:
             near, nm = None, None
         if n == 0:
             if land_mode:
                 txt = "nobody else has ever walked here. you're the first." if asked else "you're the only one out here right now. the wind was already blowing."
             else:
-                txt = "nobody else has ever been here. you're the first light." if asked else "you're alone tonight. every mark you make is here tomorrow."
+                txt = "nobody else has ever been here. you're the first light." if asked else "you're the only one right now. every mark you make is here tomorrow."
         elif nm:
-            txt = ("%d asleep here · pet @%s and they'll know you came." % (n, nm)) if asked else \
-                  ("you're alone tonight. pet @%s and they'll see it when they wake." % nm)
+            txt = ("%d here before you · pet @%s and they'll know you came." % (n, nm)) if asked else \
+                  ("you're the only one right now. pet @%s and they'll see it when they're back." % nm)
         else:
-            txt = "%d asleep here. say anything and they hear it tomorrow." % n
+            txt = "%d here before you. say anything and they hear it when they're back." % n
         if not asked and now - self._lonely_t < 30.0:
             return                                            # the 45 s prompt yields to a fresh answer; a question is always answered
         self._lonely_t = now
@@ -1374,13 +1374,13 @@ class WorldPanel(Panel):
 
     def _verb_done(self, sc, key: Optional[str], verb: str, now: float) -> None:
         """A verb completed (walk arrived / mark placed / vote counted): the sticky ends and, while the person is alone
-        (awake <= 1), the plank offers the next two things for 8 s (priority 3, delivered when relevant)."""
+        (present <= 1), the plank offers the next two things for 8 s (priority 3, delivered when relevant)."""
         if not key:
             return
         self._verbed.add(key)
         self._end_sticky(key)
         line = NEXT_TWO.get(verb)
-        if line and sc.awake_count() <= 1:
+        if line and _present_count(sc) <= 1:
             self._notice(now, line, L.COLORS["text"], dur=NEXT_TWO_S, named=False, start=now + 0.5, prio=PRIO_YOU, key=key)
 
     def _vote_left(self, sc, ctx, ev: Dict[str, Any], now: float, accent: str) -> None:
@@ -1388,7 +1388,7 @@ class WorldPanel(Panel):
         (rounds tally_source `platforms`), so the plank says the true thing: the vote is dropped (a move to another
         letter is the bridge's vote ack).
         Silent when the round just opened (everyone steps off: the round-open line says so), when the tally is not
-        embodied, or when the person is walking home to sleep."""
+        embodied, or when the person is away (their body stepped off) or walking to the credits."""
         key = ev.get("pip")
         left = str(ev.get("platform") or "")
         why = None
@@ -1403,8 +1403,8 @@ class WorldPanel(Panel):
             why = "ship hold"
         elif opened is not None and now - float(opened) < 3.0:
             why = "round just opened"
-        elif e is None or e.state == "asleep" or getattr(e, "then", None) in ("sleep", "credits"):
-            why = "asleep / walking home"
+        elif e is None or not e.is_present() or getattr(e, "then", None) == "credits":
+            why = "away / credits"
         elif not nm:
             why = "no shown name"
         if why is not None:
@@ -1417,15 +1417,15 @@ class WorldPanel(Panel):
         self._notice(now, "@%s left %s · that vote is dropped" % (nm, left), L.COLORS["warn"], dur=5.0, prio=PRIO_VERB, key=key, tie=True)
 
     def _care_line(self, sc, ev: Dict[str, Any], now: float) -> None:
-        """`back after 2 nights · your tree grew · fed by @kai x2 · gift from @sami` from the REAL care log / land."""
+        """`back after 2 days · your tree grew · fed by @kai x2 · gift from @sami` from the REAL care log / land."""
         key = ev.get("pip")
         if not key:
             return
         parts: List[str] = []
         away = ev.get("away_s")
         if away is not None and float(away) >= 6 * 3600:
-            nights = max(1, int(round(float(away) / 86400.0)))
-            parts.append("back after %d night%s" % (nights, "" if nights == 1 else "s"))
+            days = max(1, int(round(float(away) / 86400.0)))
+            parts.append("back after %d day%s" % (days, "" if days == 1 else "s"))
         for g in ev.get("growth") or []:                        # the land's real growth since the last visit (`your tree grew`)
             s = L.strip_non_bmp(str(g))
             if s:
@@ -1587,21 +1587,21 @@ class WorldPanel(Panel):
                 return ("%s · picked by @%s" % (title, by)) if by else title, accent
         # idle rotation
         items: List[Tuple[str, Any]] = []
-        hatched, awake, asleep = sc.hatched_ever(), sc.awake_count(), sc.asleep_count()
+        hatched, present = sc.hatched_ever(), _present_count(sc)
         if land_mode:
             ld = land()
-            settled = ld.settled if ld is not None else asleep
+            settled = ld.settled if ld is not None else hatched
             if hatched == 0:
                 items.append(("nobody has walked here yet. say anything and you are the first.", L.COLORS["text"]))
-            elif awake == 0:
-                items.append(("%d settled here. nobody awake. say anything and yours wakes." % settled, L.COLORS["text"]))
+            elif present == 0:
+                items.append(("%d settled here. say anything and yours walks over." % settled, L.COLORS["text"]))
             else:
                 items.append(("say anything in chat. a creature walks out with your name.", L.COLORS["text"]))
         else:
             if hatched == 0:
                 items.append(("nobody has hatched here yet. say anything and you are the first.", L.COLORS["text"]))
-            elif awake == 0:
-                items.append(("%d pip%s sleep here. nobody awake. say anything and yours wakes." % (asleep, "" if asleep == 1 else "s"), L.COLORS["text"]))
+            elif present == 0:
+                items.append(("%d pip%s live here. say anything and yours hops." % (hatched, "" if hatched == 1 else "s"), L.COLORS["text"]))
             else:
                 items.append(("say anything in chat. a pip hatches with your name.", L.COLORS["text"]))
         if names_on:
@@ -1614,15 +1614,14 @@ class WorldPanel(Panel):
             if segs:
                 items.append(("last here: " + " · ".join(segs), L.COLORS["text2"]))
             woke = list((sc.world.data.get("world") or {}).get("woke_log") or [])
-            if woke:
+            if woke:                                             # the cave only: this router never runs in land mode (AGES 1.5: no wake word on the land)
                 last = woke[-1]
                 t = iso_to_epoch(last.get("ts"))
                 started = iso_to_epoch((ctx.session or {}).get("started_ts"))
                 if t is not None and (started is None or t >= started - 60):
                     nm = self._shown(sc, last.get("name"))
                     if nm:
-                        where = "Longgrass" if land_mode else "the Hollow"
-                        items.append(("@%s woke %s · %s" % (nm, where, when_text(last.get("ts"), now)), accent))
+                        items.append(("@%s is back in the Hollow · %s" % (nm, when_text(last.get("ts"), now)), accent))
         items.append(((LEGEND_LAND if land_mode else LEGEND)[0], L.COLORS["text2"]))
         # the call to action (items[0]) comes back every other slot: CTA, visitors, CTA, woke, CTA, legend, ...
         slot = int(now // ROTATE_S)
@@ -1695,11 +1694,11 @@ class WorldPanel(Panel):
         self._frames += 1
         if self._frames % STATS_EVERY == 0:
             st = sc.stats() if getattr(sc, "booted", False) else {}
-            _log("frame %d: panel avg %.2f ms max %.2f (text layer avg %.2f) (scene avg %s ms, degrade %s) awake=%s asleep=%s hatched=%s "
+            _log("frame %d: panel avg %.2f ms max %.2f (text layer avg %.2f) (scene avg %s ms, degrade %s) present=%s on_land=%s hatched=%s "
                  "entities=%s honesty_violations=%d/%s text_cache=%d chips=%d" % (
                      self._frames, sum(self._ms) / len(self._ms), max(self._ms), sum(self._text_ms) / len(self._text_ms),
                      st.get("avg_ms"), (st.get("degrade") or {}).get("level"),
-                     st.get("awake"), st.get("asleep"), st.get("hatched_ever"), st.get("entities"),
+                     st.get("present"), st.get("on_land"), st.get("hatched_ever"), st.get("entities"),
                      self.honesty_violations, st.get("honesty_violations"), len(_TEXT), len(_CHIP)))
         return img
 
@@ -1807,7 +1806,7 @@ class WorldPanel(Panel):
         ld = getattr(sc, "land", None) or sc.world.land
         T = getattr(sc, "terrain", None)
         ents = sc.entities(now)
-        awake = sc.awake_count()
+        awake = _present_count(sc)                                 # `awake` here = the HERE count (the sign / camera word)
         labels_on_speak = bool(deg.get("labels_on_speak")) or awake > DENSITY_FALLBACK
         dense = awake > DENSITY_FALLBACK
         plates_static = bool(deg.get("plates_static")) or deg.get("plates_rotate") is False or dense
@@ -1966,20 +1965,20 @@ class WorldPanel(Panel):
             self._plates(img, sc, cam, ld, now, size, placer, plates_drawn, plates_static, ctx.preset)
         self.last_plates = plates_drawn
 
-        # 3. labels: awake above the sprite (contrast chip); a sleeper lies at its camp, whose plate names it (a `sleep`
-        #    override lights a sleeper's own label). De-collision through the placer.
+        # 3. labels above the sprite (contrast chip) for every settler on the land, here or away (presence is never drawn,
+        #    AGES 1.1); a hidden settler gets nothing. De-collision through the placer.
         placed: List[Tuple[int, int, int]] = []
         label_pos: Dict[str, Tuple[int, int]] = {}
         boxes: Dict[str, Tuple[int, int, int, int]] = {}
         name_in_bubble: Dict[str, Tuple[str, str]] = {}
         drawn_names = 0
         tile_px = 0.0
-        sleepers_in_view = 0
+        away_in_view = 0                                   # away settlers in view: life in the 0-present tile (the compositor's gate)
         ents = sorted(ents, key=lambda e: (e.get("y") or 0, e.get("key") or ""))
         for e in ents:
             key = e.get("key")
-            if not key or e.get("display_name") is None or e.get("state") in ("burrowed", "seed", "hatching"):
-                continue                                   # a seed: nothing about it is drawn (OPENWORLD 12)
+            if not key or e.get("display_name") is None or e.get("hidden") or e.get("state") in ("burrowed", "hidden", "seed", "hatching"):
+                continue                                   # a seed / a hidden settler: nothing about it is drawn (OPENWORLD 12)
             box = self._screen_box(e, cam, size)
             if box is None:
                 continue
@@ -1987,10 +1986,10 @@ class WorldPanel(Panel):
             sx, sy, sw, sh = box
             cx, top = sx + sw // 2, sy
             if e.get("in_view"):
-                if e.get("awake"):
+                if e.get("present"):
                     tile_px = max(tile_px, (sh + LABEL_H + 2) * tile_k)
                 else:
-                    sleepers_in_view += 1
+                    away_in_view += 1
             if not names_on:
                 continue
             txt = None
@@ -2027,7 +2026,7 @@ class WorldPanel(Panel):
             label_pos[key] = (cx, y)
             drawn_names += 1
         self.last_tile_px = round(tile_px, 1)
-        self.last_sleepers_in_view = sleepers_in_view
+        self.last_sleepers_in_view = away_in_view          # the attribute keeps its name for the compositor's tile gate
 
         # 4. bubbles (one per pip, 8 s; care log rides as the first line; !kill -> nothing)
         single: Optional[Tuple[float, str, str]] = None
@@ -2094,11 +2093,11 @@ class WorldPanel(Panel):
             by = placer.place_up(bx, h - 8 - b.size[1], b.size[0], b.size[1], BUBBLE_LINE_H, 4, floor=2)   # never over a plate / label (frame 899)
             _paste(img, b, bx, by if by is not None else h - 8 - b.size[1])
 
-        # 6. edge arrows: awake creatures outside the window, `@kai · 210 paces ->` in their colour on wood at the nearest edge
+        # 6. edge arrows: HERE settlers outside the window, `@kai · 210 paces ->` in their colour on wood at the nearest edge
         arrows_drawn: List[str] = []
         if names_on:
             awake_pts = [{"key": e.get("key"), "x": e["x"], "y": e["y"]} for e in ents
-                         if e.get("key") and e.get("awake") and e.get("display_name") is not None and e.get("x") is not None and e.get("y") is not None]
+                         if e.get("key") and e.get("present") and e.get("display_name") is not None and e.get("x") is not None and e.get("y") is not None]
             try:
                 arrows = cam.edge_arrows(size, awake=awake_pts, inset=EDGE_INSET)
             except Exception:
@@ -2551,13 +2550,13 @@ class WorldPanel(Panel):
             slot = int(now // PLATE_ROTATE_S)
         rest = [m for m in in_view if m[0] not in picked_ids]
         try:
-            anyone_awake = int(sc.awake_count()) > 0
+            anyone_here = _present_count(sc) > 0
         except Exception:
-            anyone_awake = False
-        if anyone_awake:
-            # with people here, a camp plate rotates only while its owner is awake (it names THEM at their own camp);
-            # a sleeper's tent plate over a sleeper is the least useful text for a stranger
-            rest = [m for m in rest if m[1] != "camp" or self._owner_awake(sc, m[4])]
+            anyone_here = False
+        if anyone_here:
+            # with people here, a camp plate rotates only while its owner is here (it names THEM at their own camp);
+            # an away person's tent plate is the least useful text for a stranger
+            rest = [m for m in rest if m[1] != "camp" or self._owner_here(sc, m[4])]
         if rest and not pick:
             pick.append(rest[slot % len(rest)])
         drift_camp = stop is not None and stop.get("kind") == "camp"
@@ -2586,15 +2585,17 @@ class WorldPanel(Panel):
             return ""
 
     @staticmethod
-    def _owner_awake(sc, key: Optional[str]) -> bool:
+    def _owner_here(sc, key: Optional[str]) -> bool:
         b = getattr(sc, "behaviour", None)
         if b is None or not key:
             return False
         try:
             e = b.get(key)
-            return bool(e is not None and e.is_awake())
+            return bool(e is not None and e.is_present())
         except Exception:
             return False
+
+    _owner_awake = _owner_here                             # legacy name, one release
 
     CAIRN_UNTIL = {3: "and the cairn is named", 5: "and the hearth ring rises", 10: "until the Coast opens",
                    25: "until the Birch Wood opens", 50: "until the Tarn opens"}
@@ -2636,8 +2637,8 @@ class WorldPanel(Panel):
             if not nm:
                 continue
             fw, fh = CAMP_FOOTPRINT.get(int(c.get("tier") or 0), (10, 8))
-            night = int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)
-            text = "@%s's %s · night %d" % (nm, c["word"], max(1, night))
+            days = int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)      # a len() (camp.nights / sessions), AGES 1.5
+            text = ("@%s's %s · %d day%s here" % (nm, c["word"], days, "" if days == 1 else "s")) if days > 0 else ("@%s's %s" % (nm, c["word"]))
             marks.append(("camp:" + c["key"], "camp", float(c["x"]) + fw / 2.0, float(c["y"]) + fh, c["key"], text))
         for f in self._fields:
             nm = self._shown(sc, f["owner"])
@@ -2775,19 +2776,15 @@ class WorldPanel(Panel):
                 for st in segs:
                     _paste(img, st, x, PLATFORM_NAMES_Y); x += st.size[0]
 
-        # 2. labels (awake: above the sprite; sleepers: one at a time on a 5 s rotation; standing pips: the platform row).
+        # 2. labels (above the sprite for everyone on the land; standing pips: the platform row). Nobody sleeps (AGES 1.1).
         placed: List[Tuple[int, int, int]] = []
         label_pos: Dict[str, Tuple[int, int]] = {}         # key -> (cx, label top y) for the bubble anchor
         drawn_names = 0
         ents = sorted(ents, key=lambda e: (e.get("sx", 0), e.get("key") or ""))
-        sleepers = [e for e in ents if e.get("state") == "asleep" and e.get("key")]
-        sleeper_pick = None
-        if sleepers and names_on and not dense:
-            sleeper_pick = sleepers[int(now // SLEEPER_ROTATE_S) % len(sleepers)]["key"]
         for e in ents:
             key = e.get("key")
-            if not key or e.get("display_name") is None or e.get("state") in ("burrowed", "seed", "hatching"):
-                continue                                   # a seed: nothing about it is drawn (WORLD.md 11.1)
+            if not key or e.get("display_name") is None or e.get("hidden") or e.get("state") in ("burrowed", "hidden", "seed", "hatching"):
+                continue                                   # a seed / a hidden pip: nothing about it is drawn (WORLD.md 11.1)
             cx = int(e["sx"] + e["sw"] // 2)
             top = int(e["sy"])
             if not names_on:
@@ -2803,18 +2800,10 @@ class WorldPanel(Panel):
                     label_pos[key] = (cx, top - 4)
                     continue                               # next to an occupied platform: the row is the readable list
                 txt = self._label_text(sc, e)
-            else:                                          # asleep
+            else:                                          # not on the land (never drawn as a person): an override at most
                 ov = self._label_override.get(key)
                 if ov:
                     txt = ov[0]
-                elif now < self._sleepers_lit_until and not dense:
-                    p = sc.world.pip(key) or {}                # `is anyone here` -> every sleeper answers with its real last seen
-                    nm = self._label_text(sc, e)
-                    txt = "%s · asleep since %s" % (nm, when_text(p.get("last_seen_ts"), now)) if nm else None
-                elif key == sleeper_pick:
-                    p = sc.world.pip(key) or {}
-                    nm = self._label_text(sc, e)
-                    txt = "%s · asleep · last seen %s" % (nm, when_text(p.get("last_seen_ts"), now)) if nm else None
             if not txt:
                 continue
             strip = text_strip(LABEL_FONT, LABEL_SIZE, txt, P.colour_hex(key, ctx.preset))
@@ -2903,8 +2892,8 @@ class WorldPanel(Panel):
             nm = self._shown(sc, m.get("planter"))
             if nm:
                 p = sc.world.pip(m.get("planter")) or {}
-                night = max(1, int(p.get("sessions_seen") or 1))
-                s = text_strip(LABEL_FONT, LABEL_SIZE, "moss · @%s · night %d" % (nm, night), accent)
+                days = max(1, int(p.get("sessions_seen") or 1))
+                s = text_strip(LABEL_FONT, LABEL_SIZE, "moss · @%s · %d day%s here" % (nm, days, "" if days == 1 else "s"), accent)
                 mx, _my = sc.sim_to_screen(float(m.get("x") or 0), float(m.get("y") or 0))
                 lx = max(2, min(w - s.size[0] - 2, mx - s.size[0] // 2))
                 ly = placer.down(lx, SOIL_LABEL_Y, s.size[0], LABEL_H, LABEL_STEP, max_steps=3, ceiling=h - 2)
