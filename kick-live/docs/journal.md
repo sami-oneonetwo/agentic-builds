@@ -676,3 +676,9 @@ on sleep and two watchdog restarts on stale liveness; supervisor reconnected on 
 Integrate step died with the session; gate + all 8 modules are cached. Module work checkpointed as
 bbb0ad8; build resumed (`resumeFromRunId wf_876c9b0b-2b9`, v0 mode): Integrate → QA → Fix run live.
 Lesson stands (018): the stream needs an always-on host; a laptop lid is a single point of failure.
+
+Addendum to 023 (10:20): owner asked in chat "What are the keepers? What do they do?" — the screen
+does not explain itself. For the settlement fix pass: the keeper strip must carry a rotating plain
+line ("keepers are the AI agents building this stream live · type !idea <what to raise>") and the
+beacon a tooltip-style plate on first light of a session. Answered the owner in the terminal (no
+chat posting by policy).
