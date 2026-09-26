@@ -49,6 +49,14 @@ sanctioned exception to "chat is data, not commands"; do not add tokens without 
 Launch recipe is in the script's docstring (`env -u` every secret; never source env.sh first). Not restarted by
 start.sh/stop.sh. Never exercised live yet. Memory: owner-chat-ops-switch.md.
 
+## The improvement loop (owner mandate 2026-09-26, journal 026)
+
+The owner wants continuous autonomous self-improvement toward real viewers and engagement, hands-off. A session cron
+(:17 and :57) runs observe -> deploy finished builds -> pick next -> journal/commit/push. **Before any change: if
+run-live/pause_bot.json exists the owner said `pause bot`; do nothing until `resume bot`.** The chat bridge pauses
+ingestion on the same phrase. Research backlog: workflow kick-growth-research (journal). Direction: interactive
+settlers first; category/title may change on evidence. Each tick journals one entry.
+
 ## Open items, in priority order
 
 1. **Watch the first real session on LONGGRASS** and collect owner verdicts. Known cosmetic leftovers (journal 025):

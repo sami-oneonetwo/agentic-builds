@@ -805,3 +805,27 @@ restart, 20 frames held (0.67 s), ffmpeg 40018 unchanged. Step 2 15:34:11: behav
 world.py dropped together, scene re-attached at 15:34:13 with a 2-frame gap (0.07 s), panel committed after 30 clean
 renders, 2 pips 2 camps, honesty 0. Kick HLS probe PASS 2335 kbps. deploy.sh false-FAIL fixed (newest gap start_ts
 instead of the capped gap count) and copied into v3. HANDOFF.md rewritten for the new state; RESUME.md pointed at it.
+
+---
+
+## 026 — 2026-09-26 16:20 — Owner mandate: continuous self-improvement; "pause bot" failsafe live
+
+Owner (terminal, 16:05): the project's point is that the agent self-improves the stream until it is popular; keep
+iterating without stopping; any category allowed; keep the interactive settlers direction for now; goal = real viewers
+and engagement; learn what is popular on Kick; the owner goes hands-off. One request: the owner's account saying
+`pause bot` in chat must stop chat ingestion and stop the system being altered.
+
+Failsafe, live at 16:15 at two layers: (1) `stream/chat_bridge.py` classifies exact `pause bot` / `bot pause` from a
+broadcaster/moderator as the mod `pause` (ingestion stops; `resume bot` / `unpause bot` = `resume`), deployed with a
+relay-held child restart (1 frame held, ffmpeg unchanged; deploy.sh now reports success correctly); (2)
+`scripts/ops_chat_switch.py` raises run-live/pause_bot.json on `pause bot` (owner + broadcaster badge + sender_id) and
+clears it on `resume bot`; the improvement loop checks that flag before any change or deploy. Self-tests: bridge 68/68 +
+phrase asserts; switch 68 checks PASS.
+
+Loop: a session cron at :17 and :57 runs observe (metrics, chat, dropped actions, pending !idea) -> deploy finished
+builds -> pick the next improvement from the research backlog -> journal + commit + push. In flight: HUD reshape
+workflow (owner: "too much information on the screen"; bottom bar goes; one fact once; options row + countdown as the
+primary interaction) and a Kick growth research sweep (categories, growth mechanics, format comparables, first minute,
+AI streams). Found today: `!idea` is capped at 3 open per user and drops silently (owner's `improve the art style` was
+lost); i-0004/i-0005 marked shipped (delivered by Longgrass); the cap needs a plank line. Vote acks mislead when the
+voter walks off before the round closes (fix in the HUD spec). Memory: owner-mandate-continuous-improvement.md.
