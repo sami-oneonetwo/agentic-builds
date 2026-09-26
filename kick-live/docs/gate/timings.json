@@ -1,0 +1,329 @@
+{
+ "seed": 4471,
+ "site": [
+  564,
+  244
+ ],
+ "moot_r": 26,
+ "season": "spring",
+ "frames": {
+  "dawn_0awake": {
+   "hour": 6.67,
+   "awake": 0,
+   "clock": "06:40",
+   "day_part": "dawn",
+   "tint": [
+    1.0,
+    0.884,
+    0.787
+   ],
+   "tint_lum": 0.902,
+   "wind": "wind NE \u00b7 calm",
+   "moon": "waning gibbous",
+   "sheet_warm_ms": 0,
+   "tile": {
+    "world_mean_lum": 0.459,
+    "frac_above_0.12": 0.997
+   }
+  },
+  "dawn_3awake": {
+   "hour": 6.67,
+   "awake": 3,
+   "clock": "06:40",
+   "day_part": "dawn",
+   "tint": [
+    1.0,
+    0.884,
+    0.787
+   ],
+   "tint_lum": 0.902,
+   "wind": "wind NE \u00b7 calm",
+   "moon": "waning gibbous",
+   "sheet_warm_ms": 431,
+   "tile": {
+    "world_mean_lum": 0.445,
+    "frac_above_0.12": 0.997
+   }
+  },
+  "noon_0awake": {
+   "hour": 12.0,
+   "awake": 0,
+   "clock": "12:00",
+   "day_part": "midday",
+   "tint": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "tint_lum": 1.0,
+   "wind": "wind NW \u00b7 calm",
+   "moon": "waning gibbous",
+   "sheet_warm_ms": 0,
+   "tile": {
+    "world_mean_lum": 0.511,
+    "frac_above_0.12": 0.999
+   }
+  },
+  "noon_3awake": {
+   "hour": 12.0,
+   "awake": 3,
+   "clock": "12:00",
+   "day_part": "midday",
+   "tint": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "tint_lum": 1.0,
+   "wind": "wind NW \u00b7 calm",
+   "moon": "waning gibbous",
+   "sheet_warm_ms": 429,
+   "tile": {
+    "world_mean_lum": 0.494,
+    "frac_above_0.12": 0.999
+   }
+  },
+  "night_0awake": {
+   "hour": 23.0,
+   "awake": 0,
+   "clock": "23:00",
+   "day_part": "night",
+   "tint": [
+    0.566,
+    0.596,
+    0.786
+   ],
+   "tint_lum": 0.603,
+   "wind": "wind NW \u00b7 calm",
+   "moon": "waning gibbous",
+   "sheet_warm_ms": 0,
+   "tile": {
+    "world_mean_lum": 0.316,
+    "frac_above_0.12": 0.986
+   }
+  },
+  "night_3awake": {
+   "hour": 23.0,
+   "awake": 3,
+   "clock": "23:00",
+   "day_part": "night",
+   "tint": [
+    0.566,
+    0.596,
+    0.786
+   ],
+   "tint_lum": 0.603,
+   "wind": "wind NW \u00b7 calm",
+   "moon": "waning gibbous",
+   "sheet_warm_ms": 0,
+   "tile": {
+    "world_mean_lum": 0.311,
+    "frac_above_0.12": 0.987
+   }
+  },
+  "night_3awake_hourmode": {
+   "real_clock": "23:20",
+   "world_clock": "08:39",
+   "day_part": "morning",
+   "tint": [
+    1.0,
+    0.973,
+    0.947
+   ]
+  }
+ },
+ "bench": [
+  {
+   "zoom": 1.0,
+   "pips": 20,
+   "frames": 300,
+   "px_per_cell": 4,
+   "warm_ms": 2664,
+   "wall_ms_per_frame": 4.38,
+   "crop": {
+    "mean": 0.02,
+    "p95": 0.04,
+    "max": 0.09
+   },
+   "field": {
+    "mean": 1.13,
+    "p95": 1.3,
+    "max": 1.68
+   },
+   "apply": {
+    "mean": 1.85,
+    "p95": 2.11,
+    "max": 2.47
+   },
+   "sprites": {
+    "mean": 1.33,
+    "p95": 1.8,
+    "max": 3.69
+   },
+   "total": {
+    "mean": 4.34,
+    "p95": 5.03,
+    "max": 6.73
+   }
+  },
+  {
+   "zoom": 1.0,
+   "pips": 60,
+   "frames": 300,
+   "px_per_cell": 4,
+   "warm_ms": 5222,
+   "wall_ms_per_frame": 6.66,
+   "crop": {
+    "mean": 0.04,
+    "p95": 0.05,
+    "max": 1.19
+   },
+   "field": {
+    "mean": 1.18,
+    "p95": 1.35,
+    "max": 2.38
+   },
+   "apply": {
+    "mean": 1.92,
+    "p95": 2.24,
+    "max": 4.16
+   },
+   "sprites": {
+    "mean": 3.47,
+    "p95": 3.75,
+    "max": 7.01
+   },
+   "total": {
+    "mean": 6.6,
+    "p95": 7.37,
+    "max": 13.52
+   }
+  },
+  {
+   "zoom": 0.75,
+   "pips": 20,
+   "frames": 300,
+   "px_per_cell": 3,
+   "warm_ms": 7,
+   "wall_ms_per_frame": 5.23,
+   "crop": {
+    "mean": 0.02,
+    "p95": 0.04,
+    "max": 0.07
+   },
+   "field": {
+    "mean": 1.85,
+    "p95": 2.11,
+    "max": 2.94
+   },
+   "apply": {
+    "mean": 2.15,
+    "p95": 2.42,
+    "max": 3.03
+   },
+   "sprites": {
+    "mean": 1.17,
+    "p95": 1.34,
+    "max": 1.6
+   },
+   "total": {
+    "mean": 5.2,
+    "p95": 5.72,
+    "max": 6.93
+   }
+  },
+  {
+   "zoom": 0.75,
+   "pips": 60,
+   "frames": 300,
+   "px_per_cell": 3,
+   "warm_ms": 20,
+   "wall_ms_per_frame": 7.0,
+   "crop": {
+    "mean": 0.03,
+    "p95": 0.04,
+    "max": 0.08
+   },
+   "field": {
+    "mean": 1.87,
+    "p95": 2.13,
+    "max": 3.0
+   },
+   "apply": {
+    "mean": 2.19,
+    "p95": 2.47,
+    "max": 3.44
+   },
+   "sprites": {
+    "mean": 2.85,
+    "p95": 3.18,
+    "max": 3.79
+   },
+   "total": {
+    "mean": 6.94,
+    "p95": 7.68,
+    "max": 8.89
+   }
+  }
+ ],
+ "qa_tile": {
+  "night_over_noon": 0.618,
+  "pass_ratio": true,
+  "pass_frac": true
+ },
+ "bench_alt_075_resample": {
+  "mean": 9.85,
+  "p95": 10.3,
+  "max": 10.49
+ },
+ "bakes": {
+  "ground-4471-0-o7-v0.npy": {
+   "path": "ground-4471-0-o7-v0.npy",
+   "ready": true,
+   "baking": false,
+   "progress": 1.0,
+   "ms": 872,
+   "octant": 7,
+   "season": 0,
+   "ver": 0,
+   "from_disk": false,
+   "error": null
+  },
+  "ground-4471-0-o7-v1.npy": {
+   "path": "ground-4471-0-o7-v1.npy",
+   "ready": true,
+   "baking": false,
+   "progress": 1.0,
+   "ms": 787,
+   "octant": 7,
+   "season": 0,
+   "ver": 1,
+   "from_disk": false,
+   "error": null
+  },
+  "ground-4471-0-o6-v0.npy": {
+   "path": "ground-4471-0-o6-v0.npy",
+   "ready": true,
+   "baking": false,
+   "progress": 1.0,
+   "ms": 790,
+   "octant": 6,
+   "season": 0,
+   "ver": 0,
+   "from_disk": false,
+   "error": null
+  },
+  "ground-4471-0-o6-v1.npy": {
+   "path": "ground-4471-0-o6-v1.npy",
+   "ready": true,
+   "baking": false,
+   "progress": 1.0,
+   "ms": 782,
+   "octant": 6,
+   "season": 0,
+   "ver": 1,
+   "from_disk": false,
+   "error": null
+  }
+ }
+}

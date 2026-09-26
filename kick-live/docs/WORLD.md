@@ -1,5 +1,16 @@
 # PIP HOLLOW — build-ready spec for the living-world pivot
 
+> **Superseded 2026-09-25 by [`docs/OPENWORLD.md`](OPENWORLD.md) (LONGGRASS, top-down settlement; ADR-006).**
+> The owner judged the cave "less like a world and more like a prison" (journal 020) and the redesign replaces §1
+> identity, §2.2 first 60 s, §3.4 colony state, §4 verbs, §5 layout content (geometry unchanged), §6 art direction
+> and budget, §7 audio, §8.1 MENU, §8.2 milestone actions, §9 keeper representation, §10 empty states, §12 build
+> order and §13 risks. **Still normative from this file:** §2.1 (the six wants), §3.1-§3.3 (files, pip identity,
+> presence, energy, growth tiers, memory, bonds, care log, strikes), §8.3 (emergent events from real inputs) and
+> §11 (honesty and moderation, extended by OPENWORLD §12). The contract shape lives in
+> [`stream/WORLD_API.md`](../stream/WORLD_API.md); the art rules in [`docs/art-rules.md`](art-rules.md) and
+> [`docs/ART.md`](ART.md). The cave (`stream/scenes/hollow.py`, `stream/world/pips.py`, `world.json` schema 1)
+> stays on disk one week as the rollback; this text is kept unchanged for that week.
+
 Channel `atleastonce` on kick.com. Written 2026-09-25 by the synthesizer step of the
 `kick-live-world-concept` workflow (5 persona concepts, 3 judges, this document). Starting point is
 the top-ranked concept, **PIP HOLLOW** (149/180 across three judges, first on every judge's sheet),

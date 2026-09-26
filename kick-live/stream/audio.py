@@ -77,6 +77,36 @@ state.json field the rounds / keeper agents own):
            macro.last_reload ok = chime + low rock rumble; failed = the existing saw + thud
                                                                                        -20 dBFS
 
+LONGGRASS layers (docs/OPENWORLD.md 9; LAND mode = the attached scene carries `nature`, `camera`, `terrain` and a
+`land`; the cave keeps every line above). Every bed is driven by the sim (wind = the real chat rate) or the camera;
+every sting by a scene event about a real person; nothing implies life that is not real (no birds, insects, crowd):
+  wind     seamless pink-noise loops (350 Hz and 1.4 kHz low-passed) cross-faded by the sim wind speed (6 -> 20 cells/s),
+           +5 dB on a gust (2-4 s swells from nature.Wind.gust), panned a little toward where the wind comes from
+                                                                                       -28 dBFS
+  river    band-passed burble (150-900 Hz pink, 7 Hz tremolo), level 1 / (1 + d / 40) where d = the camera centre's
+           distance in cells to the nearest river / Ford cell (terrain.river_path)          -32 dBFS at the bank
+  shore    600 Hz low-passed wash with a 6 s swell, 1 / (1 + d / 40) to the nearest sea cell -34 dBFS at the water
+  fire     the crackle, only while a lit fire is in view: the Moot hearth lit THIS session (land.hearth_lit), or a
+           hut (camp tier >= 2: a hearth, a window lit while the owner is awake) of an AWAKE pip inside the window
+                                                                                           -34 dBFS
+  rain     `_rain_block` while micro.weather is rain (glow-rain kept for the cave)          -34 dBFS
+  pad      voices = awake count, as before; chords in a MAJOR set (C G Am F) in spring / summer, the minor set
+           (Am F C G) in autumn / winter, swapped only at a chord boundary                  -24 dBFS
+  bells    one wind-bell per camp, pitched by the owner's name hash (the pluck degree, one octave up), inharmonic
+           partials, 1.5 s. A gust rings the bells inside or near the window (west to east, softer with distance);
+           first breath (`first_light`) rings every camp west to east once; a `wake` rings the returner's bell once,
+           three times on a homecoming (away >= 7 days)                                   -30 dBFS
+  steps    footstep timbre by the cell under the pip: grass hush, trail click (land.trail_tier >= 1), Ford splash
+           (through the drip plink), sand crunch, marsh squelch; 4 Hz per walking pip, global 1 per 60 ms  -26 dBFS
+  stings   tuft landing (`seed_land`); `camp` / `camp_new` tier <= 1 = cloth flap + peg tap, tier >= 2 = three soft
+           hammer ticks; `sow` three earthy taps; `harvest` the major chord chime; `pickup` two low thuds; `place` /
+           `stack` a click (+ a short bell when the cairn is NAMED / `cairn_named`); a hammer tick every 2 s while
+           `scene.keepers.raising` goes up; `raising_ship` / `land_open` / a land `milestone` = chime + rumble +
+           sweep; `bonfire` / `fire` a low whoomp; `swim` a splash; `expedition` N soft footsteps as a 3 s bed;
+           a camera retarget is silence                                                    -22 to -26 dBFS
+  sun      one soft bell at sunrise and one at sunset of the world clock (nature.night_amount crossing 0.5: 05:24
+           and 19:48 in the world's hours), never twice inside 10 min                      -26 dBFS
+
 Master unchanged: fixed gain so the bed sits at about -18 dBFS integrated (see MASTER_GAIN, calibrated against
 ffmpeg volumedetect), then a tanh soft limiter into a -6 dBFS peak ceiling: it cannot clip by construction.
 The engine never raises out of block(): on any internal error it returns silence for that block.
@@ -127,6 +157,29 @@ LVL_EMOTE = -26.0
 LVL_CREDITS = -26.0
 LVL_RAIN = -34.0
 LVL_KEEPER = -20.0
+# LONGGRASS (OPENWORLD.md 9)
+LVL_WIND = -28.0
+LVL_RIVER = -32.0
+LVL_SHORE = -34.0
+LVL_FIRE = -34.0
+LVL_BELL = -30.0
+LVL_STEP_LAND = -26.0
+LVL_STING = -24.0
+LVL_SUNBELL = -26.0
+WATER_FALL_CELLS = 40.0                # river / shore level = 1 / (1 + d / 40)
+BED_LOOP_S = 4.0
+BED_SMOOTH_S = 0.6                     # bed gains ease over this long (no steps when the camera or the wind moves)
+GUST_BELL_PAD = 40.0                   # camps this many cells outside the window still ring on a gust
+GUST_BELL_MAX = 8
+BELL_WE_GAP_S = 0.22                   # west -> east spacing of the first-breath bells
+HOMECOMING_S = 7 * 86400.0
+SUN_BELL_GAP_S = 600.0
+HAMMER_GAP_S = 2.0
+STEP_TIMBRES = ("grass", "trail", "ford", "sand", "marsh")
+CHORDS_MAJOR = [("C3", "E3", "G3"),    # I    C
+                ("G3", "B2", "D3"),    # V    G
+                ("A2", "C3", "E3"),    # vi   Am
+                ("F3", "A2", "C3")]    # IV   F
 # The bed (pad + pulse + texture) sums to about -23.3 dBFS; this trim lands it at -18 dBFS integrated.
 # Calibrated with: $FFMPEG -f s16le -ar 48000 -ac 2 -i bed.pcm -af volumedetect  (mean_volume -18.x dB)
 MASTER_GAIN = 1.78
@@ -419,6 +472,52 @@ class AudioEngine(object):
         self._rain = self._pink_loop(init_rng)              # (m, 2) periodic pink noise, low-passed at 1.5 kHz
         self._rain_env = 0.0
         self._rain_pos = 0
+        # -- LONGGRASS beds (RMS 1.0 loops; the level is applied per block), bells, footstep timbres, stings
+        self._wind_lo = self._noise_loop(init_rng, lambda f: 1.0 / np.sqrt(f) * one_pole_gain(f, 350.0))
+        self._wind_hi = self._noise_loop(init_rng, lambda f: 1.0 / np.sqrt(f) * one_pole_gain(f, 1400.0) * (f / (f + 120.0)))
+        self._river = self._noise_loop(init_rng, lambda f: 1.0 / np.sqrt(f) * one_pole_gain(f, 900.0) * (f / (f + 150.0)))
+        self._shore = self._noise_loop(init_rng, lambda f: 1.0 / np.sqrt(f) * one_pole_gain(f, 600.0))
+        self._bed_pos = 0
+        self._bed_gain = {"wind_lo": 0.0, "wind_hi": 0.0, "river": 0.0, "shore": 0.0, "fire": 0.0}   # smoothed, linear
+        self._bed_pan = 0.0
+        self._bed_t = 0.0
+        self._land: Any = None                               # {"nature", "camera", "terrain", "land"} of the land scene
+        self._land_scene_id = None
+        self._water_pts: Optional[Tuple[np.ndarray, np.ndarray]] = None
+        self._water_pts_id = None
+        self._gust_prev = 0.0
+        self._sun_night: Optional[bool] = None
+        self._last_sun_bell_pos = -10 ** 9
+        self._last_hammer_pos = -10 ** 9
+        self._chords: List[Tuple[str, str, str]] = CHORDS
+        self._chords_next: List[Tuple[str, str, str]] = CHORDS
+        self._cache["step_grass"] = self._noise_burst(init_rng, 0.014, LVL_STEP_LAND - 4.0, taps=10, decay=7.0)
+        self._cache["step_trail"] = self._seq([(self._noise_burst(init_rng, 0.008, LVL_STEP_LAND, taps=2, decay=12.0), 0.0),
+                                               (self._tone([1800.0], 0.006, LVL_STEP_LAND - 6.0, decay=6.0, attack_s=0.0004), 0.0)])
+        self._cache["step_sand"] = self._seq([(self._noise_burst(init_rng, 0.010, LVL_STEP_LAND - 2.0, taps=5, decay=8.0), 0.0),
+                                              (self._noise_burst(init_rng, 0.010, LVL_STEP_LAND - 5.0, taps=5, decay=8.0), 0.018)])
+        self._cache["step_marsh"] = self._seq([(self._noise_burst(init_rng, 0.040, LVL_STEP_LAND - 3.0, taps=16, decay=5.0), 0.0),
+                                               (self._glide(140.0, 90.0, 0.06, LVL_STEP_LAND - 6.0), 0.0)])
+        self._cache["step_ford"] = self._noise_burst(init_rng, 0.030, LVL_STEP_LAND - 2.0, taps=4, decay=6.0)   # + a drip plink at step time
+        self._cache["tent"] = self._seq([(self._flap(init_rng), 0.0),
+                                         (self._tone([400.0], 0.025, LVL_STING - 4.0, decay=7.0, wave="tri", attack_s=0.001), 0.22),
+                                         (self._noise_burst(init_rng, 0.006, LVL_STING - 6.0, taps=2, decay=10.0), 0.22)])
+        hammer = self._seq([(self._noise_burst(init_rng, 0.010, LVL_STING - 3.0, taps=3, decay=9.0), 0.0),
+                            (self._tone([900.0], 0.020, LVL_STING - 6.0, decay=7.0, attack_s=0.0005), 0.0)])
+        self._cache["hammer"] = hammer
+        self._cache["hut"] = self._seq([(hammer, 0.0), (hammer, 0.18), (hammer, 0.36)])
+        tap = self._tone([90.0], 0.060, LVL_STING - 2.0, decay=6.0, attack_s=0.001)
+        self._cache["sow"] = self._seq([(tap, 0.0), (tap, 0.14), (tap, 0.28)])
+        self._cache["pickup"] = self._seq([(self._tone([80.0], 0.10, LVL_STING - 2.0, decay=6.0, attack_s=0.001), 0.0),
+                                           (self._tone([55.0], 0.08, LVL_STING - 6.0, decay=5.0, attack_s=0.001), 0.09)])
+        self._cache["stone_click"] = self._tone([2400.0], 0.015, LVL_STING - 3.0, decay=6.0, attack_s=0.0005)
+        self._cache["name_bell"] = self._bell_buf(880.0, 0.6, LVL_STING - 2.0)
+        self._cache["sun_bell"] = self._bell_buf(660.0, 1.4, LVL_SUNBELL)
+        self._cache["whoomp"] = self._seq([(self._noise_burst(init_rng, 0.20, LVL_STING - 4.0, taps=24, decay=4.0), 0.0),
+                                           (self._tone([60.0], 0.18, LVL_STING - 6.0, decay=5.0, attack_s=0.002), 0.0)])
+        self._cache["splash"] = self._seq([(self._noise_burst(init_rng, 0.12, LVL_STING - 3.0, taps=4, decay=5.0), 0.0),
+                                           (self._noise_burst(init_rng, 0.06, LVL_STING - 8.0, taps=6, decay=6.0), 0.15)])
+        self._bells: Dict[int, np.ndarray] = {}
 
         # -- ctx change detectors
         self._last_votes: Optional[int] = None
@@ -437,6 +536,7 @@ class AudioEngine(object):
         self._last_fail_pos = -10 ** 9
 
         # -- world scene (events + awake count)
+        self._now: Optional[float] = None
         self._world: Any = None                              # attach_world()
         self._world_found: Any = None                        # auto-discovered
         self._world_where: Optional[Tuple[str, str, bool]] = None   # (module, attr, via .scene) it was found at
@@ -453,7 +553,10 @@ class AudioEngine(object):
         self.stats = {"plucks": 0, "plucks_dropped": 0, "votes": 0, "ships": 0, "fails": 0, "builders": 0,
                       "ticks": 0, "themes": 0, "pre_peak": 0.0,
                       "world_events": 0, "motifs": 0, "motif_notes": 0, "motifs_dropped": 0, "drips": 0,
-                      "self_drips": 0, "steps": 0, "stings": 0, "keeper": 0, "hatches": 0, "world_blocks": 0}
+                      "self_drips": 0, "steps": 0, "stings": 0, "keeper": 0, "hatches": 0, "world_blocks": 0,
+                      "land_blocks": 0, "bells": 0, "gust_bells": 0, "sun_bells": 0, "hammers": 0,
+                      "steps_by": {k: 0 for k in STEP_TIMBRES}, "land_stings": 0}
+        self.land_mode = False
 
     # ================================================================================== events / triggers
     def _tone(self, freqs: List[float], dur_s: float, level_db: float, decay: float = 6.0, wave: str = "sine",
@@ -551,6 +654,327 @@ class AudioEngine(object):
             rms = float(np.sqrt(np.mean(x ** 2))) or 1.0
             out[:, ch] = x / rms * db(LVL_RAIN)
         return out
+
+    def _noise_loop(self, rng, shape) -> np.ndarray:
+        """Seamless stereo noise loop (FFT synthesis on integer bins) with the spectral `shape(f)`; RMS 1.0 per channel
+        (the level is applied per block). Init-time only."""
+        m = int(BED_LOOP_S * self.sr)
+        freqs = np.fft.rfftfreq(m, 1.0 / self.sr)
+        mag = np.zeros_like(freqs)
+        mag[1:] = shape(freqs[1:])
+        out = np.empty((m, 2), np.float64)
+        for ch in range(2):
+            ph = rng.uniform(0.0, 2.0 * math.pi, freqs.shape[0])
+            x = np.fft.irfft(mag * np.exp(1j * ph), m)
+            rms = float(np.sqrt(np.mean(x ** 2))) or 1.0
+            out[:, ch] = x / rms
+        return out
+
+    def _glide(self, f0: float, f1: float, dur_s: float, level_db: float) -> np.ndarray:
+        """A sine gliding f0 -> f1 over dur_s (the marsh squelch's pitch drop)."""
+        m = int(dur_s * self.sr)
+        t = np.arange(m, dtype=np.float64) / self.sr
+        f = f0 + (f1 - f0) * t / max(dur_s, 1e-6)
+        ph = np.cumsum(f) / self.sr
+        sig = np.sin(2.0 * math.pi * ph) * np.exp(-5.0 * t / dur_s) * np.minimum(1.0, t / 0.002)
+        sig[-min(m, 48):] *= np.linspace(1.0, 0.0, min(m, 48))
+        rms = float(np.sqrt(np.mean(sig ** 2))) or 1.0
+        return self._stereo(sig * db(level_db) / rms * 0.6, 0.0)
+
+    def _flap(self, rng) -> np.ndarray:
+        """Cloth flap: 160 ms low-passed noise with an 18 Hz amplitude wobble (a tent going up)."""
+        m = int(0.16 * self.sr)
+        t = np.arange(m, dtype=np.float64) / self.sr
+        sig = np.convolve(rng.uniform(-1.0, 1.0, m), np.full(14, 1.0 / 14.0), mode="same")
+        sig *= (0.55 + 0.45 * np.sin(2.0 * math.pi * 18.0 * t)) * np.exp(-3.0 * t / 0.16) * np.minimum(1.0, t / 0.004)
+        sig[-96:] *= np.linspace(1.0, 0.0, 96)
+        rms = float(np.sqrt(np.mean(sig ** 2))) or 1.0
+        return self._stereo(sig * db(LVL_STING - 3.0) / rms * 0.6, 0.0)
+
+    def _bell_buf(self, f: float, dur_s: float, level_db: float) -> np.ndarray:
+        """A small bell: inharmonic partials (1, 2.0, 2.76, 5.4) with their own decays; RMS at level_db."""
+        m = int(dur_s * self.sr)
+        t = np.arange(m, dtype=np.float64) / self.sr
+        sig = np.zeros(m, np.float64)
+        for ratio, amp, dec in ((1.0, 1.0, 1.0), (2.003, 0.5, 0.7), (2.76, 0.3, 0.45), (5.4, 0.15, 0.25)):
+            sig += amp * np.sin(2.0 * math.pi * f * ratio * t) * np.exp(-t / (dec * dur_s))
+        sig *= np.minimum(1.0, t / 0.002)
+        sig[-min(m, 192):] *= np.linspace(1.0, 0.0, min(m, 192))
+        rms = float(np.sqrt(np.mean(sig ** 2))) or 1.0
+        return self._stereo(sig * db(level_db) / rms * 0.6, 0.0)
+
+    def _camp_bell(self, deg: int) -> np.ndarray:
+        """The wind-bell of a camp: the owner's pluck degree one octave up (A4..G6), cached per degree."""
+        deg = max(0, min(9, int(deg)))
+        b = self._bells.get(deg)
+        if b is None:
+            b = self._bells[deg] = self._bell_buf(PENTA_HZ[deg] * 2.0, 1.5, LVL_BELL)
+        return b
+
+    # ================================================================================== LONGGRASS: the land behind a scene
+    def _land_bits(self, scene) -> Any:
+        """{nature, camera, terrain, land} when the scene is the LONGGRASS land, else None (the cave). Re-read cheaply."""
+        if scene is None:
+            self._land = None
+            return None
+        nature = getattr(scene, "nature", None)
+        camera = getattr(scene, "camera", None)
+        if nature is None or camera is None:
+            self._land = None
+            return None
+        terrain = getattr(scene, "terrain", None) or getattr(nature, "T", None)
+        land = getattr(scene, "land", None)
+        if land is None:
+            land = getattr(getattr(scene, "world", None), "land", None)
+        if self._land is None or self._land_scene_id != id(scene):
+            self._land_scene_id = id(scene)
+            self.log("land scene found: wind / river / shore beds, camp bells and footstep timbres follow the sim")
+        self._land = {"nature": nature, "camera": camera, "terrain": terrain, "land": land, "scene": scene}
+        return self._land
+
+    def _water_points(self, terrain) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """(river points (N, 2), sea points (M, 2)) in cells, subsampled once per terrain: the camera's distance to
+        water is a min over ~1-2k points (microseconds), never a BFS on the frame path."""
+        if terrain is None:
+            return None, None
+        if self._water_pts is not None and self._water_pts_id == id(terrain):
+            return self._water_pts
+        river = None
+        try:
+            pts = list(getattr(terrain, "river_path", None) or [])
+            arr = np.asarray(pts[::6] if len(pts) > 12 else pts, np.float32).reshape(-1, 2) if pts else None
+            fs = list(getattr(terrain, "ford_stones", None) or [])
+            if fs:
+                arr = np.concatenate([arr, np.asarray(fs, np.float32).reshape(-1, 2)]) if arr is not None else np.asarray(fs, np.float32)
+            river = arr if (arr is not None and arr.size) else None
+        except Exception:
+            river = None
+        sea = None
+        try:
+            s = getattr(terrain, "sea", None)
+            if s is not None:
+                ys, xs = np.nonzero(np.asarray(s)[::6, ::6])
+                if ys.size:
+                    sea = np.stack([xs * 6.0, ys * 6.0], axis=1).astype(np.float32)
+        except Exception:
+            sea = None
+        self._water_pts = (river, sea)
+        self._water_pts_id = id(terrain)
+        return self._water_pts
+
+    @staticmethod
+    def _dist_to(pts: Optional[np.ndarray], x: float, y: float) -> float:
+        if pts is None or not len(pts):
+            return float("inf")
+        d = pts - np.asarray([x, y], np.float32)
+        return float(np.sqrt(np.min(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])))
+
+    def _fire_in_view(self, bits, ctx) -> bool:
+        """A lit fire inside the window: the Moot hearth lit THIS session, or an awake pip's camp. Honest sources only."""
+        land, cam, scene = bits.get("land"), bits["camera"], bits["scene"]
+        if land is None:
+            return False
+        try:
+            started = None
+            if ctx is not None:
+                started = _iso_to_epoch((getattr(ctx, "session", None) or {}).get("started_ts"))
+            if land.hearth_lit(started) and cam.in_view(float(land.moot[0]), float(land.moot[1]), pad=20.0):
+                return True
+            awake = {e.key for e in scene.behaviour.awake()}
+            for c in land.camps():
+                # a hut (tier >= 2) has a hearth and a window lit while its owner is awake (5.3); a hollow or a tent has
+                # a bedroll and a bell, no fire of its own
+                if c["key"] in awake and int(c.get("tier") or 0) >= 2 and c["x"] is not None and cam.in_view(float(c["x"]), float(c["y"]), pad=10.0):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _land_beds_update(self, bits, ctx) -> None:
+        """Per block: the bed gain targets from the sim wind and the camera's distance to water (eased over BED_SMOOTH_S)."""
+        nature, cam = bits["nature"], bits["camera"]
+        wind = getattr(nature, "wind", None)
+        speed = float(getattr(wind, "speed", 6.0) or 6.0)
+        gust = float(getattr(wind, "gust", 0.0) or 0.0)
+        t = max(0.0, min(1.0, (speed - 6.0) / 14.0))
+        wind_amp = db(LVL_WIND) * (0.55 + 0.45 * t) * (1.0 + 0.8 * gust)
+        river_pts, sea_pts = self._water_points(bits.get("terrain"))
+        cx, cy = float(getattr(cam, "cx", 0.0)), float(getattr(cam, "cy", 0.0))
+        d_r = self._dist_to(river_pts, cx, cy)
+        d_s = self._dist_to(sea_pts, cx, cy)
+        target = {"wind_lo": wind_amp * (1.0 - t), "wind_hi": wind_amp * t,
+                  "river": db(LVL_RIVER) / (1.0 + d_r / WATER_FALL_CELLS) if d_r != float("inf") else 0.0,
+                  "shore": db(LVL_SHORE) / (1.0 + d_s / WATER_FALL_CELLS) if d_s != float("inf") else 0.0,
+                  "fire": 1.0 if self._fire_in_view(bits, ctx) else 0.0}
+        k = min(1.0, (self.n / float(self.sr)) / BED_SMOOTH_S)
+        for name, tv in target.items():
+            g = self._bed_gain[name]
+            self._bed_gain[name] = g + (tv - g) * k
+        try:
+            ang = float(getattr(wind, "angle", 0.0) or 0.0)
+            self._bed_pan += (-0.35 * math.cos(ang) - self._bed_pan) * k     # a little toward where the wind comes from
+        except Exception:
+            pass
+
+    def _land_beds_block(self) -> np.ndarray:
+        """Wind + river + shore for this block from the loops, with the smoothed gains ramped across the block."""
+        n = self.n
+        m = self._wind_lo.shape[0]
+        i0 = self._bed_pos
+        i1 = i0 + n
+
+        def seg(loop):
+            return loop[i0:i1] if i1 <= m else np.concatenate([loop[i0:], loop[:i1 - m]])
+        self._bed_pos = i1 % m
+        g = self._bed_gain
+        t0 = self._bed_t
+        tt = t0 + self._idx / float(self.sr)
+        self._bed_t = t0 + n / float(self.sr)
+        out = seg(self._wind_lo) * g["wind_lo"] + seg(self._wind_hi) * g["wind_hi"]
+        pan = self._bed_pan
+        out[:, 0] *= (1.0 - 0.5 * pan)
+        out[:, 1] *= (1.0 + 0.5 * pan)
+        if g["river"] > 1e-6:
+            trem = (1.0 + 0.3 * np.sin(2.0 * math.pi * 7.0 * tt))[:, None]
+            out += seg(self._river) * (g["river"] * trem)
+        if g["shore"] > 1e-6:
+            swell = (0.45 + 0.55 * np.sin(2.0 * math.pi * tt / 6.0) ** 2)[:, None]
+            out += seg(self._shore) * (g["shore"] * swell)
+        return out
+
+    def _camp_pan(self, bits, x: float, y: float) -> float:
+        cam = bits["camera"]
+        try:
+            p = cam.sim_to_screen(float(x), float(y), margin_px=640.0)
+            if p is not None:
+                return max(-0.7, min(0.7, (p[0] / 1280.0 - 0.5) * 1.4))
+            return 0.6 if float(x) > float(cam.cx) else -0.6
+        except Exception:
+            return 0.0
+
+    def _ring(self, bits, camp: Dict[str, Any], offset_s: float, gain: float = 1.0) -> None:
+        """One ring of a camp's wind-bell (pitched by the owner's name hash), panned by its place on screen."""
+        scene = bits["scene"]
+        deg = self._pip_degree(scene, str(camp.get("key") or ""))
+        buf = self._camp_bell(deg)
+        pan = self._camp_pan(bits, camp.get("x") or 0.0, camp.get("y") or 0.0)
+        self._events.append((self._pos + int(offset_s * self.sr), self._repan(buf, pan) * float(gain)))
+        if len(self._events) > 200:
+            del self._events[:-200]
+        self.stats["bells"] += 1
+
+    def _camps(self, bits) -> List[Dict[str, Any]]:
+        land = bits.get("land")
+        if land is None:
+            return []
+        try:
+            return [c for c in land.camps() if c.get("x") is not None]
+        except Exception:
+            return []
+
+    def _gust_bells(self, bits) -> None:
+        """A gust onset rings the bells inside / near the window, west to east, softer with distance from the centre."""
+        cam = bits["camera"]
+        camps = [c for c in self._camps(bits) if cam.in_view(float(c["x"]), float(c["y"]), pad=GUST_BELL_PAD)]
+        if not camps:
+            return
+        camps.sort(key=lambda c: float(c["x"]))
+        cx, cy = float(cam.cx), float(cam.cy)
+        for i, c in enumerate(camps[:GUST_BELL_MAX]):
+            d = math.hypot(float(c["x"]) - cx, float(c["y"]) - cy)
+            gain = max(0.35, 1.0 - d / 240.0)
+            self._ring(bits, c, 0.05 + 0.3 * i / max(1, len(camps)) + 0.02 * (i % 3), gain)
+            self.stats["gust_bells"] += 1
+
+    def _first_breath_bells(self, bits) -> None:
+        """First breath: every camp's bell once, west to east (each a real sleeper's mark acknowledging the arrival)."""
+        camps = sorted(self._camps(bits), key=lambda c: float(c["x"]))
+        for i, c in enumerate(camps[:24]):
+            self._ring(bits, c, 0.6 + BELL_WE_GAP_S * i, 0.8)
+
+    def _step_timbre(self, bits, scene, key: str) -> str:
+        """The footstep timbre from the cell under the pip: ford / sand / marsh by biome, trail by wear, else grass."""
+        T, land = bits.get("terrain"), bits.get("land")
+        try:
+            e = scene.behaviour.get(key)
+            if e is None or T is None:
+                return "grass"
+            x, y = int(round(float(e.x))), int(round(float(e.y)))
+            biome = int(T.biome[max(0, min(T.h - 1, y)), max(0, min(T.w - 1, x))])
+            if biome == 3:
+                return "ford"
+            if biome == 4:
+                return "sand"
+            if biome == 10:
+                return "marsh"
+            if land is not None and land.trail_tier(x, y) >= 1:
+                return "trail"
+        except Exception:
+            pass
+        return "grass"
+
+    def _step_buf(self, bits, scene, key: str, side: int) -> np.ndarray:
+        if bits is None:
+            return self._repan(self._cache["step"], 0.25 * side)
+        timbre = self._step_timbre(bits, scene, key)
+        self.stats["steps_by"][timbre] = self.stats["steps_by"].get(timbre, 0) + 1
+        buf = self._cache["step_" + timbre]
+        if timbre == "ford":
+            plink = self._drips[int(self._drip_rng.integers(0, len(self._drips)))] * 0.5
+            buf = self._seq([(buf, 0.0), (plink, 0.004)])
+        pan = 0.25 * side
+        try:
+            e = scene.behaviour.get(key)
+            if e is not None:
+                pan = self._camp_pan(bits, e.x, e.y) * 0.6 + 0.1 * side
+        except Exception:
+            pass
+        return self._repan(buf, pan)
+
+    def _sun_bells(self, bits, now: Optional[float]) -> None:
+        """One soft bell when the world clock crosses sunrise or sunset (night_amount through 0.5), 10 min apart at least."""
+        if now is None:
+            return
+        try:
+            from stream.world.nature import night_amount
+            night = night_amount(bits["nature"].hour(now)) > 0.5
+        except Exception:
+            return
+        if self._sun_night is None:
+            self._sun_night = night
+            return
+        if night != self._sun_night:
+            self._sun_night = night
+            if self._pos - self._last_sun_bell_pos >= int(SUN_BELL_GAP_S * self.sr):
+                self._last_sun_bell_pos = self._pos
+                self._add(self._cache["sun_bell"])
+                self.stats["sun_bells"] += 1
+
+    def _raising_hammer(self, bits) -> None:
+        """A soft hammer tick every 2 s while the keepers' raising goes up (scene.keepers.raising)."""
+        kp = getattr(bits["scene"], "keepers", None)
+        r = getattr(kp, "raising", None) if kp is not None else None
+        if r is None:
+            return
+        if self._pos - self._last_hammer_pos >= int(HAMMER_GAP_S * self.sr):
+            self._last_hammer_pos = self._pos
+            pan = self._camp_pan(bits, r.get("x", 0.0), r.get("y", 0.0)) if isinstance(r, dict) else 0.0
+            self._add(self._repan(self._cache["hammer"], pan))
+            self.stats["hammers"] += 1
+
+    def _season_chords(self, bits, now: Optional[float]) -> None:
+        """Major in spring / summer, minor in autumn / winter; the swap lands at the next chord boundary."""
+        try:
+            s = int(bits["nature"].season(now)) % 4 if now is not None else 0
+        except Exception:
+            s = 0
+        self._chords_next = CHORDS_MAJOR if s in (0, 1) else CHORDS
+
+    def _land_sting(self, name: str, pan: float = 0.0, gain: float = 1.0) -> None:
+        buf = self._cache[name]
+        self._add(self._repan(buf, pan) * gain if gain != 1.0 else self._repan(buf, pan))
+        self.stats["stings"] += 1
+        self.stats["land_stings"] += 1
 
     def _seq(self, parts: List[Tuple[np.ndarray, float]]) -> np.ndarray:
         """Mix stereo one-shots at offsets (seconds) into one buffer."""
@@ -686,6 +1110,7 @@ class AudioEngine(object):
         if ctx is None:
             return
         now = ctx.now
+        self._now = now
         world = self.world_mode
         # a scene handed over on ctx wins over discovery (an integrator may set ctx.world)
         cw = getattr(ctx, "world", None)
@@ -707,6 +1132,8 @@ class AudioEngine(object):
         # weather (rounds agent owns state.micro.weather): glow-rain noise, fog cutoff, lights-out sub voice
         try:
             self._weather = str((ctx.micro or {}).get("weather") or "clear").lower()
+            if self._weather == "rain":
+                self._weather = "glow-rain"                     # OPENWORLD 11 `rain` drives the same rain bed
         except Exception:
             self._weather = "clear"
         # votes / rounds
@@ -734,8 +1161,8 @@ class AudioEngine(object):
                     title = str((rnd.get("last_result") or {}).get("title") or "").lower()
                 except Exception:
                     title = ""
-                if world and title.startswith("feast"):
-                    self._add(self._cache["ship_chord"])
+                if world and (title.startswith("feast") or title.startswith("bonfire") or title.startswith("harvest")):
+                    self._add(self._cache["ship_chord"])        # a feast: the chime as one chord
                     self.stats["ships"] += 1
                 else:
                     self.trigger("ship")
@@ -849,12 +1276,16 @@ class AudioEngine(object):
         return stable_hash(name) % 10
 
     def _pip_pan(self, scene, key: str, x: Optional[float] = None, deg: Optional[int] = None) -> float:
+        y = None
         if x is None:
             try:
                 e = scene.behaviour.get(key)
                 x = float(e.x) if e is not None else None
+                y = float(getattr(e, "y", 0.0)) if e is not None else None
             except Exception:
                 x = None
+        if x is not None and self._land is not None:
+            return self._camp_pan(self._land, x, y if y is not None else float(getattr(self._land["camera"], "cy", 0.0)))
         if x is not None:
             return max(-0.6, min(0.6, (float(x) / 320.0 - 0.5) * 1.2))
         if deg is not None:
@@ -933,6 +1364,62 @@ class AudioEngine(object):
             gifts = sum(1 for c in (ev.get("care_log") or []) if isinstance(c, dict) and c.get("verb") == "gift")
             for i in range(min(3, gifts)):
                 self._events.append((self._pos + int((0.5 + 0.3 * i) * self.sr), self._gift_buf(deg)))
+            if self._land is not None:
+                # the returner's own bell: once, three times on a homecoming (away >= 7 days). The bell is a real
+                # sleeper's mark; the wind does not ring it here, the person's return does (3.2)
+                camp = next((c for c in self._camps(self._land) if c.get("key") == key), None)
+                if camp is not None:
+                    away = ev.get("away_s")
+                    rings = 3 if (away is not None and float(away) >= HOMECOMING_S) else 1
+                    for i in range(rings):
+                        self._ring(self._land, camp, 0.3 + 0.35 * i, 0.9)
+        elif typ in ("first_light", "first_breath"):
+            if self._land is not None:
+                self._first_breath_bells(self._land)
+        elif typ in ("camp", "camp_new", "camp_raised"):
+            tier = int(ev.get("tier") or 0)
+            pan = self._pip_pan(scene, key, ev.get("x"))
+            self._land_sting("hut" if tier >= 2 else "tent", pan)
+        elif typ == "sow":
+            self._land_sting("sow", self._pip_pan(scene, key, ev.get("x")))
+        elif typ == "harvest":
+            self._add(self._cache["ship_chord"])
+            self.stats["stings"] += 1
+            self.stats["land_stings"] += 1
+        elif typ == "pickup":
+            self._land_sting("pickup", self._pip_pan(scene, key, ev.get("x")))
+        elif typ in ("place", "stack", "drop"):
+            pan = self._pip_pan(scene, key, ev.get("x"))
+            self._land_sting("stone_click" if str(ev.get("kind") or "stone") == "stone" else "pickup", pan)
+            if ev.get("named"):
+                self._events.append((self._pos + int(0.12 * self.sr), self._repan(self._cache["name_bell"], pan)))
+        elif typ == "cairn_named":
+            self._land_sting("name_bell", self._pip_pan(scene, key, ev.get("x")) if key else 0.0)
+        elif typ in ("raising_ship", "land_open", "carve_done"):
+            self._add(self._cache["carve"])
+            self._sweep(0.6)
+            self.stats["keeper"] += 1
+        elif typ == "milestone" and ev.get("land"):
+            self._add(self._cache["carve"])
+            self._sweep(0.6)
+            self.stats["keeper"] += 1
+        elif typ in ("raising", "raising_step", "raising_waiting", "milestone_waiting", "keeper_carving", "keeper_carved",
+                     "keeper_carve_failed", "carve_start", "carve_step", "stuck", "mutter_due", "nickname", "rename", "unbanish"):
+            pass                                                # the hammer ticks ride on scene.keepers.raising; the rest is copy
+        elif typ in ("bonfire", "fire", "hearth_lit"):
+            self._land_sting("whoomp", self._pip_pan(scene, key, ev.get("x")) if key else 0.0)
+        elif typ == "swim":
+            self._land_sting("splash", self._pip_pan(scene, key, ev.get("x")))
+        elif typ == "expedition":
+            # N soft footsteps as a 3 s rhythmic bed (N = the real walkers), never above the step level
+            n = max(1, min(12, int(ev.get("walkers") or ev.get("count") or 1)))
+            for i in range(n * 6):
+                at = self._pos + int((0.1 + 0.12 * i + 0.03 * ((i * 7) % 5) / 5.0) * self.sr)
+                if i < 72:
+                    self._events.append((at, self._repan(self._cache["step_grass"], 0.4 * math.sin(i * 1.3)) * 0.7))
+            if len(self._events) > 200:
+                del self._events[:-200]
+            self.stats["land_stings"] += 1
         elif typ == "sleep":
             deg = self._pip_degree(scene, key)
             self._sting("sleep%d" % deg, lambda: self._third(deg, LVL_WAKE, False, octave=0.5, d1=0.20, d2=0.30))
@@ -1034,7 +1521,9 @@ class AudioEngine(object):
             if self.detect_errors % 100 == 1:
                 self.log("world tick failed (%r); voices hold" % (e,))
             awake = self.awake_voices
-        # footsteps: 4 Hz per walking pip, global 1 per 60 ms, alternate left/right, until arrive or the cap
+        bits = self._land
+        # footsteps: 4 Hz per walking pip, global 1 per 60 ms, alternate left/right, until arrive or the cap;
+        # on the land the timbre is the cell under the pip (grass / trail / ford / sand / marsh)
         if self._walking:
             end = self._pos + self.n
             gap, ggap = int(STEP_GAP_S * self.sr), int(STEP_GLOBAL_GAP_S * self.sr)
@@ -1046,13 +1535,30 @@ class AudioEngine(object):
                 while st[0] < end:
                     at = max(st[0], self._last_step_pos + ggap)
                     if at < end:
-                        self._events.append((at, self._repan(self._cache["step"], 0.25 * st[2])))
+                        self._events.append((at, self._step_buf(bits, scene, k, st[2])))
                         self._last_step_pos = at
                         self.stats["steps"] += 1
                         st[2] = -st[2]
                     st[0] = max(st[0], at) + gap
             if len(self._events) > 200:
                 del self._events[:-200]
+        if bits is not None:
+            # the land: gust bells, the raising hammer, sunrise / sunset; no self-drips (there is no cave roof)
+            try:
+                gust = float(getattr(bits["nature"].wind, "gust", 0.0) or 0.0)
+                if gust >= 0.5 and self._gust_prev < 0.05:
+                    self._gust_bells(bits)
+                self._gust_prev = gust
+                self._raising_hammer(bits)
+                self._sun_bells(bits, self._now)
+                self._season_chords(bits, self._now)
+            except Exception as e:
+                self.detect_errors += 1
+                if self.detect_errors % 100 == 1:
+                    self.log("land tick failed (%r)" % (e,))
+            self._next_self_drip = 0
+            self._last_drip_pos = self._pos
+            return awake
         # self-drips when the scene has been silent about drips for 8 s (an erroring scene still drips)
         if self._pos - self._last_drip_pos > int(SELF_DRIP_AFTER_S * self.sr):
             if self._next_self_drip <= self._pos:
@@ -1076,7 +1582,7 @@ class AudioEngine(object):
         n = self.n
         # chord: every 8 bars; 6 s attack / 3 s release on the note envelopes
         target = np.zeros(len(PAD_NOTES), np.float64)
-        target[[PAD_NOTES.index(x) for x in CHORDS[self._chord_idx]]] = 1.0
+        target[[PAD_NOTES.index(x) for x in self._chords[self._chord_idx]]] = 1.0
         blk_s = n / float(self.sr)
         up, down = blk_s / 6.0, blk_s / 3.0
         rising = target > self._note_env
@@ -1103,7 +1609,7 @@ class AudioEngine(object):
         nv = max(0, min(VOICES_MAX, int(awake)))
         self.awake_voices = nv
         # per-voice note targets: voice k -> chord tone k % 3 of the current chord; the sub voice -> the root
-        chord = CHORDS[self._chord_idx]
+        chord = self._chords[self._chord_idx]
         target = np.zeros_like(self._vn_env)
         for vi, (tone, _d, _o, _l) in enumerate(VOICE_TABLE):
             target[vi, PAD_NOTES.index(chord[tone])] = 1.0
@@ -1167,7 +1673,10 @@ class AudioEngine(object):
             if self._pending_tempo is not None:
                 self._tempo = self._pending_tempo
                 self._pending_tempo = None
-            self._chord_idx = (bar1 // BARS_PER_CHORD) % len(CHORDS)
+            idx = (bar1 // BARS_PER_CHORD) % len(CHORDS)
+            if idx != self._chord_idx and self._chords_next is not self._chords:
+                self._chords = self._chords_next                # major / minor by season lands on a chord change only
+            self._chord_idx = idx
         self._beat = beat_end
         sig = kick * 0.9 + hat
         return sig, kick_env
@@ -1248,20 +1757,28 @@ class AudioEngine(object):
             scene = self._world if self._world is not None else scene   # ctx.world may have attached one
             self.world_mode = scene is not None
             pulse, kick_env = self._pulse()
+            bits = self._land_bits(scene) if self.world_mode else None
+            self.land_mode = bits is not None
             if self.world_mode:
                 self.stats["world_blocks"] += 1
+                if bits is not None:
+                    self.stats["land_blocks"] += 1
+                    self._land_beds_update(bits, ctx)
                 awake = self._world_tick(scene)
                 pad_l, pad_r, presence = self._world_pad(kick_env, awake)
-                pulse = pulse * presence                    # 0 awake: drips and crackle only
+                pulse = pulse * presence                    # 0 awake: wind, water and bells only (the cave: drips + crackle)
             else:
                 self.awake_voices = 0
                 pad_l, pad_r = self._pad(kick_env)
             tex = self._texture()
             self._pluck_bus()
             pad_gain = VOICE_GAIN if self.world_mode else PAD_GAIN
+            tex_gain = TEX_GAIN * (1.6 * self._bed_gain["fire"]) if bits is not None else TEX_GAIN
             out = np.empty((self.n, 2), np.float64)
-            out[:, 0] = pad_l * pad_gain + pulse * PULSE_GAIN + tex * TEX_GAIN
-            out[:, 1] = pad_r * pad_gain + pulse * PULSE_GAIN + tex * TEX_GAIN
+            out[:, 0] = pad_l * pad_gain + pulse * PULSE_GAIN + tex * tex_gain
+            out[:, 1] = pad_r * pad_gain + pulse * PULSE_GAIN + tex * tex_gain
+            if bits is not None:
+                out += self._land_beds_block()
             if self.world_mode:
                 rain = self._rain_block()
                 if rain is not None:
@@ -1323,6 +1840,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--bed", action="store_true", help="bed only (pad+pulse+texture), no events")
     ap.add_argument("--world", action="store_true", help="world mode against a real CaveScene in $RUN_DIR (/tmp only)")
+    ap.add_argument("--land", action="store_true", help="LONGGRASS: real terrain / nature / camera / land under a scripted duck scene (/tmp only)")
     ap.add_argument("--world-cal", type=int, default=None, help="steady N-voice pad for level calibration")
     ap.add_argument("--out", default=None, help="write raw s16le stereo 48k to this path")
     ap.add_argument("--seconds", type=float, default=10.0)
@@ -1371,6 +1889,228 @@ if __name__ == "__main__":
         rms = float(np.sqrt(np.mean(x ** 2)))
         print("world-cal voices=%d raw voice-bank RMS %.2f dBFS (VOICE_GAIN is derived from the 3-voice number)" % (
             a.world_cal, 20 * math.log10(rms) if rms > 0 else -120))
+        sys.exit(0)
+
+    if a.land:
+        # ---- LONGGRASS evidence run (OPENWORLD.md 9): the real terrain, nature, camera and a schema-2 Land drive the
+        # beds; a duck-typed scene (the SteadingScene is another agent's module) emits the land's events for real pips.
+        import json as _json
+        run_dir = os.environ.get("RUN_DIR") or "/tmp/lg-audio"
+        rp = os.path.realpath(run_dir)
+        assert rp.startswith("/tmp/") or rp.startswith("/private/tmp/"), "land harness: RUN_DIR must be under /tmp (%s)" % run_dir
+        os.makedirs(run_dir, exist_ok=True)
+        os.environ["RUN_DIR"] = run_dir
+        os.environ.pop("KL_TEST_PIPS", None)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from stream.world import terrain as TERR, nature as NAT
+        from stream.world.camera import Camera
+        from stream.world.state import WorldState
+        from stream.state_store import epoch_to_iso
+        wj = os.path.join(run_dir, "world.json")
+        if os.path.exists(wj):
+            os.remove(wj)
+        # t0: a real epoch whose local minute is 07:48 so the compressed world day (world_day="hour") crosses sunrise
+        # (night_amount through 0.5 at 05:24 world time = minute 08:24) inside the first 40 s of the run
+        lt = list(time.localtime(time.time()))
+        lt[4], lt[5] = 7, 48
+        t0 = float(time.mktime(time.struct_time(lt)))
+        T = TERR.generate(4471)
+        N = NAT.Nature(T, seed=4471, world_day="hour")
+        cam = Camera(moot=T.site, allow_zoom=False)
+        cam.resume(None)
+        ws = WorldState(run_dir, schema=2, moot=(T.site[0], T.site[1]), passable=T.passable, water=T.water, now=t0)
+        ws.begin_session("audio-land", t0)
+        land = ws.land
+        land.set_terrain_layers(T.passable, T.water, (T.site[0], T.site[1]))
+        names = ["land-ada", "land-bo", "land-cy"]
+        mx, my = T.site
+        for i, nm in enumerate(names):
+            ws.ensure_pip(nm, nm, nm, i + 1, t0 - 8 * 86400)
+            ws.record_message(nm, t0 - 60, "audio-land", "hello")
+            ws.set_state(nm, "awake", mx + 10 * i, my + 24, None, None)
+            camp, why = land.set_camp(nm, mx - 40 + 40 * i, my + 40, t0 - 86400, check=False)
+            assert camp is not None, why
+        # one cell of every footstep timbre, found in the real biome map (grass / sand / ford / marsh) + a trail we wear
+        def cell_of(biome):
+            ys, xs = np.nonzero((T.biome == biome) & T.passable)
+            k = len(xs) // 2
+            return int(xs[k]), int(ys[k])
+        grass_c = (int(mx), int(my) + 24)
+        sand_c, ford_c, marsh_c = cell_of(4), cell_of(3), cell_of(10)
+        trail_c = (int(mx) + 6, int(my) + 26)
+        for _ in range(3):
+            land.step(names[0], trail_c[0], trail_c[1])          # a real pip's footsteps wear the cell: pressed grass (>= 8)
+        assert land.trail_tier(*trail_c) >= 1, land.wear_at(*trail_c)
+        route = [("grass", grass_c), ("trail", trail_c), ("sand", sand_c), ("ford", ford_c), ("marsh", marsh_c)]
+
+        class _Ent(object):
+            def __init__(self, key, x, y):
+                self.key, self.x, self.y, self.state = key, float(x), float(y), "awake"
+
+            def is_awake(self):
+                return self.state == "awake"
+
+        class _Beh(object):
+            def __init__(self):
+                self.ents = {nm: _Ent(nm, mx + 10 * i, my + 24) for i, nm in enumerate(names)}
+                self.awake_keys: List[str] = []
+
+            def get(self, k):
+                return self.ents.get(k)
+
+            def awake(self):
+                return [self.ents[k] for k in self.awake_keys]
+
+        class _Keepers(object):
+            raising = None
+
+        class _Land(object):
+            def __init__(self):
+                self.booted, self.frames, self.events = True, 0, []
+                self.world, self.land, self.terrain, self.nature, self.camera = ws, land, T, N, cam
+                self.behaviour, self.keepers = _Beh(), _Keepers()
+
+            def awake_count(self):
+                return len(self.behaviour.awake_keys)
+
+            def platform_counts(self):
+                return {"A": [], "B": [], "C": []}
+
+        scene = _Land()
+        e.attach_world(scene)
+        shore = T.places["shore"]
+        ford = T.places["ford"]
+        stage = {}
+        rms_seg: Dict[str, List[np.ndarray]] = {"0 awake (wind + water only)": [], "3 awake": []}
+        first_sun_frame = None
+        gust_frames: List[int] = []
+        for i in range(frames):
+            now = t0 + i / 30.0
+            evs: List[Dict] = []
+            b = scene.behaviour
+            # --- the script (every event names a real pip created above)
+            if i == 15:
+                evs.append({"type": "seed_land", "key": names[0], "x": mx, "y": my})
+            if i == 30:
+                b.awake_keys = [names[0]]
+                evs += [{"type": "hatch", "pip": names[0], "first_ever": True, "x": mx, "y": my}, {"type": "first_light", "pip": names[0]}]
+            if i == 60:
+                b.awake_keys = list(names)
+                evs.append({"type": "speak", "pip": names[0], "text": "hello land three words"})
+            if i == 90:
+                evs.append({"type": "walk", "pip": names[0], "to": "ford"})
+            if 90 <= i < 90 + 45 * len(route):
+                nm_, (cx_, cy_) = route[(i - 90) // 45]
+                b.ents[names[0]].x, b.ents[names[0]].y = float(cx_), float(cy_)
+                if (i - 90) % 45 == 0 and i > 90:
+                    evs.append({"type": "walk", "pip": names[0], "to": nm_})     # a new walk leg keeps the steps going
+            if i == 90 + 45 * len(route):
+                evs.append({"type": "arrive", "pip": names[0], "at": "marsh"})
+            if i == 330:
+                evs.append({"type": "camp", "pip": names[1], "tier": 0, "x": mx, "y": my + 40})
+            if i == 360:
+                evs.append({"type": "camp_raised", "pip": names[1], "tier": 2, "x": mx, "y": my + 40})
+            if i == 390:
+                evs.append({"type": "sow", "pip": names[1], "x": mx, "y": my + 46})
+            if i == 420:
+                evs.append({"type": "harvest", "pip": names[1]})
+            if i == 450:
+                evs.append({"type": "pickup", "pip": names[2], "kind": "stone", "x": mx + 20, "y": my})
+            if i == 480:
+                evs.append({"type": "place", "pip": names[2], "kind": "stone", "x": mx, "y": my, "named": False})
+            if i == 500:
+                evs.append({"type": "cairn_named", "x": mx, "y": my})
+            if i == 520:
+                evs.append({"type": "wake", "pip": names[1], "camp": [mx, my + 40], "away_s": 8 * 86400, "x": mx, "y": my + 40})
+            if i == 560:
+                scene.keepers.raising = {"name": "the Ford bridge", "x": ford["x"], "y": ford["y"], "progress": 0.0}
+            if i == 560 + 180:
+                scene.keepers.raising = None
+                evs.append({"type": "raising_ship", "name": "the Ford bridge", "version": "v0.6.0", "x": ford["x"], "y": ford["y"]})
+            if i == 780:
+                lit_ok = land.light_hearth(names[0], now)         # a real person lit it: the crackle may sound at the Moot
+                evs.append({"type": "bonfire", "by": names[0], "lit": lit_ok, "gathered": 3, "fed": 3})
+            if i == 810:
+                evs.append({"type": "expedition", "walkers": 3})
+            if i == 840:
+                evs.append({"type": "swim", "pip": names[2], "x": mx + 30, "y": my})
+            weather = "rain" if 870 <= i < 1000 else "clear"
+            rate = 0.0 if i < 900 else 30.0                     # a chat storm from 30 s: the wind rises toward a gale
+            # --- camera: the Moot, then a glide to the shore, then to the Ford (river + shore beds follow the distance)
+            if i < 400:
+                cam.cx, cam.cy = float(mx), float(my)
+            elif i < 700:
+                k = (i - 400) / 300.0
+                cam.cx, cam.cy = mx + (shore["x"] - mx) * k, my + (shore["y"] - my) * k
+            elif i < 1000:
+                k = (i - 700) / 300.0
+                cam.cx, cam.cy = shore["x"] + (ford["x"] - shore["x"]) * k, shore["y"] + (ford["y"] - shore["y"]) * k
+            else:
+                k = min(1.0, (i - 1000) / 200.0)
+                cam.cx, cam.cy = ford["x"] + (mx - ford["x"]) * k, ford["y"] + (my - ford["y"]) * k
+            N.update(now, rate)
+            if N.wind.gust >= 0.5 and (not gust_frames or i - gust_frames[-1] > 60):
+                gust_frames.append(i)
+            ctx = FakeCtx(now=now, frame=i, fps=30.0, session={"id": "audio-land", "started_ts": epoch_to_iso(t0 - 30, ms=False), "ending": False},
+                          micro={"canvas_seed": 41370704, "weather": weather, "audio_tempo": 85}, preset="kick", chat_raw=[], chat=[],
+                          recent_votes=[], round={"number": 1, "phase": "open", "last_result": {"title": "bonfire on the Moot"}},
+                          round_remaining=100.0, mod={"hidden_users": []}, agent={"heartbeat_ts": epoch_to_iso(now)}, macro={"active": False},
+                          compositor_live={"selftest": True}, mod_paused=False, version={"string": "v0.6.0", "failed": 0}, vote_count=0,
+                          chat_display=True, theme={"set_ts": None})
+            # frame N: the scene emits its events; block N+1 hears them (compositor order: audio first, then the panels)
+            tp = time.perf_counter()
+            blk = e.block(i, ctx)
+            times.append((time.perf_counter() - tp) * 1000)
+            scene.frames += 1
+            scene.events = evs
+            if e.stats["sun_bells"] and first_sun_frame is None:
+                first_sun_frame = i
+            for k in ("river", "shore", "wind_lo", "wind_hi", "fire"):
+                stage.setdefault(k, []).append((i, round(e._bed_gain[k], 5)))
+            peak = max(peak, int(np.abs(blk.astype(np.int32)).max()))
+            chunks.append(blk)
+            rms_seg["0 awake (wind + water only)" if i < 30 else "3 awake"].append(blk)
+        pcm = np.concatenate(chunks)
+        rms = float(np.sqrt(np.mean((pcm.astype(np.float64) / 32767.0) ** 2)))
+        times_np = np.asarray(times)
+        print("LAND frames=%d mode=%s land_mode=%s" % (frames, "world" if e.world_mode else "legacy", e.land_mode))
+        print("ms/block: avg %.3f  p95 %.3f  p99 %.3f  max %.3f (frame %d)  blocks over 1.5 ms: %d of %d" % (
+            times_np.mean(), np.percentile(times_np, 95), np.percentile(times_np, 99), times_np.max(), int(times_np.argmax()),
+            int((times_np > 1.5).sum()), len(times_np)))
+        print("rms %.2f dBFS  peak %d (%.2f dBFS)  errors=%d detect_errors=%d" % (
+            20 * math.log10(rms) if rms > 0 else -120, peak, 20 * math.log10(peak / 32767.0), e.errors, e.detect_errors))
+        for k, segs in rms_seg.items():
+            x = np.concatenate(segs).astype(np.float64) / 32767.0
+            r = float(np.sqrt(np.mean(x ** 2)))
+            print("  rms %-28s %.2f dBFS over %.1f s" % (k, 20 * math.log10(r) if r > 0 else -120, len(x) / 48000.0))
+        print("stats=%s" % _json.dumps({k: v for k, v in e.stats.items() if k != "pre_peak"}))
+        def at(k, fr):
+            # a shorter harness run (--seconds < 34) has no sample at these frames: report nan, never traceback
+            return next((v for f_, v in stage.get(k, ()) if f_ == fr), float("nan"))
+        print("bed gains (linear) at the Moot f=390 / shore f=699 / Ford f=999: river %.5f / %.5f / %.5f  shore %.5f / %.5f / %.5f  "
+              "wind lo+hi %.5f -> %.5f (gale)  fire before the bonfire %.2f, at the end (hearth lit by @%s, Moot in view) %.2f" % (
+                  at("river", 390), at("river", 699), at("river", 999), at("shore", 390), at("shore", 699), at("shore", 999),
+                  at("wind_lo", 390) + at("wind_hi", 390), at("wind_lo", frames - 1) + at("wind_hi", frames - 1),
+                  max(v for f_, v in stage["fire"] if f_ < 780), names[0], at("fire", frames - 1)))
+        print("gust onsets at frames %s -> gust bells %d; first-breath bells %d camps; sunrise bell at frame %s (world clock %s -> %s)" % (
+            gust_frames, e.stats["gust_bells"], len(land.camps()), first_sun_frame, N.world_clock(t0), N.world_clock(t0 + frames / 30.0)))
+        if a.out:
+            with open(a.out, "wb") as fh:
+                fh.write(pcm.tobytes())
+            print("wrote %s (%d bytes)" % (a.out, pcm.nbytes))
+        sb = e.stats["steps_by"]
+        assert e.errors == 0 and e.detect_errors == 0, (e.errors, e.detect_errors)
+        assert e.stats["land_blocks"] == frames - 0, e.stats["land_blocks"]
+        assert all(sb[k] > 0 for k in STEP_TIMBRES), sb
+        assert e.stats["bells"] >= 3 + 3 and e.stats["gust_bells"] >= 1, (e.stats["bells"], e.stats["gust_bells"])
+        assert e.stats["hammers"] >= 2 and e.stats["sun_bells"] == 1 and e.stats["land_stings"] >= 10, e.stats
+        assert at("river", 999) > at("river", 390) * 1.5 and at("shore", 699) > at("shore", 390) * 1.8, "water beds must rise toward water"
+        assert max(v for f_, v in stage["fire"] if f_ < 780) == 0.0, "no fire may sound before a real person lit the hearth"
+        assert at("fire", frames - 1) > 0.5, "the lit hearth in view must bring the crackle up"
+        assert -22.0 <= 20 * math.log10(rms) <= -15.0, rms
+        print("LAND HARNESS OK")
         sys.exit(0)
 
     scene = None

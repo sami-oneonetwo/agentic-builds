@@ -356,12 +356,31 @@ class HotReloader(object):
             return
         self.stats["reloads"] += 1
         self.stats["last"] = modname
-        hollow = os.path.join(ROOT, "stream", "scenes", "hollow.py")
-        if "stream.scenes.hollow" in sys.modules and os.path.exists(hollow):
-            log("hot reload: %s re-executed; rebinding the scene" % modname)
-            self._reload_scene("stream.scenes.hollow", hollow, frame, cascade=[(modname, old_mod)])
-        else:
+        # Every LOADED scene module that imports the world core is re-executed (the cave for the rollback week, the
+        # land for LONGGRASS; OPENWORLD.md 14); the panels that mention `stream.scenes` are rebound ONCE, after the
+        # last scene, with every re-executed module on their rollback list.
+        scenes = [("stream.scenes." + n, os.path.join(ROOT, "stream", "scenes", n + ".py")) for n in ("hollow", "steading")]
+        loaded = [(m, p) for m, p in scenes if m in sys.modules and os.path.exists(p)]
+        if not loaded:
             log("hot reload: %s re-executed (no scene loaded to rebind)" % modname)
+            return
+        cascade: List[Tuple[str, object]] = [(modname, old_mod)]
+        for i, (smod, spath) in enumerate(loaded):
+            last = i == len(loaded) - 1
+            log("hot reload: %s re-executed; rebinding the scene %s" % (modname, smod))
+            if last:
+                self._reload_scene(smod, spath, frame, cascade=cascade)
+            else:
+                old_scene = sys.modules.get(smod)
+                _m, err = self._exec_fresh(smod, spath)
+                if err:
+                    self.stats["rejected"] += 1
+                    msg = "hot reload FAILED %s at import: %s; old module kept" % (smod, err)
+                    log(msg)
+                    self.comp._activity(msg)
+                    continue
+                self.stats["reloads"] += 1
+                cascade.append((smod, old_scene))
 
     def _reload_scene(self, modname: str, path: str, frame: int, cascade: Optional[List[Tuple[str, object]]] = None) -> None:
         old_mod = sys.modules.get(modname)

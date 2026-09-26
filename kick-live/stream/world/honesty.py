@@ -29,6 +29,11 @@ Every rule is a `len()` over real records, never a sample string. The rules:
               (one frame) while the reference counts the MODERATED one (hold later), so a drift is tolerated for
               max(presence_grace_s, hold_s + 1 s) and counted separately as `presence_drift`; longer = violation
   scene       the scene's own _honesty_check removed something (stats()["honesty_violations"] grew)
+  wear        (the land, OPENWORLD.md 12) land.take_wear_added() per frame: the wear added equals 8 x (real pips that
+              entered a new cell) + the 4-neighbour spill (<= 16 x steps), and no step is ever laid while no real pip
+              is awake (the survey camera, the weather and test pips never write wear)
+  marks       (the land) land.provenance_violations() every MARKS_EVERY_S: every camp / mark / stone / field owner is a
+              row in world.json["pips"]
 
 `enforce=True` (default) also REMOVES an animate entity that has no real record and clears a bubble whose text the
 owner never typed, so a bug upstream cannot put a fake creature or invented words on screen. A pip RECORD with no
@@ -51,12 +56,17 @@ if _ROOT not in sys.path:
 
 from stream.state_store import normalise_chat, run_path  # noqa: E402
 
-RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "presence", "scene")
+RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "presence", "scene", "wear", "marks")
 SEED_STATES = ("seed", "hatching")
 SLEEP_STATES = ("asleep", "burrowed")
 CHAT_RESCAN_S = 2.0
 TEXT_MEMORY = 20
 ORPHAN_GRACE_S = 5.0          # a real pip is created from a record the listener already appended; the names scan lags <= 2 s
+MARKS_EVERY_S = 5.0           # land.provenance_violations() walks every mark: every 5 s (OPENWORLD.md 12)
+try:                          # the land's wear constants (absent on the cave's rollback tree: the wear rule is then skipped)
+    from stream.world.land import WEAR_STEP as _WEAR_STEP, WEAR_SPILL as _WEAR_SPILL  # noqa: E402
+except Exception:             # pragma: no cover
+    _WEAR_STEP, _WEAR_SPILL = 8, 2
 
 
 class Report(object):
@@ -134,6 +144,9 @@ class HonestyMonitor(object):
         self._logged = 0
         self._missing_since: Dict[str, float] = {}
         self.quarantined = 0
+        self._marks_t = -1e18
+        self.wear_steps_total = 0
+        self.wear_added_total = 0
 
     # ------------------------------------------------------------------ helpers
     def _name_filter(self):
@@ -357,6 +370,35 @@ class HonestyMonitor(object):
                     rep.add("presence", "awake real %d != distinct recent chatters %d for %.1fs" % (awake_real, ref, t - self._drift_since))
             else:
                 self._drift_since = None
+        # -- wear / marks (the land only; the cave has no Land and skips both)
+        land = getattr(scene, "land", None)
+        if land is not None:
+            take = getattr(land, "take_wear_added", None)
+            if callable(take):
+                try:
+                    added, steps = take()
+                except Exception as ex:
+                    added, steps = 0, 0
+                    rep.unverified.append("take_wear_added: %r" % (ex,))
+                self.wear_steps_total += int(steps)
+                self.wear_added_total += int(added)
+                if (added > 0) != (steps > 0):
+                    rep.add("wear", "wear added %d for %d step(s)" % (added, steps))
+                elif added > steps * (_WEAR_STEP + 4 * _WEAR_SPILL):
+                    rep.add("wear", "wear added %d > %d x %d step(s) (8 + 4 x 2 spill)" % (added, _WEAR_STEP + 4 * _WEAR_SPILL, steps))
+                if steps > 0 and awake_real == 0:
+                    slept_now = any((ev or {}).get("type") == "sleep" for ev in (getattr(scene, "events", None) or []))
+                    if not slept_now:                       # the walk home ends in the same tick as the lie-down: that step is real
+                        rep.add("wear", "%d wear step(s) laid with no real awake pip" % steps)
+            if t - self._marks_t >= MARKS_EVERY_S:
+                self._marks_t = t
+                try:
+                    bad = list(land.provenance_violations() or [])
+                except Exception as ex:
+                    bad = []
+                    rep.unverified.append("provenance_violations: %r" % (ex,))
+                if bad:
+                    rep.add("marks", "%d mark(s) whose owner is not a pip row: %s" % (len(bad), "; ".join(str(b) for b in bad[:3])))
         rep.counts = {"entities": len(live), "animate": animate, "animate_real": animate_real, "awake": n_awake,
                       "awake_real": awake_real, "asleep": n_asleep, "seeds": sum(1 for e in live.values() if e.state in SEED_STATES),
                       "real_pips": len(real_pips), "hatched_ever": he, "recent_chatters": ref if ref is not None else -1,
@@ -400,11 +442,25 @@ def _selftest(run_dir: str) -> int:
     import shutil
     import time as _time
     from PIL import Image
-    from stream.scenes.hollow import CaveScene, _Ctx
     from stream.state_store import epoch_to_iso
     from stream.world.behaviour import Entity
-    from stream.world.state import _default_pip, FLOOR_ROWS
+    from stream.world.state import _default_pip
     from stream.world import pips as P
+    from stream.world import behaviour as _BH
+    # The scene the world panel would pick (stream/panels/world.py): the land when stream/scenes/steading.py imports and
+    # the 2-D behaviour is on disk, else the cave (the rollback week). The monitor's rules are the same on both.
+    SceneCls = None
+    _Ctx = None
+    try:
+        from stream.scenes import steading as _ST
+        if hasattr(_BH, "MAP_W") and hasattr(_BH.Behaviour, "camera_inputs"):
+            SceneCls, _Ctx = _ST.SteadingScene, _ST._Ctx
+    except Exception as e:
+        print("[setup] steading scene not importable (%r): the cave is the scene" % (e,))
+    if SceneCls is None:
+        from stream.scenes.hollow import CaveScene as SceneCls, _Ctx  # noqa: N813
+    land_scene = SceneCls.__name__ == "SteadingScene"
+    os.environ.setdefault("MODE", "test")
 
     rp = os.path.realpath(run_dir)
     if not (rp.startswith("/tmp/") or rp.startswith("/private/tmp/")):
@@ -447,7 +503,17 @@ def _selftest(run_dir: str) -> int:
                     compositor_live={"selftest": True}, mod_paused=False, chat_display=True)
 
     size = (1280, 440)
-    scene = CaveScene(run_dir=run_dir, seed=11, sleep_after_s=60.0)
+    scene = SceneCls(run_dir=run_dir, seed=11, sleep_after_s=60.0)
+    if land_scene:                                            # the land boots on its first frames (terrain in a thread)
+        tb = _time.perf_counter()
+        while not (scene.booted or scene.refused) and _time.perf_counter() - tb < 30.0:
+            scene.frame(mkctx(t0 - 1.0, 0, [], []), size)
+            _time.sleep(0.01)
+        print("[setup] %s booted=%s refused=%r in %.0f ms (%d entities, %d camps)" % (
+            SceneCls.__name__, scene.booted, scene.refused, (_time.perf_counter() - tb) * 1000,
+            len(scene.behaviour.entities) if scene.booted else 0, len(scene.land.camps()) if scene.booted else 0))
+    else:
+        print("[setup] %s (the cave)" % SceneCls.__name__)
     mon = HonestyMonitor(scene, enforce=False)
     raw: List[Dict] = []
     clear: List[Dict] = []
@@ -455,7 +521,7 @@ def _selftest(run_dir: str) -> int:
     seed_frames = 0
     frames_dir = os.path.join(run_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
-    n_clean = 240
+    n_clean = 300                                             # the land's hatch waits for the settler's sheet (<= 4 s more)
     ev_types: Dict[str, int] = {}
     hatch_frame = seed_frame = None
     for i in range(n_clean):
@@ -513,6 +579,12 @@ def _selftest(run_dir: str) -> int:
     if scene.hatched_ever() != 3 or s["last"]["counts"]["awake_real"] != 2 or s["last"]["counts"]["asleep"] != 1:
         print("FAIL: expected 3 real hatched, 2 awake (a woke, c hatched), 1 asleep (b)")
         ok = False
+    if land_scene:
+        print("[clean] land: wear steps %d added %d (rule wear: 8 x steps + spill), camps %d, marks %d, camera cuts %d" % (
+            mon.wear_steps_total, mon.wear_added_total, len(scene.land.camps()), len(scene.land.marks), scene.camera.cuts))
+        if scene.camera.cuts != 0:
+            print("FAIL: the camera cut")
+            ok = False
     if "hatch" not in ev_types or ev_types.get("seed", 0) < 1:
         print("FAIL: no seed/hatch events on the live path: %r" % (ev_types,))
         ok = False
@@ -535,7 +607,12 @@ def _selftest(run_dir: str) -> int:
 
     # 1. a creature with a plausible origin but no record anywhere (a forged entity)
     ghost = Entity("ghost-nobody", "chat", now)
-    ghost.state, ghost.display_name, ghost.cleared, ghost.y = "awake", "ghost", True, float(FLOOR_ROWS[0])
+    ghost.state, ghost.display_name, ghost.cleared = "awake", "ghost", True
+    if land_scene:
+        ghost.x, ghost.y = float(scene.terrain.site[0]) + 4.0, float(scene.terrain.site[1]) + 4.0      # on the Moot green
+    else:
+        from stream.world.state import FLOOR_ROWS
+        ghost.y = float(FLOOR_ROWS[0])
     scene.behaviour.entities["ghost-nobody"] = ghost
     rep = run_frames(2)
     caught["record (forged entity, no pip record)"] = "record" in rep.rules()

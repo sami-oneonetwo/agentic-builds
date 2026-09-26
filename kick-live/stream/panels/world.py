@@ -1,47 +1,61 @@
-"""stream/panels/world.py - the WORLD region (0,72,1280,440): CaveScene frame + the screen-scale TEXT LAYER.
+"""stream/panels/world.py - the WORLD region (0,72,1280,440): the scene frame + the screen-scale TEXT LAYER.
 
-WORLD.md 5 row 5, 2.2, 10, 11; contract in stream/WORLD_API.md. The scene (stream/scenes/hollow.py) draws the cave,
-the glow and every pip sprite and NO text. This panel calls `SCENE.frame(ctx, size)` once per frame and draws, at
-screen scale (nothing under 20 px, every string cached as an RGBA strip):
+Two scenes, one panel (OPENWORLD.md 8 row 5, 13 row 8, 14; WORLD.md 5 row 5, 11 still normative):
 
-  plank        HN Medium 22 at region (16, 12) (canvas 16, 84): event notices (4-10 s), verb refusals (ctx.notice),
-               first light `@name woke the Hollow · HH:MM`, zero-vote amber line under 30 s, `!help` legend, then
-               an 8 s idle rotation: the one-line pitch / `N pips sleep here. nobody awake. say anything and yours
-               wakes.` / `nobody has hatched here yet...` / the LAST FIVE REAL VISITORS with real timestamps
-  pip labels   Menlo 20 `@name` in the pip's hashed colour, centred above each awake pip; drawn ONLY for entities the
-               scene hands over with a display_name (a seed has none: the 3 s hold + blocklist path lives in the
-               scene / ChatBridge, never here); sleepers labelled one at a time on a 5 s rotation with a real
-               `last seen`; `Muffin (@sam)` when a nickname exists (the @name never disappears)
-  bubbles      Menlo 22 in a #11151D box, 1 px #1C2130 border, max 408 px wide, 3 lines, 6 s, ONE per pip: the
-               owner's own moderated text (or `learned · from @src`); a returning pip's care log rides in the same
-               bubble as a first line (`back after 2 nights · fed by @kai x2`)
-  platforms    AB 56 letter carved (dim) above each stone platform, the count Menlo 22 = len(pips standing there),
-               the last 3 standing names Menlo 20 under it (a standing pip has no floating label: the row is it)
-  moss labels  Menlo 20 `moss · @name · night 3` on a 5 s rotation
-  hatch tags   `#N` (the real builder number) under a fresh pip for 3 s; `you are the only light in the cave.` 10 s
-  degrade      obeys scene.degrade: labels_on_speak (also above 40 awake, WORLD.md 5), bubbles_single (one shared
-               line at the bottom of the world); the readout shows `world: glow off`
-  !kill        ctx.chat_display False -> no name anywhere in this region; bubbles read `chat hidden by mod`
+  LONGGRASS  `stream/scenes/steading.py` `SteadingScene` (the painted land, a camera). The scene draws the ground, the
+             modulation, the sprites and NO text. This panel draws, at screen scale (nothing under 20 px, every string
+             cached as an RGBA strip, everything placed through the float camera and CULLED off-view):
+    plank        HN Medium 22 on a 60 % dark chip at region (16, 12) (canvas 16, 84): verb refusals in amber (ctx.notice),
+                 event notices 4-10 s, `@name walked into Longgrass · 21:14`, `that's you. try: go river · plant a flower ·
+                 camp · fire · A/B/C`, zero-vote amber line, `!help` legend, DRIFT `surveying the steading · @sami's hut ·
+                 last here yesterday 10:40`, then the 8 s idle rotation (pitch / `N settled here. nobody awake...` / the
+                 LAST FIVE REAL VISITORS with real timestamps)
+    land line    Menlo 22 at (16, 44): `2 settled here · nobody awake · day 2 · dawn` (every number a len())
+    time dial    64x64 at (16, 80): the sun or the real-phase moon on an arc over a ground stripe; to its right
+                 `18:07 · evening` (`1 h = 1 day` on world_day "hour") and `wind E · fresh · spring · waning gibbous`
+    minimap      top-right (1120, 16) 148x104: the WHOLE 960x440 map at 0.15 px/cell (144x66), walked land saturated and
+                 unwalked at 55 % (a real record: within 24 cells of a footstep), the camera rectangle #E6E8EE, one dot
+                 per awake pip in its colour, dim squares for camps, fields, an amber dot at the Moot when the beacon is
+                 lit (fresh keeper heartbeat), `4 % walked` Menlo 20 under it. No fog of war: nothing is hidden
+    labels       Menlo 20 `@name` in the creature's genome colour, stroked, on a CONTRAST CHIP (60 % dark; a hue that
+                 misses 4.5:1 over the brightest grass gets a darker chip, never a different colour), above the sprite,
+                 de-collided by the cave's placer; `#N` for 3 s after a hatch; standing pips have no floating label
+    bubbles      Menlo 22 in #11151D, 1 px #1C2130 border, max 408 px, 3 lines, 6 s, ONE per pip; care log first line
+    waystones    AB 56 letters above the three stones on the Moot, count Menlo 22 = len(pips standing there), up to 3
+                 names untruncated (else `N standing`)
+    plates       HN Medium 22 on a chip, 5 s rotation over the marks IN VIEW: `@sami's hut · night 4 · last here
+                 yesterday 10:40`, `flower · @name · day 1`, `tree · @name · sapling`, `field · @name · gold`, the cairn
+                 plaque `cairn · 13 stones · @a @b @c`; the DRIFT stop's plate stays up while the camera dwells
+    edge arrows  `@kai · 210 paces →` in their colour at the nearest frame edge for awake pips outside the window
+    place label  HN Medium 22 stroked, bottom-left, for 4 s after a camera retarget (`the Ford`), from terrain.places
+    degrade      labels_on_speak / bubbles_single from scene.degrade; plates stop rotating at level >= 2; density
+                 fallback above 40 awake unchanged; `!kill` -> no name anywhere in this region
+  PIP HOLLOW `stream/scenes/hollow.py` `CaveScene`: the cave text layer is kept VERBATIM below (`_text_layer_cave`) so
+             the rollback (OPENWORLD 14: the panel importing `hollow` again) is a file swap, not a rewrite.
 
-Honesty (WORLD.md 11): every name drawn here comes from `scene.entities()` (display_name already filtered) or from a
-`world.json` pip record's `display_name` via `shown_name()`. No string in this file names a person. Every count is
-a len() the scene computed. `stats()["honesty_violations"]` counts any drawn name whose key is not a world pip.
+Honesty (OPENWORLD 12, WORLD.md 11): every name drawn here comes from `scene.entities()` (display_name already filtered)
+or from a `world.json` pip record's `display_name` via `shown_name()` (blocklist -> `builder #N`); a seed has no name and
+none is drawn (the 3 s hold lives in the scene / ChatBridge, never here). No string in this file names a person. Every
+count is a len() the scene or the land computed. Nature words (wind, season, moon, day part) are declared as nature.
+`stats()["honesty_violations"]` counts any drawn name whose key is not a world pip.
 
 The panel never returns a placeholder: any text-layer error returns the scene frame bare (one stderr line per burst);
-a scene error is already the scene's last good frame. `budget_ms = 24` (WORLD_API 7). Hot reload: the CaveScene
-instance is parked on the `stream.panels` package (`_WORLD_SCENE`), so a reload of THIS file keeps the entities
-when the scene class is unchanged, and a reload of stream/scenes/hollow.py (which re-executes this module too)
-makes a fresh scene from the new class, re-booted from world.json.
+a scene error is already the scene's last good frame. `budget_ms = 24` (WORLD_API 7). Hot reload: the scene instance is
+parked on the `stream.panels` package (`_WORLD_SCENE`), so a reload of THIS file keeps the entities when the scene class
+is unchanged, and a reload of the scene module (which re-executes this module too) makes a fresh scene from the new
+class. The scene class is `steading.SteadingScene` when that module imports, else `hollow.CaveScene`.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
 import time as _time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from stream import layout as L
@@ -53,6 +67,14 @@ from stream.world import pips as P
 from stream.world import keepers as K
 from stream.world.honesty import HonestyMonitor
 from stream.world.state import PLATFORMS, PLATFORM_LETTERS
+
+try:                                                     # the land scene (built alongside; absent = the cave, the rollback)
+    from stream.scenes import steading as _STEADING       # noqa: F401
+except Exception as _e:                                  # pragma: no cover - import failure is the documented rollback path
+    _STEADING = None
+    _STEADING_ERR = repr(_e)
+else:
+    _STEADING_ERR = None
 
 PLANK_XY = getattr(L, "WORLD_PLANK_XY", (16, 12))
 PLANK_ROW2_DY = 40                    # a second plank row: the newcomer's sticky line when an ack / refusal holds row 1
@@ -87,6 +109,43 @@ LABEL_MAX_STEPS = 3
 SOIL_LABEL_Y = 372                    # moss labels live in the soil band (region y 368-440 = canvas 440-512), never at pip height
 PRIO_EVENT, PRIO_VERB, PRIO_LIGHT, PRIO_YOU, PRIO_CREDITS = 1, 2, 3, 4, 5   # plank priority: the person outranks the world
 
+# ----------------------------------------------------------------------------- LONGGRASS text-layer geometry (OPENWORLD 8 row 5)
+LAND_LINE_XY = (16, 44)               # canvas (16, 116)
+DIAL_XY = (16, 80)                    # canvas (16, 152), 64x64
+DIAL_R = 32
+DIAL_TEXT_X = 92                      # `18:07 · evening` / `wind E · fresh` to the dial's right
+DIAL_ROW2_DY = 34
+DIAL_TEXT_MAX_W = 560
+MINIMAP_XY = (1120, 16)               # canvas (1120, 88)
+MINIMAP_W, MINIMAP_H = 148, 104
+MINIMAP_MAP = (144, 66)               # 0.15 px/cell over 960x440
+MINIMAP_REBUILD_S = 2.0               # the walked/unwalked base is re-derived at most this often while people walk
+MINIMAP_EVERY = 5                     # the composed minimap is rebuilt every N frames (7.4: amortised)
+HUD_RESERVE_LEFT = (0, 0, 700, 152)   # plank rows + land line + dial rows: labels / plates never land under them
+HUD_RESERVE_RIGHT = (1104, 0, 1280, 132)
+CHIP_FONT, CHIP_SIZE = "HN Medium", 22
+CHIP_PAD = 8
+CHIP_ALPHAS = (153, 204, 235, 255)    # 60 % base; a hue that misses 4.5:1 over the brightest grass gets the next one
+CREAM = (248, 240, 224)               # hud.COLOURS["cream"]: the tint direction for a hue no chip can lift (deep blues / violets)
+CONTRAST_MIN = 4.5
+GRASS_BRIGHT = ((118, 178, 92), (234, 214, 160), (244, 172, 64))   # spring grass, sand, ripe field (ART.md 4): the sweep backgrounds
+LAND_LABEL_H = LABEL_SIZE + 12        # a Menlo 20 chip
+PLATE_H = CHIP_SIZE + 12              # an HN Medium 22 chip
+PLATE_ROTATE_S = 5.0
+PLATE_MAX_W = 520
+HATCH_TAG_S = 3.0
+ONLY_ONE_S = 10.0
+PLACE_LABEL_S = 4.0
+PLACE_RETARGET_CELLS = 30.0
+EDGE_INSET = 24
+WAYSTONE_LETTER_DY = 78               # the letter's bottom this far above the stone's cell
+CAMP_FOOTPRINT = {0: (8, 6), 1: (10, 8), 2: (14, 12), 3: (14, 12)}   # cells (OPENWORLD 5.3)
+TIER_H_PX = (26, 30, 34, 42)          # standing heights at 1x (ART.md 2) for a screen box when the scene gives none
+LEGEND_LAND = ("go river · plant a flower · camp · fire   (a verb first, four words at most)",
+               "A / B / C = walk your creature to a waystone on the Moot",
+               "feed · pet · gift @name   ·   sow · stack · swim",
+               "!idea <text> = a notice for the keepers", "!theme <preset> · !stats · !help")
+ARROWS = {"left": "←", "right": "→", "top": "↑", "bottom": "↓"}
 
 _LONELY_RE = re.compile(r"\b(anyone|anybody|here|hello|alone|else|nobody|empty|dead)\b", re.IGNORECASE)
 
@@ -125,10 +184,16 @@ def _run_dir() -> str:
     return os.environ.get("RUN_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "run")
 
 
-def _attach_tenders(sc: H.CaveScene) -> None:
-    """The keepers (milestone carves, keeper-build announcements; wraps scene.frame, idempotent) and the honesty
-    monitor (every frame after the scene: forged entities removed, counts/names/text cross-checked against the real
-    records). Both live on the scene instance so a panel-only reload finds them already attached."""
+def _scene_class():
+    """SteadingScene when stream/scenes/steading.py imports and defines it, else the cave (the rollback)."""
+    cls = getattr(_STEADING, "SteadingScene", None) if _STEADING is not None else None
+    return cls or H.CaveScene
+
+
+def _attach_tenders(sc) -> None:
+    """The keepers (milestone carves / raisings, keeper-build announcements; wraps scene.frame, idempotent) and the
+    honesty monitor (every frame after the scene: forged entities removed, counts/names/text cross-checked against the
+    real records). Both live on the scene instance so a panel-only reload finds them already attached."""
     if getattr(sc, "keepers", None) is None:
         try:
             K.Keepers(sc, log=lambda m: _log("keepers: %s" % m)).attach()
@@ -141,23 +206,69 @@ def _attach_tenders(sc: H.CaveScene) -> None:
             _log("honesty monitor not attached: %r" % (e,))
 
 
-def _make_scene() -> H.CaveScene:
+def _make_scene():
+    cls = _scene_class()
     prev = getattr(_PKG, "_WORLD_SCENE", None)
-    if prev is not None and type(prev) is H.CaveScene:       # same class object: a panel-only reload keeps the colony
+    if prev is not None and type(prev) is cls:               # same class object: a panel-only reload keeps the colony
         sc = prev
     else:
-        sc = H.CaveScene(run_dir=_run_dir(), log=lambda m: _log("scene: %s" % m))
+        try:
+            sc = cls(run_dir=_run_dir(), log=lambda m: _log("scene: %s" % m))
+        except Exception as e:
+            if cls is not H.CaveScene:                        # a broken land scene falls back to the cave, loudly (14: rollback)
+                _log("%s failed to construct (%r); falling back to the cave" % (cls.__name__, e))
+                if prev is not None and type(prev) is H.CaveScene:
+                    sc = prev
+                else:
+                    sc = H.CaveScene(run_dir=_run_dir(), log=lambda m: _log("scene: %s" % m))
+            else:
+                raise
         _PKG._WORLD_SCENE = sc
     _attach_tenders(sc)
     return sc
 
 
 SCENE = _make_scene()
+if _STEADING_ERR:
+    _log("steading scene not importable (%s): the cave is the scene" % _STEADING_ERR)
 
 
-def scene() -> H.CaveScene:
-    """The live CaveScene (other panels read counts and names through this; never construct a second one)."""
+def scene():
+    """The live scene (other panels read counts and names through this; never construct a second one)."""
     return getattr(_PKG, "_WORLD_SCENE", None) or SCENE
+
+
+def is_land(sc=None) -> bool:
+    """True when the scene is the LONGGRASS land (it carries a camera, a land and nature); False for the cave."""
+    sc = sc if sc is not None else scene()
+    return getattr(sc, "camera", None) is not None and (getattr(sc, "land", None) is not None
+                                                          or getattr(getattr(sc, "world", None), "land", None) is not None)
+
+
+def scene_kind() -> str:
+    return "steading" if is_land() else "hollow"
+
+
+def camera():
+    """The scene's Camera (stream/world/camera.py) or None on the cave."""
+    return getattr(scene(), "camera", None)
+
+
+def land():
+    """The scene's Land (stream/world/land.py) or None on the cave / before boot."""
+    sc = scene()
+    ld = getattr(sc, "land", None)
+    if ld is None and getattr(sc, "world", None) is not None:
+        ld = getattr(sc.world, "land", None)
+    return ld
+
+
+def nature():
+    return getattr(scene(), "nature", None)
+
+
+def terrain():
+    return getattr(scene(), "terrain", None)
 
 
 def keepers() -> Optional[K.Keepers]:
@@ -166,9 +277,9 @@ def keepers() -> Optional[K.Keepers]:
 
 
 def world_degrade() -> Optional[Dict[str, Any]]:
-    """scene.degrade (glow / labels_on_speak / bubbles_single / level) or None before boot (readout: `world: glow off`)."""
+    """scene.degrade (glow / labels_on_speak / bubbles_single / level, + clouds / zoom_pinned on the land) or None."""
     sc = scene()
-    return dict(sc.degrade) if (sc is not None and sc.booted) else None
+    return dict(sc.degrade) if (sc is not None and getattr(sc, "booted", False)) else None
 
 
 def honesty_line() -> Optional[str]:
@@ -184,9 +295,40 @@ def honesty_summary() -> Optional[Dict[str, Any]]:
 def world_counts() -> Tuple[Optional[int], Optional[int], Optional[int]]:
     """(awake, asleep, hatched_ever) as len() over the scene's real records, or (None, None, None) before boot."""
     sc = scene()
-    if sc is None or not sc.booted:
+    if sc is None or not getattr(sc, "booted", False):
         return None, None, None
     return sc.awake_count(), sc.asleep_count(), sc.hatched_ever()
+
+
+def world_info(now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """What the copy panels (the land strip, header, readout) may draw about the land: every number a len(), every
+    nature word from nature.py. None on the cave or before boot."""
+    sc = scene()
+    if not is_land(sc) or not getattr(sc, "booted", False):
+        return None
+    out: Dict[str, Any] = {"kind": "steading"}
+    try:
+        ld = land()
+        t = float(now if now is not None else (getattr(sc, "_last_now", None) or 0.0))
+        if ld is not None:
+            out.update(ld.counts(t))
+            out["ladder"] = ld.ladder()
+        nt = nature()
+        if nt is not None:
+            d = nt.describe(t) if t else nt.describe()
+            out.update({"clock": d.get("clock"), "world_clock": d.get("world_clock"), "day_part": d.get("day_part"),
+                        "season": d.get("season"), "wind": d.get("wind"), "moon": d.get("moon"), "weather": d.get("weather"),
+                        "world_day": d.get("world_day"), "hemisphere": d.get("hemisphere")})
+        cam = camera()
+        if cam is not None:
+            out["camera"] = cam.stats()
+        bk = getattr(sc, "bakes", None) or getattr(sc, "bake", None)
+        if bk is not None:
+            out["baking"] = bool(getattr(bk, "baking", False))
+        out["awake"], out["asleep"], out["settled_pips"] = sc.awake_count(), sc.asleep_count(), sc.hatched_ever()
+    except Exception:
+        pass
+    return out
 
 
 def shown_name(raw: Optional[str]) -> Optional[str]:
@@ -195,7 +337,7 @@ def shown_name(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     sc = scene()
-    if sc is None or not sc.booted or sc.world is None:
+    if sc is None or not getattr(sc, "booted", False) or sc.world is None:
         return None
     key = str(raw).lower().lstrip("@")
     p = sc.world.pip(key)
@@ -215,7 +357,7 @@ def shown_name_cleared(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     sc = scene()
-    if sc is None or not sc.booted or sc.world is None:
+    if sc is None or not getattr(sc, "booted", False) or sc.world is None:
         return None
     p = sc.world.pip(str(raw).lower().lstrip("@"))
     if p is None:
@@ -223,18 +365,32 @@ def shown_name_cleared(raw: Optional[str]) -> Optional[str]:
     return p.get("display_name") or ("builder #%s" % (p.get("n") if p.get("n") is not None else "?"))
 
 
+_WHEN: Dict[Tuple, str] = {}
+
+
 def when_text(ts_iso: Optional[str], now: float) -> str:
-    """A real timestamp in local words: `21:14`, `yesterday 10:40`, `Sep 24 10:40`; `--` when unknown."""
+    """A real timestamp in local words: `21:14`, `yesterday 10:40`, `Sep 24 10:40`; `--` when unknown. Memoised per
+    (timestamp, minute of now): plates ask for dozens per frame and the answer only moves at midnight."""
+    key = (ts_iso, int(now // 60))
+    s = _WHEN.get(key)
+    if s is not None:
+        return s
     t = iso_to_epoch(ts_iso) if isinstance(ts_iso, str) else (float(ts_iso) if ts_iso else None)
     if t is None:
-        return "--"
-    lt, ln = _time.localtime(t), _time.localtime(now)
-    hm = _time.strftime("%H:%M", lt)
-    if (lt.tm_year, lt.tm_yday) == (ln.tm_year, ln.tm_yday):
-        return hm
-    if (lt.tm_year, lt.tm_yday + 1) == (ln.tm_year, ln.tm_yday) or (lt.tm_year + 1 == ln.tm_year and ln.tm_yday == 1):
-        return "yesterday " + hm
-    return _time.strftime("%b %d ", lt) + hm
+        s = "--"
+    else:
+        lt, ln = _time.localtime(t), _time.localtime(now)
+        hm = _time.strftime("%H:%M", lt)
+        if (lt.tm_year, lt.tm_yday) == (ln.tm_year, ln.tm_yday):
+            s = hm
+        elif (lt.tm_year, lt.tm_yday + 1) == (ln.tm_year, ln.tm_yday) or (lt.tm_year + 1 == ln.tm_year and ln.tm_yday == 1):
+            s = "yesterday " + hm
+        else:
+            s = _time.strftime("%b %d ", lt) + hm
+    if len(_WHEN) > 2000:
+        _WHEN.clear()
+    _WHEN[key] = s
+    return s
 
 
 # ----------------------------------------------------------------------------- cached text strips
@@ -306,7 +462,7 @@ _PLANK: Dict[Tuple, Image.Image] = {}
 
 
 def plank_img(text: str, colour, max_w: int = PLANK_MAX_W) -> Image.Image:
-    """The plank: HN Medium 22 on a panel-coloured board with a hairline edge (the fiction's wooden sign)."""
+    """The cave's plank: HN Medium 22 on a panel-coloured board with a hairline edge (the fiction's wooden sign)."""
     key = (text, colour, max_w)
     im = _PLANK.get(key)
     if im is not None:
@@ -327,6 +483,216 @@ def plank_img(text: str, colour, max_w: int = PLANK_MAX_W) -> Image.Image:
     return im
 
 
+# ----------------------------------------------------------------------------- LONGGRASS chips (60 % dark, rounded) + contrast
+_CHIP: Dict[Tuple, Image.Image] = {}
+
+
+def chip_img(text: str, colour, face: str = CHIP_FONT, size: int = CHIP_SIZE, alpha: int = CHIP_ALPHAS[0],
+             max_w: Optional[int] = None, stroke: bool = False) -> Image.Image:
+    """Text on a rounded 60 % dark chip (the gate mockup's plank / plate / label look). Cached per string."""
+    key = (text, colour, face, size, alpha, max_w, stroke)
+    im = _CHIP.get(key)
+    if im is not None:
+        return im
+    if max_w:
+        text = L.truncate(face, size, text, max_w - 2 * CHIP_PAD)
+    f = L.font(face, size)
+    tw = L.text_width(face, size, text)
+    w, h = tw + 2 * CHIP_PAD, size + 12
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im, "RGBA")
+    d.rounded_rectangle([0, 0, w - 1, h - 1], 6, fill=tuple(list(L.hex_rgb(L.COLORS["bg"])) + [int(alpha)]))
+    if stroke:
+        d.text((CHIP_PAD, 4), text, font=f, fill=colour, stroke_width=1, stroke_fill=L.COLORS["bg"])
+    else:
+        d.text((CHIP_PAD, 4), text, font=f, fill=colour)
+    if len(_CHIP) > TEXT_CACHE_MAX:
+        for k in list(_CHIP)[:TEXT_CACHE_MAX // 2]:
+            _CHIP.pop(k, None)
+    _CHIP[key] = im
+    return im
+
+
+def _lum(rgb: Sequence[float]) -> float:
+    def ch(c):
+        c = c / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = rgb[:3]
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def contrast_ratio(fg: Sequence[float], bg: Sequence[float]) -> float:
+    """WCAG contrast ratio of two RGB triples."""
+    a, b = _lum(fg), _lum(bg)
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+_CHIP_ALPHA: Dict[str, Tuple[str, int]] = {}
+
+
+def _passes(fg: Sequence[float], alpha: int) -> bool:
+    chip = L.hex_rgb(L.COLORS["bg"])
+    k = alpha / 255.0
+    for grass in GRASS_BRIGHT:
+        bg = tuple(chip[i] * k + grass[i] * (1 - k) for i in range(3))
+        if contrast_ratio(fg, bg) < CONTRAST_MIN:
+            return False
+    return True
+
+
+def label_style(colour_hex: str) -> Tuple[str, int]:
+    """(text colour, chip alpha) for a creature label (OPENWORLD 7.5 gate 2): the darkest-needed of CHIP_ALPHAS so the
+    label reads >= 4.5:1 over the chip composited on the brightest grass, sand and ripe field. A failing hue gets a darker
+    chip, never a different hue; the wheel's deep blues and violets (luminance ~0.14) miss 4.5:1 even on an opaque chip,
+    so those keep their hue and are lightened toward cream in 10 % steps only as far as the ratio needs. Cached."""
+    hit = _CHIP_ALPHA.get(colour_hex)
+    if hit is not None:
+        return hit
+    try:
+        fg = L.hex_rgb(colour_hex)
+    except Exception:
+        fg = (230, 232, 238)
+    out = None
+    for alpha in CHIP_ALPHAS:
+        if _passes(fg, alpha):
+            out = (colour_hex, alpha)
+            break
+    if out is None:
+        col = fg
+        for step in range(1, 10):
+            t = step / 10.0
+            col = tuple(int(round(fg[i] + (CREAM[i] - fg[i]) * t)) for i in range(3))
+            if _passes(col, CHIP_ALPHAS[-1]):
+                break
+        out = ("#%02X%02X%02X" % col, CHIP_ALPHAS[-1])
+    _CHIP_ALPHA[colour_hex] = out
+    return out
+
+
+def chip_alpha(colour_hex: str) -> int:
+    return label_style(colour_hex)[1]
+
+
+def label_colour(colour_hex: str) -> str:
+    return label_style(colour_hex)[0]
+
+
+def label_chip(text: str, colour_hex: str) -> Image.Image:
+    """A creature label: Menlo 20 in the creature's colour, stroked, on its contrast chip."""
+    col, alpha = label_style(colour_hex)
+    return chip_img(text, col, LABEL_FONT, LABEL_SIZE, alpha, stroke=True)
+
+
+def _colour_of(sc, key: Optional[str], e: Optional[Dict[str, Any]] = None, preset: Optional[str] = None) -> str:
+    """The creature's colour: the entity's (the scene reads the genome), else the pip row's `colour`, else the cave hash."""
+    if e is not None and e.get("colour"):
+        return str(e["colour"])
+    if key and getattr(sc, "world", None) is not None:
+        p = sc.world.pip(key) or {}
+        if p.get("colour"):
+            return str(p["colour"])
+    return P.colour_hex(key or "", preset)
+
+
+# ----------------------------------------------------------------------------- the time dial (sun / real-phase moon)
+_DIAL: Dict[Tuple, Image.Image] = {}
+
+
+def dial_img(hour: float, moon_phase: float, night: float) -> Image.Image:
+    """64x64 (+ a chip margin): the sun on a day arc east -> west, or the real-phase moon on the night arc, over a
+    ground stripe. The sky is read from the dial because a top-down land has no sky band (OPENWORLD 2.2)."""
+    key = (round(hour * 20) / 20.0, round(moon_phase, 2), round(night, 2))
+    im = _DIAL.get(key)
+    if im is not None:
+        return im
+    r = DIAL_R
+    disc = Image.new("RGBA", (2 * r, 2 * r), (0, 0, 0, 0))
+    dd = ImageDraw.Draw(disc)
+    day_top, day_bot = np.array((120, 160, 220)), np.array((236, 200, 150))
+    night_top, night_bot = np.array((34, 40, 78)), np.array((70, 76, 120))
+    top = day_top * (1 - night) + night_top * night
+    bot = day_bot * (1 - night) + night_bot * night
+    for row in range(2 * r):
+        t = row / (2 * r - 1)
+        c = tuple(int(v) for v in (top * (1 - t) + bot * t))
+        dd.line([(0, row), (2 * r, row)], fill=c + (255,))
+    ground = tuple(int(v) for v in np.array((74, 100, 50)) * (1 - night) + np.array((40, 52, 60)) * night)
+    dd.rectangle([0, r + 10, 2 * r, 2 * r], fill=ground + (255,))
+    dd.line([(0, r + 10), (2 * r, r + 10)], fill=(30, 40, 30, 255), width=2)
+    if night < 0.5:                                           # the sun: east (right) at 06:00, west (left) at 18:00
+        t = (hour - 6.0) / 12.0
+        ang = math.pi * (1 - min(1.0, max(0.0, t)))
+        px_, py_ = r + math.cos(ang) * (r - 12), r + 10 - math.sin(ang) * (r - 8)
+        dd.ellipse([px_ - 7, py_ - 7, px_ + 7, py_ + 7], fill=(255, 226, 140, 255))
+    else:                                                     # the moon takes the night arc, with its real phase
+        t = ((hour - 18.0) % 24.0) / 12.0
+        ang = math.pi * (1 - min(1.0, max(0.0, t)))
+        px_, py_ = r + math.cos(ang) * (r - 12), r + 10 - math.sin(ang) * (r - 8)
+        dd.ellipse([px_ - 7, py_ - 7, px_ + 7, py_ + 7], fill=(235, 235, 225, 255))
+        k = math.cos(2 * math.pi * moon_phase)
+        if abs(k) > 0.05:
+            off = 7 * k
+            dd.ellipse([px_ - 7 + off, py_ - 7, px_ + 7 + off, py_ + 7], fill=(48, 54, 92, 255))
+        for (sx, sy) in ((12, 10), (44, 16), (30, 6), (52, 30)):
+            dd.point((sx, sy), fill=(255, 255, 255, 255))
+    m = Image.new("L", (2 * r, 2 * r), 0)
+    ImageDraw.Draw(m).ellipse([0, 0, 2 * r - 1, 2 * r - 1], fill=255)
+    disc.putalpha(m)
+    im = Image.new("RGBA", (2 * r + 8, 2 * r + 8), (0, 0, 0, 0))
+    ImageDraw.Draw(im, "RGBA").rounded_rectangle([0, 0, 2 * r + 7, 2 * r + 7], 8, fill=tuple(list(L.hex_rgb(L.COLORS["bg"])) + [CHIP_ALPHAS[0]]))
+    im.alpha_composite(disc, (4, 4))
+    if len(_DIAL) > 64:
+        _DIAL.clear()
+    _DIAL[key] = im
+    return im
+
+
+# ----------------------------------------------------------------------------- the honest minimap
+class _Minimap(object):
+    """The WHOLE map at 0.15 px/cell: biome colours (cached once per terrain), walked land saturated / unwalked at 55 %
+    (re-derived from land.walked_mask() at most every MINIMAP_REBUILD_S while the wear version moves), then per frame
+    the camera rectangle, awake dots, camp / field squares and the beacon dot. Nothing is hidden (no fog of war)."""
+
+    def __init__(self):
+        self._terrain_id = None
+        self._base_rgb: Optional[np.ndarray] = None          # (66, 144, 3) float32 biome colours
+        self._grey: Optional[np.ndarray] = None
+        self._img: Optional[Image.Image] = None
+        self._wear_ver = None
+        self._built_t = -1e9
+        self.walked_frac = 0.0
+
+    def _base(self, T) -> None:
+        rgb = Image.fromarray(T.biome_rgb()).resize(MINIMAP_MAP, Image.Resampling.BOX)
+        self._base_rgb = np.asarray(rgb).astype(np.float32)
+        self._grey = self._base_rgb.mean(axis=2, keepdims=True)
+        self._terrain_id = id(T)
+
+    def image(self, T, ld, now: float) -> Image.Image:
+        if T is None:
+            return Image.new("RGBA", MINIMAP_MAP, (40, 50, 40, 255))
+        if self._base_rgb is None or self._terrain_id != id(T):
+            self._base(T)
+            self._img = None
+        ver = getattr(ld, "wear_version", None) if ld is not None else None
+        if self._img is None or (ver != self._wear_ver and now - self._built_t >= MINIMAP_REBUILD_S):
+            frac = None
+            if ld is not None:
+                try:
+                    mask = ld.walked_mask()
+                    self.walked_frac = float(ld.walked_fraction())
+                    frac = np.asarray(Image.fromarray(mask.astype(np.uint8) * 255).resize(MINIMAP_MAP, Image.Resampling.BOX)).astype(np.float32) / 255.0
+                except Exception:
+                    frac = None
+            sat = 0.55 if frac is None else (0.55 + 0.45 * frac)[..., None]
+            rgb = self._grey + (self._base_rgb - self._grey) * sat
+            self._img = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8)).convert("RGBA")
+            self._wear_ver, self._built_t = ver, now
+        return self._img.copy()
+
+
+# ----------------------------------------------------------------------------- the label placer (from the cave)
 class _Placer(object):
     """Axis-aligned boxes already drawn this frame. `up()` / `down()` slide a new box row by row until it overlaps
     nothing, so stacked labels and bubbles never cover each other (WORLD.md 5: one bubble per pip, labels legible)."""
@@ -373,6 +739,41 @@ class _Placer(object):
         self.boxes.append((x0, y, x0 + w, y + h))
         return y
 
+    def place_down(self, x0: int, y0: int, w: int, h: int, step: int, max_steps: int, ceiling: int = 10 ** 6) -> Optional[int]:
+        """Like place_up() downward: None (nothing reserved) when no free row is found within max_steps."""
+        y = y0
+        for _ in range(max_steps + 1):
+            if y + h > ceiling:
+                return None
+            if self._free(x0, y, x0 + w, y + h):
+                self.boxes.append((x0, y, x0 + w, y + h))
+                return y
+            y += step
+        return None
+
+    def place_either(self, x0: int, y0: int, w: int, h: int, step: int, max_steps: int, floor: int, ceiling: int) -> Optional[int]:
+        """Up first, then below (the gate mockup's plate rule); None when neither side has room."""
+        y = self.place_up(x0, y0, w, h, step, max_steps, floor)
+        if y is not None:
+            return y
+        y = y0 + step
+        for _ in range(max_steps):
+            if y + h > ceiling:
+                return None
+            if self._free(x0, y, x0 + w, y + h):
+                self.boxes.append((x0, y, x0 + w, y + h))
+                return y
+            y += step
+        return None
+
+
+def _in_hud(x0: int, y0: int, x1: int, y1: int) -> bool:
+    """True when a box would sit under the fixed HUD chips (plank / land line / dial rows, the minimap)."""
+    for bx0, by0, bx1, by1 in (HUD_RESERVE_LEFT, HUD_RESERVE_RIGHT):
+        if x0 < bx1 and bx0 < x1 and y0 < by1 and by0 < y1:
+            return True
+    return False
+
 
 def _paste(img: Image.Image, strip: Image.Image, x: int, y: int) -> None:
     """alpha_composite clipped to the image (PIL raises on a negative destination)."""
@@ -402,6 +803,7 @@ class WorldPanel(Panel):
         self._only_light: Optional[Tuple[str, float]] = None
         self._label_override: Dict[str, Tuple[str, float]] = {}
         self._ms: List[float] = []
+        self._text_ms: List[float] = []
         self._frames = 0
         self._errors = 0
         self.honesty_violations = 0
@@ -409,10 +811,25 @@ class WorldPanel(Panel):
         self.last_plank: Optional[str] = None            # the plank text of the last frame (compositor vote-ack check)
         self.last_plank_row2: Optional[str] = None
         self.last_placed: List[Tuple[int, int, int]] = []
+        self.last_plates: List[str] = []                 # plate texts drawn last frame (QA)
+        self.last_arrows: List[str] = []
+        self.last_land_line: Optional[str] = None
+        self.last_dial: Optional[Tuple[str, str]] = None
         self._alone_since: Optional[float] = None       # WORLD.md 10: one person, dead night
         self._alone_prompted = False
         self._sleepers_lit_until = 0.0
         self._lonely_t = -1e9                            # the last loneliness plank (the 45 s prompt and the `anyone?` answer never stack)
+        # land-only state
+        self._minimap = _Minimap()
+        self._place: Optional[Tuple[str, float]] = None  # (label, until) bottom-left place label after a retarget
+        self._cam_target: Optional[Tuple[float, float]] = None
+        self._cam_mode: Optional[str] = None
+        self._plate_slot: Optional[int] = None           # frozen rotation slot while plates are static (degrade >= 2)
+        self._marks_cache: Tuple[float, int, List] = (-1e9, -1, [])   # plate texts rebuilt at most once a second
+        self._camps: List[Dict[str, Any]] = []          # land.camps() / fields() once per frame (both walk every pip row)
+        self._fields: List[Dict[str, Any]] = []
+        self._mm_frame: Optional[Image.Image] = None      # the composed minimap, rebuilt every MINIMAP_EVERY frames
+        self._mm_built = -1
 
     def inputs(self, ctx):
         return ctx.frame                              # the sim moves every frame
@@ -425,7 +842,7 @@ class WorldPanel(Panel):
         cfg = ctx.chat_cfg or {}
         return cfg.get("display") is not False
 
-    def _shown(self, sc: H.CaveScene, key: Optional[str]) -> Optional[str]:
+    def _shown(self, sc, key: Optional[str]) -> Optional[str]:
         """@-less display name for a pip key; None when there is no such real pip (then nothing is drawn)."""
         if not key:
             return None
@@ -435,7 +852,7 @@ class WorldPanel(Panel):
             return None
         return p.get("display_name") or ("builder #%s" % (p.get("n") if p.get("n") is not None else "?"))
 
-    def _label_text(self, sc: H.CaveScene, e: Dict[str, Any]) -> Optional[str]:
+    def _label_text(self, sc, e: Dict[str, Any]) -> Optional[str]:
         shown = e.get("display_name") or self._shown(sc, e.get("key"))
         if not shown:
             return None
@@ -460,68 +877,83 @@ class WorldPanel(Panel):
             self._notices.sort(key=lambda n: (n["prio"], n["start"]))
             del self._notices[:-16]
 
-    def _consume_events(self, sc: H.CaveScene, ctx, now: float, accent: str) -> None:
+    def _consume_events(self, sc, ctx, now: float, accent: str, land_mode: bool = False) -> None:
         w = sc.world
         for ev in sc.events or []:
             typ = ev.get("type")
             try:
                 if typ == "sink":
-                    self._notice(now, "the soil did not take that one", L.COLORS["text2"], named=False)
+                    self._notice(now, "the wind took that one" if land_mode else "the soil did not take that one", L.COLORS["text2"], named=False)
                 elif typ == "hatch":
                     key = ev.get("pip")
                     p = w.pip(key) if key else None
                     if p is not None and p.get("n") is not None:
-                        self._hatch_tag[key] = ("#%d" % int(p["n"]), now + 3.0)
+                        self._hatch_tag[key] = ("#%d" % int(p["n"]), now + HATCH_TAG_S)
                     if ev.get("only_light") and key:
-                        self._only_light = (key, now + 10.0)
+                        self._only_light = (key, now + ONLY_ONE_S)
+                    nm = self._shown(sc, key)
+                    if land_mode and nm:
+                        self._notice(now, "@%s walked into Longgrass · %s" % (nm, _time.strftime("%H:%M", _time.localtime(now))), accent, dur=4.0, prio=PRIO_EVENT)
                     if ev.get("first_ever"):
-                        # WORLD.md 2.2 T+4 to T+10 s: one second after the hatch, for a SEEN 8 s (sticky), above every world line
-                        self._notice(now, "that's you. try: feed · pet · dig · plant", L.COLORS["text"], dur=8.0, named=False,
-                                     start=now + 1.0, prio=PRIO_YOU, sticky=True)
-                        self._notice(now, "your pip sleeps here when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
-                                     named=False, start=now + 9.0, prio=PRIO_LIGHT, sticky=True)
-                        self._notice(now, "stay ten minutes and your pip grows a row of pixels.", L.COLORS["text2"], dur=6.0,
-                                     named=False, start=now + 17.0, prio=PRIO_LIGHT, sticky=True)
+                        if land_mode:
+                            # OPENWORLD 3.1 T+4 to T+10 s: one second after the hatch, for a SEEN 8 s (sticky), above every world line
+                            self._notice(now, "that's you. try: go river · plant a flower · camp · fire · A/B/C", L.COLORS["text"], dur=8.0,
+                                         named=False, start=now + 1.0, prio=PRIO_YOU, sticky=True)
+                            self._notice(now, "your creature sleeps at its camp when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
+                                         named=False, start=now + 9.0, prio=PRIO_LIGHT, sticky=True)
+                            self._notice(now, "stay ten minutes and your creature grows a size.", L.COLORS["text2"], dur=6.0,
+                                         named=False, start=now + 17.0, prio=PRIO_LIGHT, sticky=True)
+                        else:
+                            # WORLD.md 2.2 T+4 to T+10 s: one second after the hatch, for a SEEN 8 s (sticky), above every world line
+                            self._notice(now, "that's you. try: feed · pet · dig · plant", L.COLORS["text"], dur=8.0, named=False,
+                                         start=now + 1.0, prio=PRIO_YOU, sticky=True)
+                            self._notice(now, "your pip sleeps here when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
+                                         named=False, start=now + 9.0, prio=PRIO_LIGHT, sticky=True)
+                            self._notice(now, "stay ten minutes and your pip grows a row of pixels.", L.COLORS["text2"], dur=6.0,
+                                         named=False, start=now + 17.0, prio=PRIO_LIGHT, sticky=True)
                 elif typ == "speak":
-                    # a lone chatter asking `is anyone here` gets the cave's real answer: every sleeper's label lights for 5 s
+                    # a lone chatter asking `is anyone here` gets the real answer: every sleeper's label lights for 5 s
                     # and the plank counts them (len()), naming one real sleeper to pet
                     if sc.awake_count() == 1 and _LONELY_RE.search(str(ev.get("text") or "")):
                         self._sleepers_lit_until = now + SLEEPERS_LIT_S
-                        self._lonely_plank(sc, ev.get("pip"), now, asked=True)
-                elif typ == "first_light":
+                        self._lonely_plank(sc, ev.get("pip"), now, asked=True, land_mode=land_mode)
+                elif typ in ("first_light", "first_breath"):
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        self._notice(now, "@%s woke the Hollow · %s" % (nm, _time.strftime("%H:%M", _time.localtime(now))), accent,
+                        where = "Longgrass" if land_mode else "the Hollow"
+                        self._notice(now, "@%s woke %s · %s" % (nm, where, _time.strftime("%H:%M", _time.localtime(now))), accent,
                                      dur=FIRST_LIGHT_S, prio=PRIO_LIGHT)
                 elif typ == "wake":
                     self._care_line(sc, ev, now)
                     if ev.get("only_light") and ev.get("pip"):
-                        self._only_light = (ev["pip"], now + 10.0)
+                        self._only_light = (ev["pip"], now + ONLY_ONE_S)
                 elif typ == "sleep":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        q = int(round(float(ev.get("quiet_s") or sc.sleep_after_s) / 60.0))
+                        q = int(round(float(ev.get("quiet_s") or getattr(sc, "sleep_after_s", 1200.0)) / 60.0))
                         self._label_override[ev["pip"]] = ("@%s · asleep · quiet %d min" % (nm, q), now + 8.0)
                 elif typ == "tier_up":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        self._notice(now, "@%s's pip grew" % nm, accent, prio=PRIO_VERB)
+                        self._notice(now, "@%s's %s grew" % (nm, "creature" if land_mode else "pip"), accent, prio=PRIO_VERB)
                 elif typ == "forget":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        self._notice(now, "@%s's pip forgot everything" % nm, L.COLORS["text"], prio=PRIO_VERB)
+                        self._notice(now, "@%s's %s forgot everything" % (nm, "creature" if land_mode else "pip"), L.COLORS["text"], prio=PRIO_VERB)
                 elif typ == "burrowed":
                     reason = str(ev.get("reason") or "")
                     if "hidden" not in reason and "mod" not in reason:          # a hidden user's name never appears
                         nm = self._shown(sc, ev.get("pip"))
                         if nm:
-                            self._notice(now, "@%s's pip burrowed: %s" % (nm, reason or "for tonight"), L.COLORS["warn"], prio=PRIO_VERB)
+                            verb = "lay down in the grass" if land_mode else "burrowed"
+                            self._notice(now, "@%s's %s %s: %s" % (nm, "creature" if land_mode else "pip", verb, reason or "for tonight"), L.COLORS["warn"], prio=PRIO_VERB)
                 elif typ in ("feed", "pet", "gift"):
                     by = self._shown(sc, ev.get("by"))
                     nm = self._shown(sc, ev.get("pip"))
                     if by and nm:
+                        who = "creature" if land_mode else "pip"
                         if by == nm:
-                            line = ("@%s's pip ate a glow-berry" % nm) if typ == "feed" else ("@%s petted their own pip" % nm)
+                            line = ("@%s's %s ate a berry" % (nm, who)) if typ == "feed" else ("@%s petted their own %s" % (nm, who))
                         else:
                             verb = {"feed": "fed", "pet": "petted", "gift": "left a gift for"}[typ]
                             tail = " (asleep · it will know on wake)" if ev.get("asleep") or typ == "gift" else ""
@@ -534,19 +966,79 @@ class WorldPanel(Panel):
                 elif typ == "plant":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        self._notice(now, "@%s planted glowmoss" % nm, accent, prio=PRIO_VERB)
+                        what = str(ev.get("kind") or ev.get("mark") or ("flower" if land_mode else "glowmoss"))
+                        art = "" if what == "glowmoss" else ("a " if what[:1] not in "aeiou" else "an ")
+                        self._notice(now, "@%s planted %s%s" % (nm, art, what), accent, prio=PRIO_VERB)
+                # -- LONGGRASS events (OPENWORLD 6, camera EVENT_TYPES); unknown types are ignored, never invented
+                elif typ in ("camp", "camp_new"):
+                    nm = self._shown(sc, ev.get("pip"))
+                    if nm:
+                        ld0 = getattr(sc, "land", None)
+                        pl = (ld0.plate(ev.get("pip"), now) if ld0 is not None else None) or {}
+                        word = str(ev.get("word") or pl.get("word") or "camp")
+                        self._notice(now, "@%s pitched a %s" % (nm, word), accent, prio=PRIO_VERB)
+                elif typ == "camp_raised":
+                    nm = self._shown(sc, ev.get("pip"))
+                    if nm:
+                        self._notice(now, "@%s's camp · %s · night %d" % (nm, str(ev.get("word") or "camp"), int(ev.get("night") or ev.get("nights") or 1)),
+                                     accent, dur=6.0, prio=PRIO_VERB)
+                elif typ in ("fire", "hearth"):
+                    nm = self._shown(sc, ev.get("pip") or ev.get("by"))
+                    if nm:
+                        line = ("@%s lit the hearth" % nm) if (typ == "hearth" or ev.get("hearth")) else ("@%s lit a fire" % nm)
+                        self._notice(now, line, accent, prio=PRIO_VERB)
+                elif typ == "sow":
+                    nm = self._shown(sc, ev.get("pip"))
+                    if nm:
+                        self._notice(now, "@%s sowed a field" % nm, accent, prio=PRIO_VERB)
+                elif typ == "harvest":
+                    nm = self._shown(sc, ev.get("pip"))
+                    if nm:
+                        self._notice(now, "@%s harvested · a feast for everyone awake" % nm, accent, dur=6.0, prio=PRIO_VERB)
+                elif typ == "place" and str(ev.get("kind") or "") == "stone":
+                    nm = self._shown(sc, ev.get("pip"))
+                    if nm:
+                        ld0 = getattr(sc, "land", None)
+                        tail = (" · stone %d" % ld0.stock) if ld0 is not None and ld0.stock else ""
+                        self._notice(now, "@%s placed a stone on the cairn%s" % (nm, tail), accent, prio=PRIO_VERB)
+                elif typ in ("stack", "stone"):
+                    nm = self._shown(sc, ev.get("pip") or ev.get("by"))
+                    if nm:
+                        n = ev.get("stock")
+                        tail = (" · stone %d" % int(n)) if n is not None else ""
+                        self._notice(now, "@%s stacked a stone on the cairn%s" % (nm, tail), accent, prio=PRIO_VERB)
+                elif typ == "cairn_named":
+                    self._notice(now, "the cairn is named · three people have stacked here", accent, dur=8.0, named=False)
+                elif typ in ("raising", "raising_ship", "land_open"):
+                    name = L.strip_non_bmp(str(ev.get("name") or ""))
+                    if name:
+                        verb = {"raising": "the keepers are raising", "raising_ship": "raised:", "land_open": "land opened:"}[typ]
+                        self._notice(now, "%s %s" % (verb, name), accent, dur=8.0, named=False)
+                elif typ in ("go", "walk") and (ev.get("place") or isinstance(ev.get("to"), str)):
+                    nm = self._shown(sc, ev.get("pip"))
+                    to = str(ev.get("place") or ev.get("to") or "")
+                    T0 = getattr(sc, "terrain", None)
+                    pl = (getattr(T0, "places", None) or {}).get(to.lower()) if T0 is not None else None
+                    place = L.strip_non_bmp(str(ev.get("place_label") or (pl or {}).get("label") or ""))
+                    if nm and place and not to.startswith("@") and to.lower() not in ("a", "b", "c", "home"):
+                        self._notice(now, "@%s heads for %s" % (nm, place), L.COLORS["text"], dur=3.0, prio=PRIO_VERB)
+                elif typ == "swim":
+                    nm = self._shown(sc, ev.get("pip"))
+                    if nm:
+                        self._notice(now, "@%s went for a swim" % nm, L.COLORS["text"], dur=3.0, prio=PRIO_VERB)
                 elif typ == "credits_start":
                     n = int(ev.get("count") or 0)
-                    self._notice(now, "goodnight. %d pip%s walk home." % (n, "" if n == 1 else "s"), L.COLORS["text"], dur=3.0, named=False, prio=PRIO_CREDITS)
+                    who = "creature" if land_mode else "pip"
+                    self._notice(now, "goodnight. %d %s%s walk home." % (n, who, "" if n == 1 else "s"), L.COLORS["text"], dur=3.0, named=False, prio=PRIO_CREDITS)
                 elif typ == "credits":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
                         self._notice(now, "@%s · %d min tonight" % (nm, int(round(float(ev.get("minutes_tonight") or 0)))), L.COLORS["text"], dur=1.5, prio=PRIO_CREDITS)
                 elif typ == "credits_end":
-                    self._notice(now, "the Hollow sleeps. see you next time.", L.COLORS["text2"], dur=20.0, named=False, prio=PRIO_CREDITS)
+                    where = "Longgrass sleeps" if land_mode else "the Hollow sleeps"
+                    self._notice(now, "%s. see you next time." % where, L.COLORS["text2"], dur=20.0, named=False, prio=PRIO_CREDITS)
                 # -- keepers (stream/world/keepers.py events ride in scene.events): NOT on the plank. The plank is the
-                #    person-facing slot (WORLD.md 2.2); the keeper strip (`carving: the Ledge · 0:20 left · opened by
-                #    @sami's hatch`, `last carved: ...`, failures) and the colony strip (milestone caption) show these.
+                #    person-facing slot (WORLD.md 2.2); the keeper strip and the land strip show these.
             except Exception:
                 self._errors += 1
         # expire: plain lines at `until`; sticky lines once they have been SEEN for `dur` (or at the hard cap)
@@ -558,20 +1050,26 @@ class WorldPanel(Panel):
         if self._only_light and (self._only_light[1] <= now or sc.awake_count() > 1):
             self._only_light = None                       # `you are the only light` is a fact only while it is one
 
-    def _lonely_plank(self, sc: H.CaveScene, key: Optional[str], now: float, asked: bool = False) -> None:
+    def _lonely_plank(self, sc, key: Optional[str], now: float, asked: bool = False, land_mode: bool = False) -> None:
         """WORLD.md 10 `one person, dead night`: the plank answers loneliness with the real colony. `N sleep here` is a
         len(); the sleeper named is the one nearest the awake pip (a real past chatter); the nearest sleeper stirs once."""
         sleepers = [e for e in sc.behaviour.entities.values() if e.state == "asleep" and e.display_name]
         me = sc.behaviour.get(key) if key else None
         n = len(sleepers)
         if me is not None and sleepers:
-            near = min(sleepers, key=lambda e: abs(e.x - me.x))
+            near = min(sleepers, key=lambda e: math.hypot(e.x - me.x, float(getattr(e, "y", 0.0)) - float(getattr(me, "y", 0.0))))
             nm = self._shown(sc, near.key)
-            sc.behaviour.stir(near.key, now)
+            try:
+                sc.behaviour.stir(near.key, now)
+            except Exception:
+                pass
         else:
             near, nm = None, None
         if n == 0:
-            txt = "nobody else has ever been here. you're the first light." if asked else "you're alone tonight. every mark you make is here tomorrow."
+            if land_mode:
+                txt = "nobody else has ever walked here. you're the first." if asked else "you're the only one out here right now. the wind was already blowing."
+            else:
+                txt = "nobody else has ever been here. you're the first light." if asked else "you're alone tonight. every mark you make is here tomorrow."
         elif nm:
             txt = ("%d asleep here · pet @%s and they'll know you came." % (n, nm)) if asked else \
                   ("you're alone tonight. pet @%s and they'll see it when they wake." % nm)
@@ -582,8 +1080,8 @@ class WorldPanel(Panel):
         self._lonely_t = now
         self._notice(now, txt, L.COLORS["text"], dur=8.0, prio=PRIO_LIGHT, sticky=True)
 
-    def _care_line(self, sc: H.CaveScene, ev: Dict[str, Any], now: float) -> None:
-        """`back after 2 nights · fed by @kai x2 · petted by @x · gift from @sami` from the REAL care log."""
+    def _care_line(self, sc, ev: Dict[str, Any], now: float) -> None:
+        """`back after 2 nights · your tree grew · fed by @kai x2 · gift from @sami` from the REAL care log / land."""
         key = ev.get("pip")
         if not key:
             return
@@ -592,6 +1090,10 @@ class WorldPanel(Panel):
         if away is not None and float(away) >= 6 * 3600:
             nights = max(1, int(round(float(away) / 86400.0)))
             parts.append("back after %d night%s" % (nights, "" if nights == 1 else "s"))
+        for g in ev.get("growth") or []:                        # the land's real growth since the last visit (`your tree grew`)
+            s = L.strip_non_bmp(str(g))
+            if s:
+                parts.append(s)
         counts: Dict[Tuple[str, str], int] = {}
         for c in ev.get("care_log") or []:
             by = self._shown(sc, c.get("by"))
@@ -600,18 +1102,18 @@ class WorldPanel(Panel):
             k = (str(c.get("verb") or "feed"), by)
             counts[k] = counts.get(k, 0) + 1
         for (verb, by), n in sorted(counts.items()):
-            word = {"feed": "fed by", "pet": "petted by", "gift": "gift from"}.get(verb, verb + " by")
+            word = {"feed": "fed by", "pet": "petted by", "gift": "gift from", "water": "watered by"}.get(verb, verb + " by")
             parts.append("%s @%s%s" % (word, by, (" x%d" % n) if n > 1 else ""))
         if parts:
             self._care[key] = (" · ".join(parts), now + 6.0)
 
     # ------------------------------------------------------------------ plank
-    def _plank_text(self, sc: H.CaveScene, ctx, now: float, names_on: bool, accent: str) -> Tuple[str, Any]:
+    def _plank_text(self, sc, ctx, now: float, names_on: bool, accent: str, land_mode: bool = False) -> Tuple[str, Any]:
         nt = ctx.notice if (ctx.notice and isinstance(ctx.notice, (tuple, list)) and ctx.notice[0] and names_on) else None
         lvl = (nt[1] if nt is not None and len(nt) > 1 else None)
         if nt is not None:
             # a direct answer to a person outranks the world's own event lines: the same-frame `@name voted A` ack
-            # (1.5 s, CONCEPT 2), a verb refusal (`feed again in 26 s`, WORLD.md 4: every refusal shows for 4 s),
+            # (1.5 s, CONCEPT 2), a verb refusal (`feed again in 26 s`; every refusal shows for 4 s in amber),
             # a mod notice, a verb confirmation
             col = L.COLORS["danger"] if lvl == "danger" else (accent if lvl in ("ok", "accent", "info") else L.COLORS["warn"])
             return str(nt[0]), col
@@ -622,9 +1124,10 @@ class WorldPanel(Panel):
                 n["shown"] += 1.0 / float(ctx.fps or 30)
             return n["text"], n["colour"]
         if ctx.mod_paused:
-            return "chat paused by mod · pips keep moving", L.COLORS["warn"]
+            return "chat paused by mod · %s keep moving" % ("creatures" if land_mode else "pips"), L.COLORS["warn"]
         if ctx.help_until and now < float(ctx.help_until):
-            return LEGEND[int(now / LEGEND_ITEM_S) % len(LEGEND)], L.COLORS["text"]
+            legend = LEGEND_LAND if land_mode else LEGEND
+            return legend[int(now / LEGEND_ITEM_S) % len(legend)], L.COLORS["text"]
         rem = ctx.round_remaining
         phase = (ctx.round or {}).get("phase")
         if (ctx.vote_count or 0) == 0 and rem is not None and 0 <= rem < 30 and phase != "ship":
@@ -637,19 +1140,36 @@ class WorldPanel(Panel):
                     copy_line = res.get("copy")                  # rounds' own zero-vote copy (checks the keeper heartbeat)
                     if copy_line:
                         return L.strip_non_bmp(str(copy_line)), L.COLORS["text"]
-                    who = "the keepers picked" if self._keeper_fresh(ctx) else "the Hollow picked"
+                    if self._keeper_fresh(ctx):
+                        who = "the keepers picked"
+                    else:
+                        who = "the land picked" if land_mode else "the Hollow picked"
                     return "nobody voted. %s %s." % (who, title), L.COLORS["text"]
                 by = shown_name(res.get("picked_by")) if names_on else None
                 return ("%s · picked by @%s" % (title, by)) if by else title, accent
+        if land_mode:
+            drift = self._drift_plank(sc, ctx, now, names_on)
+            if drift is not None:
+                return drift
         # idle rotation
         items: List[Tuple[str, Any]] = []
         hatched, awake, asleep = sc.hatched_ever(), sc.awake_count(), sc.asleep_count()
-        if hatched == 0:
-            items.append(("nobody has hatched here yet. say anything and you are the first.", L.COLORS["text"]))
-        elif awake == 0:
-            items.append(("%d pip%s sleep here. nobody awake. say anything and yours wakes." % (asleep, "" if asleep == 1 else "s"), L.COLORS["text"]))
+        if land_mode:
+            ld = land()
+            settled = ld.settled if ld is not None else asleep
+            if hatched == 0:
+                items.append(("nobody has walked here yet. say anything and you are the first.", L.COLORS["text"]))
+            elif awake == 0:
+                items.append(("%d settled here. nobody awake. say anything and yours wakes." % settled, L.COLORS["text"]))
+            else:
+                items.append(("say anything in chat. a creature walks out with your name.", L.COLORS["text"]))
         else:
-            items.append(("say anything in chat. a pip hatches with your name.", L.COLORS["text"]))
+            if hatched == 0:
+                items.append(("nobody has hatched here yet. say anything and you are the first.", L.COLORS["text"]))
+            elif awake == 0:
+                items.append(("%d pip%s sleep here. nobody awake. say anything and yours wakes." % (asleep, "" if asleep == 1 else "s"), L.COLORS["text"]))
+            else:
+                items.append(("say anything in chat. a pip hatches with your name.", L.COLORS["text"]))
         if names_on:
             visits = list((sc.world.data.get("world") or {}).get("visits") or [])[-5:]
             segs = []
@@ -667,8 +1187,9 @@ class WorldPanel(Panel):
                 if t is not None and (started is None or t >= started - 60):
                     nm = self._shown(sc, last.get("name"))
                     if nm:
-                        items.append(("@%s woke the Hollow · %s" % (nm, when_text(last.get("ts"), now)), accent))
-        items.append((LEGEND[0], L.COLORS["text2"]))
+                        where = "Longgrass" if land_mode else "the Hollow"
+                        items.append(("@%s woke %s · %s" % (nm, where, when_text(last.get("ts"), now)), accent))
+        items.append(((LEGEND_LAND if land_mode else LEGEND)[0], L.COLORS["text2"]))
         # the call to action (items[0]) comes back every other slot: CTA, visitors, CTA, woke, CTA, legend, ...
         slot = int(now // ROTATE_S)
         if slot % 2 == 0 or len(items) == 1:
@@ -676,14 +1197,54 @@ class WorldPanel(Panel):
         rest = items[1:]
         return rest[(slot // 2) % len(rest)]
 
+    def _drift_plank(self, sc, ctx, now: float, names_on: bool) -> Optional[Tuple[str, Any]]:
+        """DRIFT (OPENWORLD 2.2, 4.4): `surveying the steading · @sami's hut · last here yesterday 10:40`. The stop is a
+        real mark (its owner is a pip row) or one of the three natural points; nothing else is ever named. Shown on the
+        odd rotation slots so the call to action still comes round."""
+        cam = getattr(sc, "camera", None)
+        if cam is None or cam.mode != "DRIFT":
+            return None
+        stop = cam.drift_stop
+        slot = int(now // ROTATE_S)
+        if slot % 2 == 0:
+            return None
+        ld = land()
+        if stop is None:
+            visits = list((sc.world.data.get("world") or {}).get("visits") or [])
+            if names_on and visits:
+                nm = self._shown(sc, visits[-1].get("name"))
+                if nm:
+                    return "surveying the steading · last here: @%s %s" % (nm, when_text(visits[-1].get("ts"), now)), L.COLORS["text2"]
+            return "surveying the steading · the wind is just the wind", L.COLORS["text2"]
+        kind = str(stop.get("kind") or "")
+        owner = stop.get("owner")
+        nm = self._shown(sc, owner) if (owner and names_on) else None
+        if kind == "natural":
+            return "surveying · %s" % L.strip_non_bmp(str(stop.get("name") or stop.get("id") or "the land")), L.COLORS["text2"]
+        if kind == "cairn" and ld is not None:
+            return "surveying · the cairn · %d stone%s" % (ld.stock, "" if ld.stock == 1 else "s"), L.COLORS["text2"]
+        if not nm:
+            return "surveying the steading", L.COLORS["text2"]
+        if kind == "camp" and ld is not None:
+            pl = ld.plate(owner, now) or {}
+            return "surveying the steading · @%s's %s · last here %s" % (nm, pl.get("word") or "camp", when_text(pl.get("last_seen_ts"), now)), L.COLORS["text2"]
+        if kind == "tree" and ld is not None:
+            m = next((m for m in ld.marks_of_type("tree") if m.get("id") == stop.get("id")), None)
+            stage = ld.tree_stage(m, now)[1] if m else "tree"
+            return "surveying the steading · @%s's tree · %s" % (nm, stage), L.COLORS["text2"]
+        if kind == "field" and ld is not None:
+            f = ld.field_of(owner)
+            stage = ld.field_stage(f, now)[1] if f else "field"
+            return "surveying the steading · @%s's field · %s" % (nm, stage), L.COLORS["text2"]
+        return "surveying the steading · @%s's %s" % (nm, kind or "mark"), L.COLORS["text2"]
+
     def _live_notices(self, now: float, names_on: bool) -> List[Dict[str, Any]]:
         return [n for n in self._notices if n["start"] <= now and (names_on or not n["named"])
                 and (n["until"] > now if not n.get("sticky") else n["hard_until"] > now)]
 
     def _plank_row2(self, ctx, now: float, names_on: bool, primary: str) -> Optional[Tuple[str, Any]]:
         """The newcomer's sticky line (`that's you. try: ...`) when row 1 is held by something else (a vote ack, a
-        refusal to another person): it drops to a second plank row instead of vanishing, and its seen-clock runs.
-        WORLD.md 2.2 T+4-10 s: the stranger gets the full 8 s, whatever else chat is doing."""
+        refusal to another person): it drops to a second plank row instead of vanishing, and its seen-clock runs."""
         for n in sorted(self._live_notices(now, names_on), key=lambda q: -q["prio"]):
             if n.get("sticky") and n["prio"] >= PRIO_YOU and n["text"] != primary:
                 n["shown"] += 1.0 / float(ctx.fps or 30)
@@ -710,29 +1271,626 @@ class WorldPanel(Panel):
                 mon.check(ctx, float(ctx.now if ctx.now is not None else _time.time()))
             except Exception:
                 self._errors += 1
+        t1 = _time.perf_counter()
         try:
             img = base.copy()                          # the scene keeps `base` as its last good frame: never draw on it
-            self._text_layer(img, sc, ctx, size)
+            if is_land(sc):
+                self._text_layer_land(img, sc, ctx, size)
+            else:
+                self._text_layer_cave(img, sc, ctx, size)
         except Exception:
             self._errors += 1
             if self._errors <= 3 or self._errors % 300 == 0:
                 _log("text layer failed (%d): %s" % (self._errors, traceback.format_exc().strip().splitlines()[-1]))
             img = base
-        ms = (_time.perf_counter() - t0) * 1000.0
+        t2 = _time.perf_counter()
+        ms = (t2 - t0) * 1000.0
         self._ms.append(ms)
+        self._text_ms.append((t2 - t1) * 1000.0)
         if len(self._ms) > STATS_EVERY:
             del self._ms[:-STATS_EVERY]
+            del self._text_ms[:-STATS_EVERY]
         self._frames += 1
         if self._frames % STATS_EVERY == 0:
-            st = sc.stats() if sc.booted else {}
-            _log("frame %d: panel avg %.2f ms max %.2f (scene avg %s ms, degrade %s) awake=%s asleep=%s hatched=%s "
-                 "entities=%s honesty_violations=%d/%s text_cache=%d" % (
-                     self._frames, sum(self._ms) / len(self._ms), max(self._ms), st.get("avg_ms"), (st.get("degrade") or {}).get("level"),
+            st = sc.stats() if getattr(sc, "booted", False) else {}
+            _log("frame %d: panel avg %.2f ms max %.2f (text layer avg %.2f) (scene avg %s ms, degrade %s) awake=%s asleep=%s hatched=%s "
+                 "entities=%s honesty_violations=%d/%s text_cache=%d chips=%d" % (
+                     self._frames, sum(self._ms) / len(self._ms), max(self._ms), sum(self._text_ms) / len(self._text_ms),
+                     st.get("avg_ms"), (st.get("degrade") or {}).get("level"),
                      st.get("awake"), st.get("asleep"), st.get("hatched_ever"), st.get("entities"),
-                     self.honesty_violations, st.get("honesty_violations"), len(_TEXT)))
+                     self.honesty_violations, st.get("honesty_violations"), len(_TEXT), len(_CHIP)))
         return img
 
-    def _text_layer(self, img: Image.Image, sc: H.CaveScene, ctx, size) -> None:
+    # ================================================================== LONGGRASS text layer
+    @staticmethod
+    def _cells_of(e: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        x, y = e.get("x"), e.get("y")
+        if x is None or y is None:
+            return None
+        return float(x), float(y)
+
+    def _screen_box(self, e: Dict[str, Any], cam, size) -> Optional[Tuple[int, int, int, int]]:
+        """(sx, sy, sw, sh) of the sprite on screen: the scene's own box when it gives one, else the camera transform
+        of the feet cell and the tier height. None when off-view (culled)."""
+        w, h = size
+        if e.get("sx") is not None and e.get("sy") is not None:
+            sx, sy, sw, sh = int(e["sx"]), int(e["sy"]), int(e.get("sw") or 24), int(e.get("sh") or 32)
+            if sx + sw < -40 or sy + sh < -40 or sx > w + 40 or sy > h + 40:
+                return None
+            return sx, sy, sw, sh
+        c = self._cells_of(e)
+        if c is None:
+            return None
+        pt = cam.sim_to_screen(c[0], c[1], size, margin_px=60.0)
+        if pt is None:
+            return None
+        k = cam.scale(size) / 4.0
+        tier = int(e.get("tier") or 0)
+        sh = int(TIER_H_PX[min(3, max(0, tier))] * k)
+        sw = int(sh * 0.9)
+        return int(pt[0] - sw / 2.0), int(pt[1] - sh), sw, sh
+
+    @staticmethod
+    def _waystones(sc, T, ld) -> List[Tuple[float, float]]:
+        """The three waystones' cells: the scene's (behaviour) placement when it exposes one, else a fixed triangle on
+        the Moot green (geometry, not a name: the letters stand empty at 0 awake)."""
+        for src in (sc, getattr(sc, "behaviour", None), getattr(sc, "land", None)):
+            ws = getattr(src, "waystones", None) if src is not None else None
+            if callable(ws):
+                try:
+                    ws = ws()
+                except Exception:
+                    ws = None
+            if ws:
+                out = []
+                if isinstance(ws, dict):                        # steading.waystones() -> {"A": (x, y), "B": ..., "C": ...}
+                    items = [ws.get(k) for k in PLATFORM_LETTERS]
+                else:
+                    items = list(ws)[:3]
+                for s in items:
+                    if s is None:
+                        continue
+                    if isinstance(s, dict):
+                        out.append((float(s["x"]), float(s["y"])))
+                    else:
+                        out.append((float(s[0]), float(s[1])))
+                if len(out) == 3:
+                    return out
+        if ld is not None and ld.moot is not None:
+            mx, my = float(ld.moot[0]), float(ld.moot[1])
+        elif T is not None:
+            mx, my = float(T.site[0]), float(T.site[1])
+        else:
+            mx, my = 480.0, 220.0
+        return [(mx - 14, my + 6), (mx, my - 10), (mx + 14, my + 6)]
+
+    def _place_label(self, sc, cam, T, now: float) -> Optional[str]:
+        """Bottom-left place name for 4 s after a camera retarget (mode change or a target > 30 cells away), from
+        terrain.places (never a person's name)."""
+        if cam is None or T is None:
+            return None
+        tgt = tuple(cam.target) if getattr(cam, "target", None) else None
+        moved = self._cam_target is None or (tgt is not None and math.hypot(tgt[0] - self._cam_target[0], tgt[1] - self._cam_target[1]) > PLACE_RETARGET_CELLS)
+        if moved or cam.mode != self._cam_mode:
+            self._cam_target, self._cam_mode = tgt, cam.mode
+            label = None
+            stop = cam.drift_stop if cam.mode == "DRIFT" else None
+            if stop is not None and stop.get("kind") == "natural":
+                label = str(stop.get("name") or "")
+            if not label and tgt is not None:
+                best, bd = None, 1e9
+                for name, p in (getattr(T, "places", None) or {}).items():
+                    if name == "steading":
+                        continue
+                    d = math.hypot(tgt[0] - p["x"], tgt[1] - p["y"])
+                    if d < bd and d <= max(40.0, 2.0 * float(p.get("radius") or 0)):
+                        best, bd = p, d
+                if best is not None:
+                    label = str(best.get("label") or best.get("name"))
+            if label:
+                self._place = (L.strip_non_bmp(label), now + PLACE_LABEL_S)
+        if self._place and self._place[1] > now:
+            return self._place[0]
+        return None
+
+    def _text_layer_land(self, img: Image.Image, sc, ctx, size) -> None:
+        if not getattr(sc, "booted", False):
+            return
+        w, h = size
+        now = float(ctx.now if ctx.now is not None else _time.time())
+        accent = L.preset(ctx.preset)["accent"]
+        names_on = self._names_on(ctx)
+        deg = sc.degrade or {}
+        cam = sc.camera
+        ld = getattr(sc, "land", None) or sc.world.land
+        T = getattr(sc, "terrain", None)
+        N = getattr(sc, "nature", None)
+        ents = sc.entities(now)
+        awake = sc.awake_count()
+        labels_on_speak = bool(deg.get("labels_on_speak")) or awake > DENSITY_FALLBACK
+        dense = awake > DENSITY_FALLBACK
+        plates_static = bool(deg.get("plates_static")) or deg.get("plates_rotate") is False or dense
+        self._consume_events(sc, ctx, now, accent, land_mode=True)
+        if awake == 1:
+            if self._alone_since is None:
+                self._alone_since, self._alone_prompted = now, False
+            elif not self._alone_prompted and now - self._alone_since >= ALONE_PROMPT_S:
+                self._alone_prompted = True
+                lone = next((e for e in sc.behaviour.entities.values() if e.is_awake()), None)
+                self._lonely_plank(sc, lone.key if lone is not None else None, now, land_mode=True)
+        else:
+            self._alone_since, self._alone_prompted = None, False
+
+        try:
+            self._camps = ld.camps() if ld is not None else []
+            self._fields = ld.fields() if ld is not None else []
+        except Exception:
+            self._camps, self._fields = [], []
+        placer = _Placer()
+        placer.reserve(*HUD_RESERVE_LEFT)                        # plank rows, land line, dial rows
+        placer.reserve(*HUD_RESERVE_RIGHT)                       # minimap
+        placer.reserve(0, h - 44, 400, h)                        # the place label's row
+
+        # 1. waystone letters, counts, standing names (culled; their boxes are reserved so nothing covers a letter)
+        counts = sc.platform_counts()
+        carved = L.COLORS["text"]
+        best_votes = max([len(counts.get(k) or []) for k in PLATFORM_LETTERS] or [0])
+        cluster_px: List[Tuple[int, int]] = []
+        stone_row: Dict[str, Tuple[int, int, int]] = {}          # letter -> (x0, x1, bottom y) of the carved rows
+        options = {str(o.get("letter") or "").upper(): o for o in ((ctx.round or {}).get("options") or []) if isinstance(o, dict)}
+        for letter, (wx, wy) in zip(PLATFORM_LETTERS, self._waystones(sc, T, ld)):
+            pt = cam.sim_to_screen(wx, wy, size, margin_px=120.0)
+            if pt is None:
+                continue
+            cx, cy = int(pt[0]), int(pt[1])
+            keys = counts.get(letter) or []
+            n = len(keys)
+            if n:
+                cluster_px.append((cx, cy))
+            lt = text_strip("AB", 56, letter, carved, stroke=True)
+            ly = cy - WAYSTONE_LETTER_DY
+            if _in_hud(cx - lt.size[0] // 2 - 4, ly - 4, cx + lt.size[0] // 2 + 40, ly + lt.size[1] + 4):
+                continue                                   # the stone is under the HUD chips: its letter is culled, never drawn beneath them
+            _paste(img, lt, cx - lt.size[0] // 2, ly)
+            ct = text_strip("Menlo", 22, "%d" % n, accent if n else L.COLORS["text2"])
+            _paste(img, ct, cx + lt.size[0] // 2 + 6, ly + 30)
+            x0, x1 = cx - lt.size[0] // 2, cx + lt.size[0] // 2 + 6 + ct.size[0]
+            placer.reserve(x0 - 4, ly - 4, x1 + 4, ly + lt.size[1] + 4)
+            bottom = ly + lt.size[1]
+            opt = options.get(letter) or {}
+            title = L.strip_non_bmp(str(opt.get("title") or "")).strip()
+            if title:
+                lead = n > 0 and n == best_votes
+                ts = chip_img(title, accent if lead else L.COLORS["text2"], LABEL_FONT, LABEL_SIZE, CHIP_ALPHAS[0], max_w=PLATFORM_TITLE_MAX_W)
+                tx = max(GUTTER, min(w - ts.size[0] - GUTTER, cx - ts.size[0] // 2))
+                ty = placer.place_up(tx, ly - ts.size[1] - 2, ts.size[0], ts.size[1], ts.size[1] + 2, 3, floor=2)
+                if ty is not None:                         # the three stones stand close: titles stack, never overprint
+                    _paste(img, ts, tx, ty)
+                    x0, x1 = min(x0, tx), max(x1, tx + ts.size[0])
+            if n and names_on:
+                shown = [nm for nm in (self._shown(sc, k) for k in keys[-3:]) if nm]
+                segs: List[Image.Image] = []
+                total = 0
+                for j, nm in enumerate(shown):
+                    if segs:
+                        sep = text_strip(LABEL_FONT, LABEL_SIZE, " · ", L.COLORS["text2"])
+                        segs.append(sep); total += sep.size[0]
+                    k = keys[-3:][j]
+                    st = text_strip(LABEL_FONT, LABEL_SIZE, "@" + nm, _colour_of(sc, k, None, ctx.preset))
+                    segs.append(st); total += st.size[0]
+                if total > PLATFORM_NAMES_MAX_W and len(shown) > 1:
+                    st = text_strip(LABEL_FONT, LABEL_SIZE, "%d standing" % n, L.COLORS["text"])
+                    segs, total = [st], st.size[0]
+                rx = max(GUTTER, min(w - GUTTER - total, cx - total // 2))
+                ry = bottom + 2
+                placer.reserve(rx, ry, rx + total, ry + LABEL_H)
+                for st in segs:
+                    _paste(img, st, rx, ry); rx += st.size[0]
+                x0, x1 = min(x0, rx - total), max(x1, rx)
+                bottom = ry + LABEL_H
+            stone_row[letter] = (x0, x1, bottom)
+
+        # 2. plates: the DRIFT stop's camp plate (while the camera dwells) + one rotating plate over the marks in view
+        plates_drawn: List[str] = []
+        if names_on:
+            self._plates(img, sc, cam, ld, now, size, placer, plates_drawn, plates_static, ctx.preset)
+        self.last_plates = plates_drawn
+
+        # 3. labels: awake above the sprite (contrast chip); a sleeper lies at its camp, whose plate names it (a `sleep`
+        #    override or the `is anyone here` answer lights a sleeper's own label). De-collision through the placer.
+        placed: List[Tuple[int, int, int]] = []
+        label_pos: Dict[str, Tuple[int, int]] = {}
+        boxes: Dict[str, Tuple[int, int, int, int]] = {}
+        name_in_bubble: Dict[str, Tuple[str, str]] = {}
+        drawn_names = 0
+        ents = sorted(ents, key=lambda e: (e.get("y") or 0, e.get("key") or ""))
+        for e in ents:
+            key = e.get("key")
+            if not key or e.get("display_name") is None or e.get("state") in ("burrowed", "seed", "hatching"):
+                continue                                   # a seed: nothing about it is drawn (OPENWORLD 12)
+            box = self._screen_box(e, cam, size)
+            if box is None:
+                continue
+            boxes[key] = box
+            sx, sy, sw, sh = box
+            cx, top = sx + sw // 2, sy
+            if not names_on:
+                continue
+            txt = None
+            if e.get("awake"):
+                if e.get("state") == "voting" and e.get("platform"):
+                    label_pos[key] = (cx, top - 4)
+                    continue                               # its name is in the waystone row
+                if labels_on_speak and not e.get("speaking") and key not in self._label_override and key not in self._hatch_tag:
+                    continue
+                if not e.get("speaking") and any(abs(cx - px) <= PLATFORM_CLUSTER_PX and abs(top - py) <= 80 for px, py in cluster_px):
+                    label_pos[key] = (cx, top - 4)
+                    continue
+                txt = self._label_text(sc, e)
+            else:
+                ov = self._label_override.get(key)
+                if ov:
+                    txt = ov[0]
+                elif now < self._sleepers_lit_until and not dense:
+                    p = sc.world.pip(key) or {}
+                    nm = self._label_text(sc, e)
+                    txt = "%s · asleep since %s" % (nm, when_text(p.get("last_seen_ts"), now)) if nm else None
+            if not txt:
+                continue
+            col = _colour_of(sc, key, e, ctx.preset)
+            strip = label_chip(txt, col)
+            lw, lh = strip.size
+            x0 = max(2, min(w - lw - 2, cx - lw // 2))
+            y = placer.place_up(x0, top - lh - 4, lw, lh, lh + 2, LABEL_MAX_STEPS, floor=2)
+            if y is None:
+                y = placer.place_down(x0, sy + sh + 4, lw, lh, lh + 2, 2, ceiling=h - 2)
+            if y is None:
+                if e.get("speaking"):
+                    name_in_bubble[key] = (txt, col)       # crowded: the name rides as the bubble's first row
+                label_pos[key] = (cx, top - 4)
+                continue                                   # crowded and silent: label-on-speak for this pip
+            placed.append((x0, x0 + lw, y))
+            _paste(img, strip, x0, y)
+            label_pos[key] = (cx, y)
+            drawn_names += 1
+
+        # 4. bubbles (one per pip, 6 s; care log rides as the first line; !kill -> `chat hidden by mod`)
+        single: Optional[Tuple[float, str, str]] = None
+        for e in ents:
+            key = e.get("key")
+            if not key or not e.get("awake") or key not in boxes:
+                continue
+            care = self._care.get(key)
+            text = e.get("text") if e.get("speaking") else None
+            if not text and not care:
+                continue
+            rows: List[Tuple[str, str]] = []
+            if not names_on:
+                rows.append(("chat hidden by mod", L.COLORS["text2"]))
+            else:
+                if key in name_in_bubble:
+                    rows.append(name_in_bubble[key])
+                if care:
+                    rows.append((L.truncate(BUBBLE_FONT, BUBBLE_SIZE, care[0], BUBBLE_MAX_W - 2 * BUBBLE_PAD), L.COLORS["text2"]))
+                if text:
+                    body = L.strip_non_bmp(str(text))
+                    if e.get("learned_from"):
+                        src = self._shown(sc, e.get("learned_from"))
+                        body = "%s · from @%s" % (body, src) if src else body
+                    for ln in L.wrap(BUBBLE_FONT, BUBBLE_SIZE, body, BUBBLE_MAX_W - 2 * BUBBLE_PAD, max(1, 3 - len(rows))):
+                        rows.append((ln, L.COLORS["text"]))
+            if not rows:
+                continue
+            nm = e.get("display_name") if names_on else None
+            cand = (float(e.get("minutes_tonight") or 0), nm, rows[-1][0])
+            if deg.get("bubbles_single"):
+                if single is None or e.get("speaking"):
+                    single = cand
+                continue
+            b = bubble_img(rows)
+            bw, bh = b.size
+            sx, sy, sw, sh = boxes[key]
+            cx, ly = label_pos.get(key, (sx + sw // 2, sy - 2))
+            by = None
+            if e.get("state") == "voting" and e.get("platform") and str(e.get("platform")) in stone_row:
+                # a standing pip speaks BESIDE the letter column, at the creature's height
+                r0, r1, _rb = stone_row[str(e.get("platform"))]
+                side_x = max(cx + 40, r1 + 10)
+                if side_x + bw > w - 2:
+                    side_x = min(cx - 40, r0 - 10) - bw
+                bx = max(2, min(w - bw - 2, side_x))
+                by = placer.place_up(bx, max(2, sy + sh - 8 - bh), bw, bh, BUBBLE_LINE_H, 8, floor=2)
+            else:
+                bx = max(2, min(w - bw - 2, cx - bw // 2))
+                by = placer.place_up(bx, max(2, ly - 4 - bh), bw, bh, BUBBLE_LINE_H, 8, floor=2)
+                if by is None:
+                    by = placer.place_down(bx, sy + sh + 4, bw, bh, BUBBLE_LINE_H, 6, ceiling=h - 2)
+            if by is None:
+                if single is None or e.get("speaking"):
+                    single = cand                          # no room anywhere: the shared bottom line carries it
+                continue
+            _paste(img, b, bx, by)
+        if single is not None:
+            _, nm, line = single
+            txt = ("@%s: %s" % (nm, line)) if nm else line
+            s = text_strip(BUBBLE_FONT, BUBBLE_SIZE, L.truncate(BUBBLE_FONT, BUBBLE_SIZE, txt, w - 2 * 16 - 420), L.COLORS["text"])
+            _paste(img, s, 420, h - 34)
+
+        # 5. the only-one line (10 s) ABOVE the creature's label, through the placer
+        if self._only_light and names_on:
+            key = self._only_light[0]
+            e = next((e for e in ents if e.get("key") == key and e.get("awake")), None)
+            if e is not None and key in boxes:
+                s1 = chip_img("you're the only one out here right now.", L.COLORS["text"], LABEL_FONT, LABEL_SIZE, CHIP_ALPHAS[0])
+                s2 = chip_img("the wind was already blowing.", L.COLORS["text2"], LABEL_FONT, LABEL_SIZE, CHIP_ALPHAS[0])
+                sx, sy, sw, sh = boxes[key]
+                cx = sx + sw // 2
+                bw, bh = max(s1.size[0], s2.size[0]), s1.size[1] + s2.size[1] + 2
+                tx = max(2, min(w - bw - 2, cx - bw // 2))
+                ty = placer.place_either(tx, sy + sh + 4, bw, bh, LABEL_STEP, 6, floor=2, ceiling=h - 2)   # UNDER the creature (3.1)
+                if ty is not None:
+                    _paste(img, s1, tx + (bw - s1.size[0]) // 2, ty)
+                    _paste(img, s2, tx + (bw - s2.size[0]) // 2, ty + s1.size[1] + 2)
+
+        # 6. edge arrows: awake creatures outside the window, `@kai · 210 paces ->` in their colour at the nearest edge
+        arrows_drawn: List[str] = []
+        if names_on:
+            awake_pts = [{"key": e.get("key"), "x": e["x"], "y": e["y"]} for e in ents
+                         if e.get("key") and e.get("awake") and e.get("display_name") is not None and e.get("x") is not None and e.get("y") is not None]
+            try:
+                arrows = cam.edge_arrows(size, awake=awake_pts, inset=EDGE_INSET)
+            except Exception:
+                arrows = []
+            for a in arrows[:8]:
+                nm = self._shown(sc, a.get("key"))
+                if not nm:
+                    continue
+                glyph = ARROWS.get(str(a.get("side")), "→")
+                paces = int(round(float(a.get("dist") or 0) / 5.0) * 5)          # to the nearest 5: one strip per ~0.6 s of walking, not per frame
+                txt = "@%s · %d paces %s" % (nm, paces, glyph) if a.get("side") != "left" else \
+                      "%s %d paces · @%s" % (glyph, paces, nm)
+                strip = label_chip(txt, _colour_of(sc, a.get("key"), None, ctx.preset))
+                lw, lh = strip.size
+                sx, sy = int(a["sx"]), int(a["sy"])
+                side = a.get("side")
+                if side == "right":
+                    ax, ay = w - lw - 4, sy - lh // 2
+                elif side == "left":
+                    ax, ay = 4, sy - lh // 2
+                elif side == "top":
+                    ax, ay = sx - lw // 2, 4
+                else:
+                    ax, ay = sx - lw // 2, h - lh - 4
+                ax = max(2, min(w - lw - 2, ax))
+                ay = max(2, min(h - lh - 2, ay))
+                yy = placer.place_either(ax, ay, lw, lh, lh + 2, 8, floor=2, ceiling=h - 2)
+                if yy is None:
+                    continue
+                _paste(img, strip, ax, yy)
+                arrows_drawn.append(txt)
+        self.last_arrows = arrows_drawn
+
+        # 7. the place label bottom-left (4 s after a retarget), a terrain place name, never a person
+        place = self._place_label(sc, cam, T, now)
+        if place:
+            s = text_strip(CHIP_FONT, CHIP_SIZE, place, L.COLORS["text"], stroke=True)
+            _paste(img, s, GUTTER, h - GUTTER - s.size[1])
+
+        # 8. plank rows, the land line, the time dial + its two rows (top-left, over everything else in the region)
+        txt, col = self._plank_text(sc, ctx, now, names_on, accent, land_mode=True)
+        _paste(img, chip_img(L.strip_non_bmp(txt), col, max_w=PLANK_MAX_W), PLANK_XY[0], PLANK_XY[1])
+        row2 = self._plank_row2(ctx, now, names_on, txt)
+        if row2 is not None:
+            _paste(img, chip_img(L.strip_non_bmp(row2[0]), row2[1], max_w=PLANK_MAX_W), PLANK_XY[0], PLANK_XY[1] + PLANK_ROW2_DY)
+        self.last_plank = txt
+        self.last_plank_row2 = row2[0] if row2 is not None else None
+        info = None
+        try:
+            info = N.describe(now) if N is not None else None
+        except Exception:
+            info = None
+        settled = ld.settled if ld is not None else 0
+        days = ld.days if ld is not None else 0
+        awake_words = "nobody awake" if awake == 0 else ("%d awake" % awake)
+        parts = ["%d settled here" % settled, awake_words, "day %d" % max(1, days)]
+        if info:
+            parts.append(str(info.get("day_part") or ""))
+        land_line = " · ".join(p for p in parts if p)
+        if row2 is None:
+            _paste(img, chip_img(land_line, L.COLORS["text2"], "Menlo", 22, max_w=PLANK_MAX_W), LAND_LINE_XY[0], LAND_LINE_XY[1])
+        self.last_land_line = land_line
+        if info:
+            hour_mode = str(info.get("world_day") or "real") == "hour"
+            _paste(img, dial_img(float(info.get("hour") or 0.0), float(info.get("moon_phase") or 0.0), float(info.get("night") or 0.0)),
+                   DIAL_XY[0] - 4, DIAL_XY[1] - 4)
+            clock = "%s · %s" % (info.get("world_clock") if hour_mode else info.get("clock"), info.get("day_part"))
+            if hour_mode:
+                clock += "   1 h = 1 day"
+            row_b = " · ".join(str(x) for x in (info.get("wind"), info.get("season"), info.get("moon")) if x)
+            weather = str(info.get("weather") or "clear")
+            if weather not in ("clear", ""):
+                row_b = "%s · %s" % (row_b, weather)
+            _paste(img, chip_img(clock, L.COLORS["text"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), DIAL_TEXT_X, DIAL_XY[1])
+            _paste(img, chip_img(row_b, L.COLORS["text2"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), DIAL_TEXT_X, DIAL_XY[1] + DIAL_ROW2_DY)
+            self.last_dial = (clock, row_b)
+
+        # 9. the honest minimap (top-right)
+        self._draw_minimap(img, sc, cam, ld, T, ents, ctx, now, size)
+
+        self._last_counts = (drawn_names, len(ents))
+        self.last_placed = placed
+
+    def _plates(self, img, sc, cam, ld, now: float, size, placer: _Placer, drawn: List[str], static: bool, preset) -> None:
+        """Camp / flower / tree / field plates and the cairn plaque: HN Medium 22 on a chip, one rotating plate per 5 s
+        over the marks in view (the DRIFT stop's camp plate is pinned while the camera dwells there). Every plate
+        resolves to a pip row (display_name filtered, real last_seen / ts); nothing is invented."""
+        if ld is None:
+            return
+        w, h = size
+        marks = self._mark_list(sc, ld, now)
+        in_view: List[Tuple[str, str, float, float, Optional[str], str, Tuple[float, float]]] = []
+        for mk in marks:
+            pt = cam.sim_to_screen(mk[2], mk[3], size, margin_px=0.0)
+            if pt is not None:
+                in_view.append(mk + (pt,))
+        if not in_view:
+            return
+        in_view.sort(key=lambda m: m[0])
+        pick: List[Tuple] = []
+        stop = cam.drift_stop if cam.mode == "DRIFT" else None
+        if stop is not None:
+            sid = str(stop.get("id") or "")
+            pinned = next((m for m in in_view if m[0] == sid), None)
+            if pinned is not None:
+                pick.append(pinned)
+        if static:
+            if self._plate_slot is None:
+                self._plate_slot = int(now // PLATE_ROTATE_S)
+            slot = self._plate_slot
+        else:
+            self._plate_slot = None
+            slot = int(now // PLATE_ROTATE_S)
+        rest = [m for m in in_view if not pick or m[0] != pick[0][0]]
+        if rest:
+            pick.append(rest[slot % len(rest)])
+        for mk in pick:
+            _id, kind, _x, _y, owner, text, (px, py) = mk
+            strip = chip_img(text, L.COLORS["text"], CHIP_FONT, CHIP_SIZE, CHIP_ALPHAS[0], max_w=PLATE_MAX_W)
+            pw, ph = strip.size
+            x0 = max(2, min(w - pw - 2, int(px) - pw // 2))
+            y0 = int(py) + 4
+            y = placer.place_either(x0, y0, pw, ph, ph + 4, 4, floor=2, ceiling=h - 2)
+            if y is None:
+                continue
+            _paste(img, strip, x0, y)
+            drawn.append(text)
+
+    def _mark_list(self, sc, ld, now: float) -> List[Tuple[str, str, float, float, Optional[str], str]]:
+        """(id, kind, x, y, owner, text) for every real mark with its plate text; rebuilt at most once a second (or when
+        the number of camps / marks changes), since the texts move by the minute and the rows by the session."""
+        built_t, n_prev, cached = self._marks_cache
+        n_now = len(self._camps) + len(self._fields) + len(ld.marks) + ld.stock
+        if cached is not None and now - built_t < 1.0 and n_now == n_prev:
+            return cached
+        marks: List[Tuple[str, str, float, float, Optional[str], str]] = []    # (id, kind, x, y, owner, text)
+        for c in self._camps:
+            if c.get("x") is None:
+                continue
+            nm = self._shown(sc, c["key"])
+            if not nm:
+                continue
+            fw, fh = CAMP_FOOTPRINT.get(int(c.get("tier") or 0), (10, 8))
+            night = int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)
+            awake_now = False
+            ent = sc.behaviour.get(c["key"]) if getattr(sc, "behaviour", None) is not None else None
+            if ent is not None:
+                try:
+                    awake_now = bool(ent.is_awake())
+                except Exception:
+                    awake_now = False
+            if int(c.get("tier") or 0) >= 3:
+                text = "@%s's %s · built night %d · last here %s" % (nm, c["word"], night, when_text(c.get("last_seen_ts"), now))
+            elif awake_now:
+                text = "@%s's %s · night %d" % (nm, c["word"], max(1, night))
+            else:
+                text = "@%s's %s · night %d · last here %s" % (nm, c["word"], max(1, night), when_text(c.get("last_seen_ts"), now))
+            marks.append(("camp:" + c["key"], "camp", float(c["x"]) + fw / 2.0, float(c["y"]) + fh, c["key"], text))
+        for f in self._fields:
+            nm = self._shown(sc, f["owner"])
+            if not nm or f.get("x") is None:
+                continue
+            fo = ld.field_of(f["owner"])
+            stage = ld.field_stage(fo, now)[1] if fo else str(f.get("stage") or "tilled")
+            hv = int(f.get("harvests") or 0)
+            text = "field · @%s · %s%s" % (nm, stage, (" · %d harvest%s" % (hv, "" if hv == 1 else "s")) if hv else "")
+            marks.append(("field:" + f["owner"], "field", float(f["x"]) + 1.5, float(f["y"]) + 2.0, f["owner"], text))
+        for m in ld.marks:
+            typ = str(m.get("type") or "")
+            if typ not in ("flower", "tree", "reed", "flag"):
+                continue
+            nm = self._shown(sc, m.get("owner"))
+            if not nm:
+                continue
+            t0 = iso_to_epoch(m.get("ts")) if isinstance(m.get("ts"), str) else None
+            day = max(1, int((now - t0) // 86400) + 1) if t0 is not None else 1
+            if typ == "tree":
+                stage = ld.tree_stage(m, now)[1]
+                text = "tree · @%s · %s · day %d" % (nm, stage, day)
+            elif typ == "flag":
+                text = "%s · first reached by @%s · day %d" % (L.strip_non_bmp(str((m.get("extra") or {}).get("place") or "here")), nm, day)
+            else:
+                text = "%s · @%s · day %d" % (typ, nm, day)
+            marks.append((str(m.get("id")), typ, float(m["x"]), float(m["y"]) + 1.0, m.get("owner"), text))
+        if ld.stock:
+            top = [(self._shown(sc, k), n) for k, n in ld.plaque("moot", 3)]
+            names = " ".join("@" + nm for nm, _n in top if nm)
+            text = "cairn · %d stone%s%s" % (ld.stock, "" if ld.stock == 1 else "s", (" · " + names) if names else "")
+            cx_, cy_ = float(ld.moot[0]), float(ld.moot[1])
+            mxy = getattr(sc, "moot_xy", None)
+            if callable(mxy):
+                try:
+                    cx_, cy_ = (float(v) for v in mxy("cairn"))
+                except Exception:
+                    pass
+            marks.append(("cairn:moot", "cairn", cx_, cy_ + 3.0, None, text))
+        self._marks_cache = (now, n_now, marks)
+        return marks
+
+    def _draw_minimap(self, img, sc, cam, ld, T, ents, ctx, now: float, size) -> None:
+        x0, y0 = MINIMAP_XY
+        if self._mm_frame is not None and self._frames - self._mm_built < MINIMAP_EVERY:
+            _paste(img, self._mm_frame, x0 - 4, y0 - 4)
+            return
+        mm = self._minimap.image(T, ld, now)
+        d = ImageDraw.Draw(mm, "RGBA")
+        geo = cam.minimap(MINIMAP_MAP)
+        to_px = geo["to_px"]
+        if ld is not None:
+            for c in self._camps:
+                if c.get("x") is None:
+                    continue
+                px, py = to_px(float(c["x"]), float(c["y"]))
+                try:
+                    col = L.hex_rgb(str(c.get("colour") or "#E6E8EE"))
+                except Exception:
+                    col = (230, 232, 238)
+                d.rectangle([px - 1, py - 1, px + 1, py + 1], fill=col + (200,))
+            for f in self._fields:
+                if f.get("x") is None:
+                    continue
+                px, py = to_px(float(f["x"]), float(f["y"]))
+                try:
+                    col = L.hex_rgb(str(f.get("colour") or "#E6E8EE"))
+                except Exception:
+                    col = (230, 232, 238)
+                d.rectangle([px, py, px + 1, py + 1], fill=col + (170,))
+            if self._keeper_fresh(ctx) and ld.moot is not None:                      # the beacon: lit only on a fresh heartbeat
+                px, py = to_px(float(ld.moot[0]), float(ld.moot[1]))
+                d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=(255, 176, 32, 255))
+        for e in ents:
+            if not e.get("awake") or e.get("display_name") is None or e.get("x") is None or e.get("y") is None:
+                continue
+            px, py = to_px(float(e["x"]), float(e["y"]))
+            try:
+                col = L.hex_rgb(_colour_of(sc, e.get("key"), e, ctx.preset))
+            except Exception:
+                col = (230, 232, 238)
+            d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=col + (255,))
+        vx, vy, vw, vh = geo["view"]
+        d.rectangle([vx, vy, vx + vw, vy + vh], outline=L.hex_rgb(L.COLORS["text"]) + (230,), width=1)
+        frame = Image.new("RGBA", (MINIMAP_W + 8, MINIMAP_H + 8), (0, 0, 0, 0))
+        fd = ImageDraw.Draw(frame, "RGBA")
+        fd.rounded_rectangle([0, 0, MINIMAP_W + 7, MINIMAP_H + 7], 6, fill=tuple(list(L.hex_rgb(L.COLORS["bg"])) + [CHIP_ALPHAS[0]]),
+                             outline=L.hex_rgb(L.COLORS["hairline"]) + (255,), width=1)
+        frame.alpha_composite(mm, (6, 6))
+        pct = int(round(100.0 * self._minimap.walked_frac))
+        cap = text_strip("Menlo", 20, "%d %% walked" % pct, L.COLORS["text2"])
+        frame.alpha_composite(cap, ((MINIMAP_W + 8 - cap.size[0]) // 2, 6 + MINIMAP_MAP[1] + 8))
+        self._mm_frame, self._mm_built = frame, self._frames
+        _paste(img, frame, x0 - 4, y0 - 4)
+
+    # ================================================================== the cave text layer (PIP HOLLOW, kept verbatim for rollback)
+    def _text_layer_cave(self, img: Image.Image, sc, ctx, size) -> None:
         if not sc.booted:
             return
         w, h = size
@@ -810,9 +1968,6 @@ class WorldPanel(Panel):
                     _paste(img, st, x, PLATFORM_NAMES_Y); x += st.size[0]
 
         # 2. labels (awake: above the sprite; sleepers: one at a time on a 5 s rotation; standing pips: the platform row).
-        #    De-collision: a label that intersects anything already placed moves up in 22 px steps, at most 3; still
-        #    blocked -> that pip is label-on-speak. A pip within PLATFORM_CLUSTER_PX of an occupied platform's crowd has
-        #    no floating label either (the platform row names the crowd).
         placed: List[Tuple[int, int, int]] = []
         label_pos: Dict[str, Tuple[int, int]] = {}         # key -> (cx, label top y) for the bubble anchor
         drawn_names = 0
@@ -903,8 +2058,6 @@ class WorldPanel(Panel):
             b = bubble_img(rows)
             cx, ly = label_pos.get(key, (int(e["sx"] + e["sw"] // 2), int(e["sy"]) - 2))
             if e.get("state") == "voting" and e.get("platform"):
-                # a standing pip speaks BESIDE the letter column (the letter / count / names stack is ~100 px tall; a bubble
-                # pushed above it floats 200 px from the creature): just past the widest carved row, at the pip's height.
                 r0, r1 = plat_row.get(str(e.get("platform")), (cx - 40, cx + 40))
                 side_x = max(cx + 40, r1 + 10)
                 if side_x + b.size[0] > w - 2:
@@ -921,8 +2074,7 @@ class WorldPanel(Panel):
             s = text_strip(BUBBLE_FONT, BUBBLE_SIZE, L.truncate(BUBBLE_FONT, BUBBLE_SIZE, txt, w - 2 * 16), L.COLORS["text"])
             _paste(img, s, 16, h - 34)
 
-        # 4. the only-light line (10 s): ABOVE the pip's name label, through the placer, so it never overprints the
-        #    label, a bubble or the platform rows (the `#N` hatch tag rides inside the name label itself)
+        # 4. the only-light line (10 s)
         if self._only_light:
             for e in ents:
                 key = e.get("key")
@@ -936,8 +2088,7 @@ class WorldPanel(Panel):
                     ty = placer.down(tx, int(e["sy"] + e["sh"]) + 2, s.size[0], LABEL_H, LABEL_H, ceiling=h - 2)
                 _paste(img, s, tx, ty)
 
-        # 5. moss labels on a 5 s rotation, in the SOIL BAND under the floor (never at pip height where people gather);
-        #    dropped at degrade level >= 2 and above the density fallback
+        # 5. moss labels on a 5 s rotation, in the SOIL BAND under the floor
         moss = sc.world.moss if sc.world is not None else []
         if moss and names_on and deg.get("level", 0) < 2 and not dense:
             m = moss[int(now // MOSS_ROTATE_S) % len(moss)]
@@ -966,12 +2117,39 @@ class WorldPanel(Panel):
         sc = scene()
         mon = getattr(sc, "honesty", None)
         kp = getattr(sc, "keepers", None)
-        return {"frames": self._frames, "errors": self._errors, "avg_ms": round(sum(self._ms) / len(self._ms), 2) if self._ms else None,
-                "max_ms": round(max(self._ms), 2) if self._ms else None, "honesty_violations": self.honesty_violations,
-                "labels_drawn": self._last_counts[0], "entities": self._last_counts[1], "text_cache": len(_TEXT), "bubble_cache": len(_BUBBLE),
+        cam = getattr(sc, "camera", None)
+        booted = getattr(sc, "booted", False)
+        return {"kind": scene_kind(), "frames": self._frames, "errors": self._errors,
+                "avg_ms": round(sum(self._ms) / len(self._ms), 2) if self._ms else None,
+                "max_ms": round(max(self._ms), 2) if self._ms else None,
+                "text_avg_ms": round(sum(self._text_ms) / len(self._text_ms), 2) if self._text_ms else None,
+                "text_max_ms": round(max(self._text_ms), 2) if self._text_ms else None,
+                "honesty_violations": self.honesty_violations,
+                "labels_drawn": self._last_counts[0], "entities": self._last_counts[1], "plates_drawn": len(self.last_plates),
+                "arrows_drawn": len(self.last_arrows), "text_cache": len(_TEXT), "bubble_cache": len(_BUBBLE), "chip_cache": len(_CHIP),
+                "camera": cam.stats() if cam is not None else None,
                 "honesty": mon.summary() if mon is not None else None, "keepers": kp.stats() if kp is not None else None,
-                "degrade": dict(sc.degrade) if sc.booted else None}
+                "degrade": dict(sc.degrade) if booted else None}
 
 
+def _warm() -> None:
+    """Load the faces and draw one chip of each kind at import time (the hot-reload moment), so frame 0 does not pay
+    the ~50 ms of font loading inside the frame budget."""
+    try:
+        for face, size in (("Menlo", 20), ("Menlo", 22), ("HN Medium", 22), ("AB", 56)):
+            L.font(face, size)
+        chip_img("warm", L.COLORS["text"])
+        chip_img("warm", L.COLORS["text2"], "Menlo", 22)
+        label_chip("@warm", "#E6E8EE")
+        text_strip("AB", 56, "A", L.COLORS["text"])
+        text_strip("Menlo", 22, "0", L.COLORS["text2"])
+        text_strip("Menlo", 20, "0 % walked", L.COLORS["text2"])
+        bubble_img([("warm", L.COLORS["text"])])
+        dial_img(12.0, 0.5, 0.0)
+    except Exception as e:
+        _log("font warm-up skipped: %r" % (e,))
+
+
+_warm()
 PANEL = WorldPanel()
 register(PANEL)

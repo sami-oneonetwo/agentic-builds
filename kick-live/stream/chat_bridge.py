@@ -30,20 +30,33 @@ nothing about the username). tallies(), recent_votes(), founders, the same-frame
 go through it. The raw-name path (`_voter_name`, `"mod action: hid @%s" % target`) is deleted, not bypassed.
 `display_name` on the message dict is the filtered name; consumers see it only through visible() (past the hold).
 
-Verbs (WORLD.md 4, exact-token rule; parsed on the trimmed text, case-insensitive):
-  ^!?(feed|pet|dig|plant|sing|wave|sit|duck|gift|name|teach|forget)(\\s+@?[a-z0-9_]{1,25})?(\\s+[a-z0-9]{1,12})?$
-  plus per-verb arity: feed/pet take 0-1 @target, gift exactly 1, name/teach exactly 1 word (<= 12 alnum),
-  dig/plant/sing/wave/sit/duck/forget take nothing. "sing" inside a sentence, "right?", "I dug it" do nothing.
-  A verb message is still a plain message (kind "plain": it wakes, hops and bubbles) with m["verb"] set.
-  Rate limits (per user, checked at ingest so the refusal shows at once): feed/pet 30 s, dig 10 s, emotes 5 s,
-  name 10 min, plant once per session, gift once per target per session; sing 60 s per pip + 10 s global.
-  Every refusal is a 4 s plank notice (ctx.notice) AND a `notice` world event: a second person trying never
-  sees nothing happen. v1 verbs: feed, pet, gift, dig, plant, wave/sit/duck, name, forget. sing/teach parse
-  (so they never bubble as commands elsewhere) and refuse with `... comes in a later carving`.
-  Application: at show_t the bridge calls world.command(verb, actor, target, arg, now) on the attached
-  CaveScene; `your pip is not awake yet` is retried for 3 s (the hatch lands a frame after the hold); other
-  refusals go to the plank. feed/pet/gift at a sleeping or absent pip are recorded by the world in care_log
-  and the plank says so (`@kai left a glow-berry at @lu's burrow`).
+Verbs (OPENWORLD.md 6: the exact-token rule plus the LEADING-VERB rule; parsed on the trimmed text, case-insensitive):
+  A message is a verb when it has no URL, at most MAX_VERB_TOKENS (4) whitespace tokens, its first token
+  (optionally `!`-prefixed) is a verb in VERB_SPECS or an alias in VERB_ALIASES (walk/head -> go, light -> fire,
+  pitch -> camp, a bare direction word -> go), and after the stop-words `a an the to at my some on` are dropped
+  EVERY remaining token is a known object word for that verb (a place, a direction, `@name` where the verb takes
+  one, flower|tree|reed, camp|tent|hut|here, fire|hearth). Otherwise it is plain chat. So `plant a flower` ->
+  plant flower, `go to the river` -> go river, `light the fire` -> fire, `walk north` -> go north, `home` -> go
+  home, while `go away`, `plant based`, `go go go` and any 5+ token sentence do nothing. name/teach keep the
+  exact one-word form (a nickname is free text, never an object word): `name Muffin`, never `name @sam`.
+  A verb message is still a plain message (kind "plain": it wakes, hops and bubbles) with m["verb"] set to
+  {verb, target, arg, form} where form is the canonical reading (`go river`) the plank echoes.
+  Table (v0 preview; rate limits per user, checked at ingest so the refusal shows at once):
+    go <north|south|east|west|river|ford|moot|fell|wood|shore|marsh|orchard|steading|home|@name>  1 per 5 s
+    home (= go home) ; plant [flower|tree|reed] (bare = flower; flowers 3, trees 1, reeds 3 per session) ;
+    camp [here|tent|hut] 1 per session ; fire (alias light) 1 per 10 min ; feed/pet [@name] 30 s ;
+    gift @name 1 per target per session ; wave/sit/dance 5 s ; name <word> 10 min ; forget.
+    sow / harvest / stack / swim / sing / explore / water @name / teach <word> parse (so they never bubble as
+    commands elsewhere) and refuse with `<verb> comes in a later raising` (v1 / v1.1 / v2 items).
+    dig and duck are gone (OPENWORLD 6: nothing to carve or duck under outdoors); they are plain chat now.
+  Every refusal is a 4 s AMBER plank notice (level "warn" -> layout COLORS["warn"]) AND a `notice` world event: a
+  second person trying never sees nothing happen. Application: at show_t the bridge calls
+  world.command(verb, actor, target=, arg=, now=) on the attached scene: go -> ("go", actor, target=key|None,
+  arg=place|direction|"home"), plant -> ("plant", actor, arg=kind), camp/fire/wave/sit/dance/forget -> (verb,
+  actor); `your pip is not awake yet` is retried for 3 s (the hatch lands a frame after the hold); other
+  refusals go to the plank. Any `@word` inside a world reason is scrubbed before the plank (filtered names only).
+  feed/pet/gift at a sleeping or absent pip are recorded by the world in care_log and the plank says so
+  (`@kai left a berry at @lu's camp`).
   The world is reached by attach_world(scene) (explicit) or discovered from sys.modules (a stream.scenes /
   stream.panels module holding `SCENE`); verbs queue (bounded, 10 s) until a world is present.
 
@@ -133,19 +146,73 @@ HISTORY_S = 60.0             # a record older than this at ingest time is boot h
 BLOCKLIST_RELOAD_S = 5.0
 BUILDERS_FLUSH_S = 10.0
 
-# -- verbs (WORLD.md 4)
-VERB_RE = re.compile(r"^!?(feed|pet|dig|plant|sing|wave|sit|duck|gift|name|teach|forget)"
-                     r"(?:\s+@?([a-z0-9_]{1,25}))?(?:\s+([a-z0-9]{1,12}))?$", re.IGNORECASE)
-VERBS = ("feed", "pet", "dig", "plant", "sing", "wave", "sit", "duck", "gift", "name", "teach", "forget")
-TARGET_VERBS = {"feed": (0, 1), "pet": (0, 1), "gift": (1, 1)}      # (min, max) @targets
-WORD_VERBS = {"name", "teach"}                                        # exactly one plain word (<= 12 alnum)
-LATER_VERBS = {"sing": "sing comes in a later carving", "teach": "teach comes in a later carving"}   # parse, refuse (v1.1)
-VERB_COOLDOWN_S = {"feed": 30.0, "pet": 30.0, "dig": 10.0, "wave": 5.0, "sit": 5.0, "duck": 5.0,
-                   "name": 600.0, "sing": 60.0, "teach": 300.0}
+# -- verbs (OPENWORLD.md 6: exact-token + leading-verb rule)
+MAX_VERB_TOKENS = 4
+STOP_WORDS = frozenset(("a", "an", "the", "to", "at", "my", "some", "on"))
+DIRECTIONS = ("north", "south", "east", "west")
+PLACES = ("river", "ford", "moot", "fell", "wood", "shore", "marsh", "orchard", "steading")   # terrain.places keys
+PLACE_LABELS = {"river": "the river", "ford": "the Ford", "moot": "the Moot", "fell": "the Fell", "wood": "the Wood",
+                "shore": "the Shore", "marsh": "the Reed Marsh", "orchard": "the Orchard Slope",
+                "steading": "the Steading", "home": "home"}
+# object words per verb -> canonical arg (None = word accepted, no arg carried)
+GO_OBJECTS = dict({d: d for d in DIRECTIONS}, **{p: p for p in PLACES})
+GO_OBJECTS.update({"home": "home", "camp": "home", "tent": "home", "hut": "home",
+                   "sea": "shore", "beach": "shore", "coast": "shore", "hill": "fell", "hills": "fell",
+                   "forest": "wood", "woods": "wood", "trees": "wood", "reeds": "marsh", "green": "moot",
+                   "village": "steading", "stones": "moot", "waystones": "moot"})
+PLANT_OBJECTS = {"flower": "flower", "flowers": "flower", "tree": "tree", "sapling": "tree", "reed": "reed", "reeds": "reed"}
+CAMP_OBJECTS = {"here": None, "camp": None, "tent": None, "hut": None}
+FIRE_OBJECTS = {"fire": None, "campfire": None, "hearth": None}
+# verb -> spec: objects {word: canonical}, targets (min, max) of @names, args (min, max) of object words,
+#               total (max of targets + objects), bare_target (a plain token may be a username, the old feed/pet form),
+#               default_arg (arg when no object word was typed), canon (the verb actually queued)
+VERB_SPECS: Dict[str, Dict] = {
+    "go":      {"objects": GO_OBJECTS, "targets": (0, 1), "args": (0, 1), "total": 1},
+    "home":    {"objects": {}, "targets": (0, 0), "args": (0, 0), "canon": "go", "default_arg": "home"},
+    "plant":   {"objects": PLANT_OBJECTS, "targets": (0, 0), "args": (0, 1), "default_arg": "flower"},
+    "camp":    {"objects": CAMP_OBJECTS, "targets": (0, 0), "args": (0, 1)},
+    "fire":    {"objects": FIRE_OBJECTS, "targets": (0, 0), "args": (0, 1)},
+    "feed":    {"objects": {}, "targets": (0, 1), "args": (0, 0), "bare_target": True},
+    "pet":     {"objects": {}, "targets": (0, 1), "args": (0, 0), "bare_target": True},
+    "gift":    {"objects": {}, "targets": (1, 1), "args": (0, 0), "bare_target": True},
+    "wave":    {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "sit":     {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "dance":   {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "forget":  {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "name":    {"word": True},
+    "teach":   {"word": True},
+    # parsed so they never bubble as commands elsewhere; refused with LATER_VERBS copy until their raising lands
+    "sow":     {"objects": {"field": None}, "targets": (0, 0), "args": (0, 1)},
+    "harvest": {"objects": {"field": None}, "targets": (0, 0), "args": (0, 1)},
+    "stack":   {"objects": {"stone": None, "stones": None}, "targets": (0, 0), "args": (0, 1)},
+    "swim":    {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "sing":    {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "explore": {"objects": {}, "targets": (0, 0), "args": (0, 0)},
+    "water":   {"objects": {}, "targets": (1, 1), "args": (0, 0), "bare_target": True},
+}
+VERB_ALIASES = {"walk": "go", "head": "go", "light": "fire", "pitch": "camp"}
+PITCH_NEEDS_OBJECT = True                       # `pitch` alone is chat; `pitch a tent` / `pitch camp` is camp
+VERBS = tuple(VERB_SPECS.keys())
+TARGET_VERBS = {v: s["targets"] for v, s in VERB_SPECS.items() if s.get("targets", (0, 0))[1] > 0}
+WORD_VERBS = {v for v, s in VERB_SPECS.items() if s.get("word")}           # exactly one plain word (<= 12 alnum)
+LATER_VERBS = {v: "%s comes in a later raising" % v
+               for v in ("sow", "harvest", "stack", "swim", "sing", "explore", "water", "teach")}
+VERB_COOLDOWN_S = {"go": 5.0, "fire": 600.0, "feed": 30.0, "pet": 30.0, "wave": 5.0, "sit": 5.0, "dance": 5.0,
+                   "name": 600.0, "sing": 60.0, "explore": 60.0, "water": 60.0, "stack": 45.0, "swim": 30.0,
+                   "teach": 300.0}
+PLANT_SESSION_CAP = {"flower": 3, "tree": 1, "reed": 3}   # OPENWORLD 6: trees 1 / flowers 3 per session (reeds as flowers)
+PLANT_CAP_COPY = {"flower": "three flowers a night · yours are planted", "tree": "one tree a night · yours is planted",
+                  "reed": "three reeds a night · yours are planted"}
+CAMP_SESSION_CAP = 1
+GO_WHERE = "go where? north · south · east · west · river · ford · moot · fell · wood · shore · marsh · orchard · home · @name"
 SING_GLOBAL_S = 10.0
 NICK_MAX = 12
-RESERVED_NICKS = {"keeper", "keepers", "mod", "mods", "moderator", "admin", "kick", "hollow"}
+RESERVED_NICKS = {"keeper", "keepers", "mod", "mods", "moderator", "admin", "kick", "hollow", "longgrass", "steading",
+                  "moot", "beacon", "cairn", "pip", "wind"}
+NAME_TOKEN_RE = re.compile(r"^[a-z0-9_]{1,25}$")
+TOKEN_TRIM = "!?.,;:"
 VERB_RETRY_S = 3.0           # `your pip is not awake yet` after the hold: the hatch lands a frame later
+RETRY_REASONS = ("your pip is not awake yet", "the cave is still waking", "the land is still waking")
 VERB_WAIT_WORLD_S = 10.0     # no world attached: keep the verb this long, then drop it (logged)
 VERB_LOG_KEEP = 100
 WORLD_EVENTS_KEEP = 200
@@ -385,7 +452,10 @@ class ChatBridge(object):
         self._pending: List[Dict] = []
         self._pumped_at: Optional[float] = None
         self._verb_last: Dict[Tuple[str, str], float] = {}  # (key, verb) -> t of the last accepted use
-        self._plant_used: Set[str] = set()                  # keys that planted this session
+        self._plant_used: Dict[Tuple[str, str], int] = {}   # (key, kind) -> plants this session (OPENWORLD 6 caps)
+        self._camp_used: Dict[str, int] = {}                # key -> `camp` uses this session (1)
+        self._stack_used: Dict[str, int] = {}               # key -> stones this session (3; v1)
+        self._sow_used: Set[str] = set()                    # keys that sowed this session (v1)
         self._gift_used: Set[Tuple[str, str]] = set()       # (by, target) this session
         self._sing_global_t: Optional[float] = None
         self.verb_log: List[Dict] = []
@@ -506,32 +576,84 @@ class ChatBridge(object):
 
     @staticmethod
     def parse_verb(text: str) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
-        """WORLD.md 4 exact-token rule -> (verb, target_key|None, word|None) or None. The whole trimmed message
-        must be the verb, optionally `!`-prefixed, with exactly the arguments that verb takes: feed/pet [@name],
-        gift @name, name/teach <word>, everything else bare. "sing" inside a sentence does nothing."""
-        t = re.sub(r"\s+", " ", (text or "").strip())
-        m = VERB_RE.match(t)
-        if not m:
+        """OPENWORLD.md 6 exact-token + leading-verb rule -> (verb, target_key|None, arg|None) or None.
+        A message parses only when: no URL; at most MAX_VERB_TOKENS whitespace tokens; the first token (optionally
+        `!`-prefixed, trailing punctuation trimmed) is a verb, an alias or a bare direction word; and after the
+        STOP_WORDS are dropped every remaining token is a known object word for that verb (or an `@name` where the
+        verb takes one). Anything else is plain chat: `go away`, `plant based`, `I love to sing`, `right?`.
+        name/teach take exactly one free word (never `@user`, never a stop-word drop): a nickname is not an object."""
+        t = (text or "").strip()
+        if not t or URL_RE.search(t):
             return None
-        verb = m.group(1).lower()
-        a1, a2 = m.group(2), m.group(3)
-        if a2 is not None:
-            return None                                   # a third token is never valid (`feed @sami now`)
-        if verb in TARGET_VERBS:
-            lo, hi = TARGET_VERBS[verb]
-            n = 1 if a1 else 0
-            if n < lo or n > hi:
+        raw = t.split()
+        if len(raw) > MAX_VERB_TOKENS:
+            return None
+        toks = [tok.lower().strip(TOKEN_TRIM) for tok in raw]
+        first = toks[0]
+        if first.startswith("!"):
+            first = first[1:]
+        if not first:
+            return None
+        if len(toks) == 1 and first in DIRECTIONS:
+            return "go", None, first                        # a bare direction word walks (`north`)
+        typed = first
+        verb = VERB_ALIASES.get(first, first)
+        spec = VERB_SPECS.get(verb)
+        if spec is None:
+            return None
+        rest = toks[1:]
+        if spec.get("word"):
+            if len(rest) != 1 or raw[1].startswith("@"):
+                return None                                 # `name @sam` is a username, not a nickname
+            w = raw[1].strip(TOKEN_TRIM)
+            if not re.match(r"^[a-z0-9]{1,%d}$" % NICK_MAX, w, re.IGNORECASE):
                 return None
-            return verb, (a1.lower() if a1 else None), None
-        if verb in WORD_VERBS:
-            if not a1 or not re.match(r"^[a-z0-9]{1,%d}$" % NICK_MAX, a1, re.IGNORECASE):
-                return None
-            if t.split(" ")[1].startswith("@"):
-                return None                               # `name @sam` is a username, not a nickname
-            return verb, None, a1
-        if a1 is not None:
-            return None                                   # bare verbs take nothing (`dig now` is chat)
-        return verb, None, None
+            return verb, None, w
+        objects: List[Optional[str]] = []
+        targets: List[str] = []
+        legacy_ok = spec.get("bare_target") and len(rest) == 1     # `feed sami`: the exact-token form kept as-is
+        for tok in rest:
+            if tok in STOP_WORDS:
+                continue
+            if tok.startswith("@"):
+                nm = tok[1:]
+                if spec["targets"][1] == 0 or not NAME_TOKEN_RE.match(nm):
+                    return None
+                targets.append(nm)
+                continue
+            if tok in spec["objects"]:
+                objects.append(spec["objects"][tok])
+                continue
+            if legacy_ok and NAME_TOKEN_RE.match(tok):
+                targets.append(tok)                         # two tokens only: `feed the river` stays chat
+                continue
+            return None                                     # an unknown word anywhere -> plain chat
+        lo_t, hi_t = spec["targets"]
+        lo_a, hi_a = spec["args"]
+        if not (lo_t <= len(targets) <= hi_t and lo_a <= len(objects) <= hi_a):
+            return None
+        if len(targets) + len(objects) > spec.get("total", 2):
+            return None
+        if typed == "pitch" and PITCH_NEEDS_OBJECT and not objects:
+            return None                                     # `pitch` alone is chat; `pitch a tent` is camp
+        arg = None
+        for o in objects:
+            if o is not None:
+                arg = o
+        if arg is None:
+            arg = spec.get("default_arg")
+        return spec.get("canon", verb), (targets[0] if targets else None), arg
+
+    @staticmethod
+    def verb_form(verb: str, target: Optional[str], arg: Optional[str]) -> str:
+        """The canonical reading the plank echoes (`go river`, `plant flower`, `feed @sami`). Target keys are shown
+        with `@` here only for the log; drawn copy goes through name_for()."""
+        parts = [verb]
+        if target:
+            parts.append("@" + target)
+        if arg:
+            parts.append(str(arg))
+        return " ".join(parts)
 
     @staticmethod
     def clean_text(text: str, cap: int) -> str:
@@ -659,7 +781,10 @@ class ChatBridge(object):
         strikes burrow for the session)."""
         self.burrowed = {}
         self.strikes = {}
-        self._plant_used = set()
+        self._plant_used = {}
+        self._camp_used = {}
+        self._stack_used = {}
+        self._sow_used = set()
         self._gift_used = set()
         self._session_seen = set()
         for b in self.builders.values():
@@ -847,7 +972,11 @@ class ChatBridge(object):
     def _queue_verb(self, m: Dict, key: str, pv: Tuple[str, Optional[str], Optional[str]], t: float, now: float,
                     history: bool) -> None:
         verb, target, word = pv
-        m["verb"] = {"verb": verb, "target": target, "arg": word}
+        form = self.verb_form(verb, target, word)
+        # the leading-verb rule understood something other than the literal text: the plank echoes the reading
+        typed = re.sub(r"\s+", " ", (m.get("text") or "").strip().lower().lstrip("!"))
+        understood = form if typed != form and typed != form.replace("@", "") else None
+        m["verb"] = {"verb": verb, "target": target, "arg": word, "form": form}
         if history:
             m["verb_ok"], m["verb_reason"] = False, "history"        # the previous instance already applied it
             return
@@ -862,14 +991,21 @@ class ChatBridge(object):
         if verb in VERB_COOLDOWN_S:
             self._verb_last[(key, verb)] = t
         if verb == "plant":
-            self._plant_used.add(key)
+            self._plant_used[(key, word or "flower")] = self._plant_used.get((key, word or "flower"), 0) + 1
+        elif verb == "camp":
+            self._camp_used[key] = self._camp_used.get(key, 0) + 1
         elif verb == "gift" and target:
             self._gift_used.add((key, target))
+        elif verb == "stack":
+            self._stack_used[key] = self._stack_used.get(key, 0) + 1
+        elif verb == "sow":
+            self._sow_used.add(key)
         if verb == "sing":
             self._sing_global_t = t
         self._pending.append({"mid": m.get("id"), "key": key, "verb": verb, "target": target, "arg": word,
                               "t": t, "due": m["show_t"], "expires": m["show_t"] + VERB_RETRY_S,
-                              "wait_until": m["show_t"] + VERB_WAIT_WORLD_S, "m": m, "mod": False})
+                              "wait_until": m["show_t"] + VERB_WAIT_WORLD_S, "m": m, "mod": False,
+                              "understood": understood})
 
     def _check_verb(self, key: str, verb: str, target: Optional[str], word: Optional[str], t: float,
                     now: float) -> Optional[str]:
@@ -880,10 +1016,26 @@ class ChatBridge(object):
         if target is not None:
             if target == key and verb == "gift":
                 return "gifts are for other pips"
+            if target == key and verb == "go":
+                return "you are already there"
             if not self._known_pip(target):
                 return "no pip by that name here"
-            if target in self.banished:
-                return "no pip by that name here"
+            if target in self.banished or target in self.hidden:
+                return "no pip by that name here"       # a hidden pip is not a destination or a target either
+        if verb == "go" and target is None and not word:
+            return GO_WHERE                              # OPENWORLD 6: the refusal names the place list
+        if verb == "plant":
+            kind = word or "flower"
+            if kind not in PLANT_SESSION_CAP:
+                return "plant what? flower · tree · reed"
+            if self._plant_used.get((key, kind), 0) >= PLANT_SESSION_CAP[kind]:
+                return PLANT_CAP_COPY[kind]
+        if verb == "camp" and self._camp_used.get(key, 0) >= CAMP_SESSION_CAP:
+            return "camp once a night · yours is pitched"
+        if verb == "stack" and self._stack_used.get(key, 0) >= 3:
+            return "three stones a night · the cairn has yours"
+        if verb == "sow" and key in self._sow_used:
+            return "one field a night · yours is sown"
         if verb == "name":
             w = (word or "")
             wl = w.lower()
@@ -893,8 +1045,6 @@ class ChatBridge(object):
                 return "that name belongs to a real chatter"
             if self._blocked(w):
                 return "that word is not allowed"
-        if verb == "plant" and key in self._plant_used:
-            return "one plant per night"
         if verb == "gift" and (key, target) in self._gift_used:
             return "you already left %s a gift tonight" % self._at(target, now)
         cd = VERB_COOLDOWN_S.get(verb)
@@ -906,7 +1056,7 @@ class ChatBridge(object):
                     return "%s again in %d min" % (verb, max(1, int(round(left / 60.0))))
                 return "%s again in %d s" % (verb, max(1, int(round(left))))
         if verb == "sing" and self._sing_global_t is not None and t - self._sing_global_t < SING_GLOBAL_S:
-            return "the cave is still ringing · sing in %d s" % max(1, int(round(SING_GLOBAL_S - (t - self._sing_global_t))))
+            return "the land is still ringing · sing in %d s" % max(1, int(round(SING_GLOBAL_S - (t - self._sing_global_t))))
         return None
 
     def pump(self, now: float) -> None:
@@ -932,14 +1082,14 @@ class ChatBridge(object):
                 if now < p["wait_until"]:
                     keep.append(p)
                 else:
-                    self._verb_done(p, False, "the cave did not hear that", now, quiet=True)
+                    self._verb_done(p, False, "the land did not hear that", now, quiet=True)
                 continue
             try:
                 ok, reason = self._apply(world, p, now)
             except Exception as e:                       # the world's problem never kills the frame loop
                 self.log("verb %s by %s failed in the world: %r" % (p["verb"], key, e))
-                ok, reason = False, "the cave did not hear that"
-            if not ok and reason in ("your pip is not awake yet", "the cave is still waking") and now < p["expires"]:
+                ok, reason = False, "the land did not hear that"
+            if not ok and reason in RETRY_REASONS and now < p["expires"]:
                 keep.append(p)
                 continue
             self._verb_done(p, ok, reason, now)
@@ -955,13 +1105,20 @@ class ChatBridge(object):
             if ok:
                 p["asleep"] = asleep
             return ok, reason
-        if verb in ("dig", "plant", "wave", "sit", "duck", "forget"):
+        if verb == "go":
+            # ("go", actor, target=key|None, arg=place|direction|"home"): the scene routes on the coarse grid
+            return world.command("go", actor, target=(tgt or None), arg=word, now=now)
+        if verb == "plant":
+            return world.command("plant", actor, arg=(word or "flower"), now=now)
+        if verb in ("camp", "fire", "wave", "sit", "dance", "forget"):
             return world.command(verb, actor, now=now)
         if verb == "name":
             ok, reason = world.command("name", actor, arg=word, now=now)
             if not ok and reason == "unknown verb":
                 return self._set_nickname(world, actor, word)
             return ok, reason
+        if verb in LATER_VERBS:
+            return False, LATER_VERBS[verb]
         return False, "unknown verb"
 
     @staticmethod
@@ -1002,22 +1159,38 @@ class ChatBridge(object):
             if verb in VERB_COOLDOWN_S and self._verb_last.get((key, verb)) == p["t"]:
                 self._verb_last.pop((key, verb), None)            # a refused try costs no cooldown
             if verb == "plant":
-                self._plant_used.discard(key)
+                k = (key, word or "flower")
+                if self._plant_used.get(k, 0) > 0:
+                    self._plant_used[k] -= 1
+            elif verb == "camp":
+                if self._camp_used.get(key, 0) > 0:
+                    self._camp_used[key] -= 1
+            elif verb == "stack":
+                if self._stack_used.get(key, 0) > 0:
+                    self._stack_used[key] -= 1
+            elif verb == "sow":
+                self._sow_used.discard(key)
             elif verb == "gift" and tgt:
                 self._gift_used.discard((key, tgt))
             if not quiet:
-                self._plank(self._safe_reason(reason), now, "warn", by=key)
+                self._plank(self._safe_reason(reason, verb), now, "warn", by=key)
         self._log_verb(now, key, verb, tgt, word, ok, reason)
 
-    def _safe_reason(self, reason: str) -> str:
-        """The world's reasons are plank-ready except when they echo a typed target (`no pip called @x here`)."""
+    def _safe_reason(self, reason: str, verb: Optional[str] = None) -> str:
+        """The world's reasons are plank-ready except when they echo a typed name (`no pip called @x here`, `too close
+        to @kai's camp`): a raw `@word` never reaches a pixel, so it is scrubbed here. `unknown verb` from an older
+        world core reads as the verb not being on the land yet."""
         r = reason or "not now"
+        if r == "unknown verb":
+            return "%s is not on this land yet" % (verb or "that")
         if "@" in r:
-            return "no pip by that name here"
+            if re.match(r"^no (pip|one) ", r):
+                return "no pip by that name here"
+            return re.sub(r"@[A-Za-z0-9_]+", "someone", r)
         return r
 
     def _success_notice(self, p: Dict, now: float) -> None:
-        key, verb, tgt = p["key"], p["verb"], p["target"]
+        key, verb, tgt, arg = p["key"], p["verb"], p["target"], p["arg"]
         me = self._at(key, now)
         if verb == "forget":
             self._plank("%s's pip forgot everything" % me, now, "info", by=key)
@@ -1025,10 +1198,29 @@ class ChatBridge(object):
             self._emit({"type": "nickname", "pip": key, "nickname": p["arg"]})
             self._plank("%s's pip is called %s now" % (me, p["arg"]), now, "info", by=key)
         elif verb == "gift":
-            self._plank("%s left a gift at %s's burrow" % (me, self._at(tgt, now)), now, "info", by=key)
+            self._plank("%s left a gift at %s's camp" % (me, self._at(tgt, now)), now, "info", by=key)
         elif verb in ("feed", "pet") and p.get("asleep") and tgt and tgt != key:
-            what = "left a glow-berry at %s's burrow" if verb == "feed" else "petted %s's sleeping pip"
+            what = "left a berry at %s's camp" if verb == "feed" else "petted %s's sleeping pip"
             self._plank("%s %s" % (me, what % self._at(tgt, now)), now, "info", by=key)
+        elif verb == "go":
+            # the plank says what was understood (OPENWORLD 15): the destination, filtered name if it is a person
+            if tgt:
+                self._plank("%s walks to %s" % (me, self._at(tgt, now)), now, "info", by=key)
+            elif arg == "home":
+                self._plank("%s heads home" % me, now, "info", by=key)
+            elif arg in DIRECTIONS:
+                self._plank("%s walks %s" % (me, arg), now, "info", by=key)
+            elif arg:
+                self._plank("%s heads for %s" % (me, PLACE_LABELS.get(arg, arg)), now, "info", by=key)
+        elif p.get("understood"):
+            # `plant a flower` -> `plant flower`: the world's own event carries the effect; this echoes the reading.
+            # Rebuilt here so a target is drawn through name_for(), never as the typed `@word`.
+            parts = [verb]
+            if tgt:
+                parts.append(self._at(tgt, now))
+            if arg:
+                parts.append(str(arg))
+            self._plank("%s · %s" % (me, " ".join(parts)), now, "info", by=key, dur=3.0)
 
     def _log_verb(self, now: float, key: str, verb: str, tgt: Optional[str], word: Optional[str], ok: bool,
                   reason: str) -> None:
@@ -1264,12 +1456,62 @@ class ChatBridge(object):
                 "world_attached": self.world is not None}
 
 
+def _self_test() -> int:
+    """`$PYTHON stream/chat_bridge.py`: the leading-verb rule table (OPENWORLD 6) as assertions. Exit 0 on pass."""
+    P = ChatBridge.parse_verb
+    cases = {
+        # exact-token forms kept
+        "feed": ("feed", None, None), "feed @Sami": ("feed", "sami", None), "FEED  sami": ("feed", "sami", None),
+        "!pet": ("pet", None, None), "gift @lu": ("gift", "lu", None), "gift": None, "feed @sami now": None,
+        "plant": ("plant", None, "flower"), "wave": ("wave", None, None), "sit": ("sit", None, None),
+        "dance": ("dance", None, None), "forget": ("forget", None, None), "name Muffin": ("name", None, "Muffin"),
+        "name @sam": None, "name averyverylongname": None, "teach ratio": ("teach", None, "ratio"),
+        # leading-verb rule (owner feedback, journal 019 addendum)
+        "plant a flower": ("plant", None, "flower"), "plant a tree": ("plant", None, "tree"),
+        "plant some reeds": ("plant", None, "reed"), "Plant a Flower!": ("plant", None, "flower"),
+        "go to the river": ("go", None, "river"), "go river": ("go", None, "river"), "walk north": ("go", None, "north"),
+        "head to the ford": ("go", None, "ford"), "north": ("go", None, "north"), "go home": ("go", None, "home"),
+        "home": ("go", None, "home"), "go to my camp": ("go", None, "home"), "go @kai": ("go", "kai", None),
+        "go to @kai": ("go", "kai", None), "go": ("go", None, None), "go to the sea": ("go", None, "shore"),
+        "light the fire": ("fire", None, None), "light": ("fire", None, None), "fire": ("fire", None, None),
+        "light the hearth": ("fire", None, None), "camp": ("camp", None, None), "camp here": ("camp", None, None),
+        "pitch a tent": ("camp", None, None), "pitch": None,
+        # plain chat, never a verb
+        "go away": None, "plant based": None, "go go go": None, "plant @atleastonce": None, "go kai": None,
+        "I love to sing in the shower": None, "right?": None, "I dug it": None, "dig": None, "dig now": None,
+        "duck": None, "the north": None, "go to the river please now": None, "go https://x.com": None,
+        "go @kai river": None, "feed the river": None, "camp fire": None, "sit down": None,
+        # stubs parse (so they never bubble as commands elsewhere) and are refused later
+        "sow": ("sow", None, None), "sow a field": ("sow", None, None), "harvest": ("harvest", None, None),
+        "stack": ("stack", None, None), "stack stones": ("stack", None, None), "swim": ("swim", None, None),
+        "sing": ("sing", None, None), "explore": ("explore", None, None), "water @kai": ("water", "kai", None),
+        "water": None,
+    }
+    bad = []
+    for txt, want in cases.items():
+        got = P(txt)
+        if got != want:
+            bad.append((txt, got, want))
+    for txt, got, want in bad:
+        print("FAIL parse_verb(%r) -> %r, want %r" % (txt, got, want))
+    # every token of every message with > 4 tokens is chat, whatever it starts with
+    assert P("go to the river now please") is None
+    assert P("plant a flower a flower") is None
+    # the rule never fires on a URL
+    assert P("go www.river.com") is None
+    # classify untouched
+    b = ChatBridge("/tmp/lg-verbs")
+    assert b.classify("A") == ("vote", "", "A") and b.classify("!b")[2] == "B" and b.classify("abc")[0] == "plain"
+    assert b.classify("!idea show the diff bigger") == ("idea", "show the diff bigger", None)
+    assert b.classify("!hide @spammer") == ("mod", "hide @spammer", None)
+    # refusals are amber (level "warn") and scrub raw names
+    assert b._safe_reason("no pip called @troll here", "feed") == "no pip by that name here"
+    assert b._safe_reason("too close to @kai's camp", "camp") == "too close to someone's camp"
+    assert b._safe_reason("unknown verb", "go") == "go is not on this land yet"
+    assert L.COLORS["warn"].upper() == "#FFB020"
+    print("parse_verb: %d cases, %d failed" % (len(cases), len(bad)))
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
-    b = ChatBridge("/tmp/cp-chat-bridge")
-    for txt in ["A", "!b", " c ", "abc", "!idea show the diff bigger", "!theme ember", "!theme nope",
-                "hello https://x.com/y [emote:1:kek]", "!hide @spammer", "!kill", "!banish @troll"]:
-        print(repr(txt), "->", b.classify(txt), "|", b.clean_text(txt, 120))
-    for txt in ["feed", "feed @Sami", "FEED  sami", "!pet", "gift @lu", "gift", "dig", "dig now", "plant", "wave", "sing",
-                "I love to sing in the shower", "right?", "I dug it", "name Muffin", "name @sam", "name averyverylongname",
-                "forget", "feed @sami now", "teach ratio"]:
-        print(repr(txt), "->", b.parse_verb(txt))
+    sys.exit(_self_test())

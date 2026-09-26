@@ -13,6 +13,25 @@
     ws.save(now, force=False)                                    # atomic tmp + os.replace, at most every 5 s unless forced
     ws.hatched_ever ; ws.pips ; ws.data ; ws.builders (builders.json join, read-only)
 
+Schema 2 (OPENWORLD.md 5, LONGGRASS):
+    ws = WorldState(run_dir, schema=2)                           # loads; a schema-1 file is migrated on a COPY under the
+                                                                 # 5.4 guard (identity byte-identical, pip count equal);
+                                                                 # on failure ws.schema stays 1 and ws.migration_ok False:
+                                                                 # the scene REFUSES to boot (keeps the last good frame)
+    ws.migrate_v2(now, moot_xy=(x, y), passable=mask, water=mask, dry_run=False) -> report   # explicit form
+    ws.schema -> 1 | 2 ; ws.migration -> report | None ; ws.land -> stream.world.land.Land (schema 2 only, else None)
+    ws.set_pos("sami", x, y, facing=(fx, fy)) ; ws.set_carry("sami", "stone", now) ; ws.ensure_camp("sami", now, sid)
+    ws.iso(t) ; ws.epoch(s)                                      # the timestamp helpers Land uses
+    $PYTHON stream/world/state.py --migrate-copy SRC.json [--out /tmp/x/world.json]   # 5.4: run the guard on a copy
+    $PYTHON stream/world/state.py --self-test                    # v1 -> v2 on a fixture + land / camera round trips
+Schema 2 pip fields: `y` (map cells), `facing [fx, fy]`, `colour` (art.creatures.genome hex), `camp {x, y, tier,
+built_ts, nights[]}`, `field`, `carry`, `carry_since_ts`, `home [x, y]`, `marks_planted {flower, tree, reed, stone}`,
+`history {digs, burrow, moss_planted, x_v1, y_v1}`; `burrow`, `digs`, `moss_planted` are dropped from the row.
+World block gains `map_seed, map_w, map_h, moot, hemisphere, world_day, wear_b64, marks, fields, stones, raisings,
+land_strips, camera, weather, hearth, bake_ver, mark_seq, history{v1}`; `terrain_b64, moss, nests, chambers` are dropped.
+A schema-1 document is still read and written unchanged (the cave's rollback week): `save()` writes the schema it
+loaded, never upgrades by itself.
+
 Rules: identity fields (name, n, colour_idx, genome incl. salt, born_ts) are written once and never recomputed.
 Counts are never incremented on boot: `recompute_from_chat` walks chat.jsonl from the stored cursor and adds
 `(session_id, name_lower)` pairs to a SET per pip, so re-ingest is idempotent (fixes 014.2). Energy never
@@ -23,6 +42,7 @@ layer never needs the raw name path (014.1).
 from __future__ import annotations
 
 import base64
+import copy
 import datetime as _dt
 import glob
 import json
@@ -40,8 +60,11 @@ if _ROOT not in sys.path:
 from stream.state_store import write_state_atomic, iso_to_epoch, epoch_to_iso, normalise_chat, run_path  # noqa: E402
 from stream.world import SIM_W, SIM_H  # noqa: E402
 from stream.world import pips as P  # noqa: E402
+from stream.world import land as LAND  # noqa: E402
 
-SCHEMA = 1
+SCHEMA_V1 = 1                     # PIP HOLLOW (the cave); still read and written for the rollback week
+SCHEMA = 2                        # LONGGRASS (OPENWORLD.md 5)
+IDENTITY_FIELDS = ("name", "n", "colour_idx", "genome", "born_ts")   # byte-identical across the migration (5.4)
 FLUSH_S = 5.0
 DIG_W = 5                         # a dig pocket is 5 wide x 3 tall sim cells (20 x 12 px on screen)
 DIG_CAP = 45                      # cells per user per session (3 full pockets)
@@ -64,34 +87,89 @@ def _iso(t: Optional[float]) -> Optional[str]:
     return epoch_to_iso(float(t), ms=True) if t else None
 
 
-def _default_data() -> Dict[str, Any]:
-    return {
-        "schema": SCHEMA,
-        "updated_ts": None,
-        "cursor": {"chat_jsonl_offset": 0, "last_id": None},
-        "pips": {},
-        "world": {
+def default_hemisphere() -> str:
+    """`south` when the machine timezone is Australia/* (or another southern zone), else `north`. Overridable in
+    world.json["world"]["hemisphere"]; the land line names the season so a mistake is visible (OPENWORLD 2.2)."""
+    tz = os.environ.get("TZ") or ""
+    if not tz:
+        try:
+            tz = os.readlink("/etc/localtime")
+        except OSError:
+            tz = ""
+    south = ("Australia/", "Pacific/Auckland", "Africa/Johannesburg", "America/Sao_Paulo", "America/Argentina",
+             "America/Santiago", "Antarctica/")
+    return "south" if any(s in tz for s in south) else "north"
+
+
+def _default_world(schema: int = SCHEMA_V1) -> Dict[str, Any]:
+    common = {
+        "milestones": list(MILESTONES),
+        "milestones_reached": [],
+        "hatched_ever": 0,
+        "woke_log": [],
+        "visits": [],
+        "board": {"session_id": None, "fed": {}, "dug": {}, "hatched": []},
+        "last_board": None,
+        "event_log": [],
+    }
+    if int(schema) >= 2:
+        common.update({
+            "map_seed": LAND.MAP_SEED, "map_w": LAND.MAP_W, "map_h": LAND.MAP_H,
+            "moot": [LAND.DEFAULT_MOOT[0], LAND.DEFAULT_MOOT[1]],
+            "hemisphere": default_hemisphere(), "world_day": "real",
+            "wear_b64": None,               # uint8 960x440 zlib + base64; None = nothing worn yet
+            "marks": [], "fields": [], "stones": [], "raisings": [], "land_strips": [],
+            "camera": None,
+            "weather": {"state": "clear", "since_ts": None, "chain_seed": LAND.MAP_SEED},
+            "hearth": {"lit_ts": None, "by": None},
+            "bake_ver": 1, "mark_seq": 0,
+            "history": {},
+        })
+    else:
+        common.update({
             "terrain_b64": None,
             "moss": [],
             "nests": [],
             "chambers": [{"name": "the Hollow", "opened_ts": None, "by": None, "milestone": 0}],
-            "milestones": list(MILESTONES),
-            "milestones_reached": [],
-            "hatched_ever": 0,
-            "woke_log": [],
-            "visits": [],
-            "board": {"session_id": None, "fed": {}, "dug": {}, "hatched": []},
-            "last_board": None,
-            "event_log": [],
-        },
+        })
+    return common
+
+
+def _default_data(schema: int = SCHEMA_V1) -> Dict[str, Any]:
+    return {
+        "schema": int(schema),
+        "updated_ts": None,
+        "cursor": {"chat_jsonl_offset": 0, "last_id": None},
+        "pips": {},
+        "world": _default_world(schema),
         "sessions": [],           # [{id, started_ts, last_ts}] every session this module has seen (live or inferred)
         "banished": {},
         "quarantine": {},         # {key: {record, reason, ts}}: world.json pips with NO chat.jsonl chatter (WORLD.md 1, 11)
     }
 
 
-def _default_pip(key: str, name: str, display_name: str, n: Optional[int], t: float, genome: Dict[str, int]) -> Dict[str, Any]:
+def pip_colour(key: str) -> Optional[str]:
+    """The creature's body colour from the art genome (`art.creatures.genome(name)["colour"]`, a hex string): labels,
+    plates, roofs, field borders and minimap dots use it (OPENWORLD 5.1). None if the atlas is unavailable."""
+    try:
+        from stream.world.art import creatures as _C
+        return str(_C.genome((key or "").lower())["colour"])
+    except Exception:
+        return None
+
+
+def _v2_pip_fields(key: str) -> Dict[str, Any]:
     return {
+        "facing": [1, 0], "colour": pip_colour(key),
+        "camp": None, "field": None, "carry": None, "carry_since_ts": None, "home": None,
+        "marks_planted": {"flower": 0, "tree": 0, "reed": 0, "stone": 0},
+        "history": {},
+    }
+
+
+def _default_pip(key: str, name: str, display_name: str, n: Optional[int], t: float, genome: Dict[str, int],
+                 schema: int = SCHEMA_V1) -> Dict[str, Any]:
+    p = {
         "name": name, "display_name": display_name, "n": n,
         "colour_idx": P.colour_idx(key),
         "genome": dict(genome),
@@ -106,45 +184,88 @@ def _default_pip(key: str, name: str, display_name: str, n: Optional[int], t: fl
         "moss_planted": 0, "digs": 0, "votes_cast": 0, "events_picked": 0,
         "raised_in_nest": None, "strikes": 0,
     }
+    if int(schema) >= 2:
+        for f in ("burrow", "moss_planted", "digs"):
+            p.pop(f, None)
+        p.update(_v2_pip_fields(key))
+    return p
 
 
 class WorldState(object):
     """Owner of $RUN_DIR/world.json. One instance per compositor process (the world module)."""
 
     def __init__(self, run_dir: str, log: Optional[Callable[[str], None]] = None,
-                 name_filter: Optional[Callable[[str], str]] = None):
+                 name_filter: Optional[Callable[[str], str]] = None, schema: Optional[int] = None,
+                 moot: Optional[Tuple[float, float]] = None, passable: Optional[np.ndarray] = None,
+                 water: Optional[np.ndarray] = None, now: Optional[float] = None):
+        """`schema=None` keeps whatever the file has (a fresh file is schema 1: the cave's contract). `schema=2` asks
+        for LONGGRASS: a fresh file starts at 2, a schema-1 file is migrated under the 5.4 guard (see `migration_ok`).
+        `moot` / `passable` / `water` are terrain.py's places centre and masks for camp placement (optional)."""
         self.run_dir = run_dir
         self.log = log or (lambda m: None)
         self.path = os.path.join(run_dir, "world.json")
         self.chat_path = run_path(run_dir, "CHAT_FILE", "chat.jsonl")
         self.builders_path = os.path.join(run_dir, "builders.json")
         self.name_filter = name_filter or (lambda s: s)
-        self.data: Dict[str, Any] = _default_data()
+        self.want_schema: Optional[int] = int(schema) if schema is not None else None
+        self._moot = tuple(moot) if moot else None
+        self._passable, self._water = passable, water
+        self.data: Dict[str, Any] = _default_data(self.want_schema or SCHEMA_V1)
         self.builders: Dict[str, Dict] = {}
         self.dirty = False
         self._last_flush: Optional[float] = None
         self._terrain: Optional[np.ndarray] = None
+        self._land = None
         self.loaded_ok = False
         self.load_errors = 0
         self.session_id: Optional[str] = None
+        self.migration: Optional[Dict[str, Any]] = None
+        self.migration_ok: bool = True
         self.load()
+        if self.want_schema is not None and self.want_schema >= 2:
+            if self.schema < 2:
+                self.migrate_v2(now=now, moot_xy=self._moot, passable=passable, water=water)
+            else:
+                self.migration = {"ok": True, "skipped": True, "reason": "file is schema %d" % self.schema}
+
+    # ------------------------------------------------------------------ schema
+    @property
+    def schema(self) -> int:
+        try:
+            return int(self.data.get("schema") or SCHEMA_V1)
+        except Exception:
+            return SCHEMA_V1
+
+    @property
+    def land(self):
+        """The Land object over this document (schema 2 only; None for a schema-1 document)."""
+        if self.schema < 2:
+            return None
+        if self._land is None:
+            self._land = LAND.Land(self, moot=self._moot, log=self.log)
+            if self._passable is not None or self._water is not None:
+                self._land.set_terrain_layers(self._passable, self._water)
+        return self._land
+
+    @staticmethod
+    def iso(t: Optional[float]) -> Optional[str]:
+        return _iso(t)
+
+    @staticmethod
+    def epoch(s: Any) -> Optional[float]:
+        return iso_to_epoch(s)
 
     # ------------------------------------------------------------------ load / save
     def load(self) -> bool:
-        """Read world.json; a missing or corrupt file leaves the defaults (and is logged), never raises."""
-        self.data = _default_data()
+        """Read world.json; a missing or corrupt file leaves the defaults (and is logged), never raises. The file's
+        own schema decides which world defaults are filled in (a schema-2 file never regains moss / terrain)."""
+        self.data = _default_data(self.want_schema or SCHEMA_V1)
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 d = json.load(fh)
             if not isinstance(d, dict) or not isinstance(d.get("pips"), dict):
                 raise ValueError("world.json is not an object with pips")
-            base = _default_data()
-            for k, v in d.items():
-                base[k] = v
-            for k, v in _default_data()["world"].items():
-                base["world"].setdefault(k, v)
-            base["pips"] = {str(k).lower(): v for k, v in base["pips"].items() if isinstance(v, dict) and not v.get("_test")}
-            self.data = base
+            self.data = self._adopt(d)
             self.loaded_ok = True
         except FileNotFoundError:
             self.loaded_ok = False
@@ -153,21 +274,38 @@ class WorldState(object):
             self.loaded_ok = False
             self.log("world.json unreadable (%r): starting from the newest .bak if any" % (e,))
             if not self._load_bak():
-                self.data = _default_data()
+                self.data = _default_data(self.want_schema or SCHEMA_V1)
         self._load_builders()
         self._terrain = None
+        self._land = None
         self.data["world"]["hatched_ever"] = self.hatched_ever
         return self.loaded_ok
 
+    @staticmethod
+    def _adopt(d: Dict[str, Any]) -> Dict[str, Any]:
+        """A parsed document -> the in-memory shape: defaults for ITS schema filled in, pip keys lower-cased, test rows dropped."""
+        try:
+            sch = int(d.get("schema") or SCHEMA_V1)
+        except Exception:
+            sch = SCHEMA_V1
+        base = _default_data(sch)
+        for k, v in d.items():
+            base[k] = v
+        if not isinstance(base.get("world"), dict):
+            base["world"] = {}
+        for k, v in _default_world(sch).items():
+            base["world"].setdefault(k, v)
+        base["schema"] = sch
+        base["pips"] = {str(k).lower(): v for k, v in base["pips"].items() if isinstance(v, dict) and not v.get("_test")}
+        return base
+
     def _load_bak(self) -> bool:
-        for bak in sorted(glob.glob(self.path + ".bak-*"), reverse=True):
+        for bak in sorted(glob.glob(self.path + ".bak-*"), key=os.path.getmtime, reverse=True):
             try:
                 with open(bak, "r", encoding="utf-8") as fh:
                     d = json.load(fh)
                 if isinstance(d, dict) and isinstance(d.get("pips"), dict):
-                    base = _default_data()
-                    base.update(d)
-                    self.data = base
+                    self.data = self._adopt(d)
                     self.log("world.json restored from %s (%d pips)" % (os.path.basename(bak), len(d["pips"])))
                     return True
             except Exception:
@@ -198,9 +336,12 @@ class WorldState(object):
             if self._last_flush is not None and now - self._last_flush < FLUSH_S:
                 return False
         try:
-            if self._terrain is not None:
-                self.data["world"]["terrain_b64"] = base64.b64encode(np.packbits(self._terrain.reshape(-1))).decode("ascii")
-            self.data["schema"] = SCHEMA
+            if self.schema < 2:
+                if self._terrain is not None:
+                    self.data["world"]["terrain_b64"] = base64.b64encode(np.packbits(self._terrain.reshape(-1))).decode("ascii")
+            elif self._land is not None:
+                self._land.flush()                     # wear -> wear_b64 only when it changed
+            self.data["schema"] = self.schema          # the schema it loaded (or migrated to); never a silent upgrade
             self.data["updated_ts"] = _iso(now)
             self.data["world"]["hatched_ever"] = self.hatched_ever
             for p in self.data["pips"].values():
@@ -228,7 +369,8 @@ class WorldState(object):
                 with open(self.path, "rb") as src, open(bak + ".tmp", "wb") as dst:
                     dst.write(src.read())
                 os.replace(bak + ".tmp", bak)
-            for old in sorted(glob.glob(self.path + ".bak-*"))[:-BAK_KEEP]:
+            dailies = [b for b in sorted(glob.glob(self.path + ".bak-*")) if ".bak-v1-" not in b]   # the pre-migration copy is kept
+            for old in dailies[:-BAK_KEEP]:
                 try:
                     os.remove(old)
                 except OSError:
@@ -296,6 +438,8 @@ class WorldState(object):
             rec = q.pop(key)
             if isinstance(rec, dict) and isinstance(rec.get("record"), dict):
                 self.data["pips"][key] = rec["record"]
+                if self.schema >= 2 and rec.get("land"):
+                    self.land.restore_owner(key, rec.get("land"))
                 self.log("quarantine: %s restored (a chat.jsonl record arrived)" % key)
                 self.dirty = True
         p = self.data["pips"].get(key)
@@ -306,9 +450,13 @@ class WorldState(object):
             if p.get("n") is None and n is not None:
                 p["n"] = n
                 self.dirty = True
+            if self.schema >= 2 and not p.get("colour"):
+                p["colour"] = pip_colour(key)
+                self.dirty = True
             return p, False
         g, salt = P.resolve_genome(key, 0)
-        p = _default_pip(key, name or key, display_name or self.name_filter(name or key), n if n is not None else self.builder_n(key), t, g)
+        p = _default_pip(key, name or key, display_name or self.name_filter(name or key), n if n is not None else self.builder_n(key), t, g,
+                         schema=self.schema)
         self.data["pips"][key] = p
         self.data["world"]["hatched_ever"] = self.hatched_ever
         board = self.data["world"]["board"]
@@ -424,11 +572,57 @@ class WorldState(object):
             p["x"] = int(round(x))
         if y is not None:
             p["y"] = int(round(y))
-        if burrow is not None:
+        if burrow is not None and self.schema < 2:      # schema 2 has camps, not burrows (5.1); the argument is ignored
             p["burrow"] = int(burrow)
         if vote != "keep":
             p["vote"] = vote
         self.dirty = True
+
+    def set_pos(self, key: str, x: float, y: float, facing: Optional[Tuple[float, float]] = None) -> None:
+        """Schema 2: the pip's feet cell (x column, y row in map cells) and its 8-direction facing [fx, fy]."""
+        p = self.pip(key)
+        if p is None:
+            return
+        p["x"], p["y"] = int(round(x)), int(round(y))
+        if facing is not None:
+            fx, fy = float(facing[0]), float(facing[1])
+            p["facing"] = [int(round(max(-1.0, min(1.0, fx)))), int(round(max(-1.0, min(1.0, fy))))]
+        self.dirty = True
+
+    def set_carry(self, key: str, kind: Optional[str], t: float) -> None:
+        """`carry`: None | "berry" | "stone" with `carry_since_ts` (5.1)."""
+        p = self.pip(key)
+        if p is None:
+            return
+        p["carry"] = kind if kind in ("berry", "stone") else None
+        p["carry_since_ts"] = _iso(t) if p["carry"] else None
+        self.dirty = True
+
+    def ensure_camp(self, key: str, t: float, session_id: Optional[str] = None, x: Optional[float] = None,
+                    y: Optional[float] = None) -> Optional[Dict]:
+        """The first real sleep creates the camp (a hollow, tier 0) at the spot the pip stood (5.1 / 5.3); later sleeps
+        only record the night and re-read the ladder. A spot the rules refuse (the green, water, another's camp) falls
+        back to the hashed Steading-ring spot. Returns the camp (or None for an unknown / test pip / schema 1)."""
+        if self.schema < 2:
+            return None
+        land = self.land
+        p = land.real_pip(key)
+        if p is None:
+            return None
+        camp = p.get("camp")
+        if isinstance(camp, dict):
+            land.record_night(key, session_id, t)
+            return camp
+        px = x if x is not None else p.get("x")
+        py = y if y is not None else p.get("y")
+        if px is not None and py is not None:
+            camp, _ = land.set_camp(key, px, py, t, check=True, session_id=session_id)
+            if camp is not None:
+                return camp
+        taken = [(c["x"], c["y"]) for c in land.camps()]
+        hx, hy = LAND.hashed_camp_spot(key, land.moot, taken, land.passable, land.water)
+        camp, _ = land.set_camp(key, hx, hy, t, check=False, session_id=session_id)
+        return camp
 
     # ------------------------------------------------------------------ care, gifts, bonds
     def care(self, key: str, by: str, verb: str, t: float) -> bool:
@@ -572,6 +766,9 @@ class WorldState(object):
         p = self.pip(key)
         if p is None:
             return None
+        if self.schema >= 2:                     # the cave verb on a LONGGRASS document plants a flower mark instead
+            m, _ = self.land.add_mark("flower", x, y, key, t)
+            return m
         entry = {"x": int(x), "y": int(y), "planter": key, "ts": _iso(t), "size": 0}
         self.moss.append(entry)
         p["moss_planted"] = int(p.get("moss_planted") or 0) + 1
@@ -639,11 +836,13 @@ class WorldState(object):
         """Move a pip record OUT of `pips` into `quarantine` (kept for audit, never placed, never counted, never drawn).
         Used at boot for world.json rows with no chatter in chat.jsonl and by the HonestyMonitor's enforce path."""
         key = (key or "").lower()
+        land_rec = self.land.purge_owner(key) if (self.schema >= 2 and key in self.data["pips"]) else None
         p = self.data["pips"].pop(key, None)
         if p is None:
             return False
-        self.data.setdefault("quarantine", {})[key] = {"record": p, "reason": reason, "ts": _iso(now)}
-        self.data["world"]["moss"] = [m for m in self.moss if m.get("planter") != key]
+        self.data.setdefault("quarantine", {})[key] = {"record": p, "reason": reason, "ts": _iso(now), "land": land_rec}
+        if self.schema < 2:
+            self.data["world"]["moss"] = [m for m in self.moss if m.get("planter") != key]
         self.data["world"]["hatched_ever"] = self.hatched_ever
         self.dirty = True
         return True
@@ -769,13 +968,18 @@ class WorldState(object):
 
     # ------------------------------------------------------------------ banish
     def banish(self, key: str, t: float) -> bool:
+        """`!banish`: the pip, its camp, field, marks and stones leave the land; the audit record keeps them all."""
         key = (key or "").lower()
+        land_rec = self.land.purge_owner(key) if (self.schema >= 2 and key in self.data["pips"]) else None
         p = self.data["pips"].pop(key, None)
         if p is None:
             return False
         p["banished_ts"] = _iso(t)
+        if land_rec is not None:
+            p["_banished_land"] = land_rec
         self.data.setdefault("banished", {})[key] = p
-        self.data["world"]["moss"] = [m for m in self.moss if m.get("planter") != key]
+        if self.schema < 2:
+            self.data["world"]["moss"] = [m for m in self.moss if m.get("planter") != key]
         self.data["world"]["hatched_ever"] = self.hatched_ever
         self.dirty = True
         return True
@@ -786,10 +990,59 @@ class WorldState(object):
         if p is None:
             return False
         p.pop("banished_ts", None)
+        land_rec = p.pop("_banished_land", None)
         self.data["pips"][key] = p
+        if self.schema >= 2 and land_rec:
+            self.land.restore_owner(key, land_rec)
         self.data["world"]["hatched_ever"] = self.hatched_ever
         self.dirty = True
         return True
+
+    # ------------------------------------------------------------------ schema 1 -> 2 migration (OPENWORLD 5.4)
+    def migrate_v2(self, now: Optional[float] = None, moot_xy: Optional[Tuple[float, float]] = None,
+                   passable: Optional[np.ndarray] = None, water: Optional[np.ndarray] = None,
+                   dry_run: bool = False, write_bak: bool = True) -> Dict[str, Any]:
+        """Migrate the loaded schema-1 document to schema 2 ON A COPY, verify the guard (every pre-migration pip's
+        identity byte-identical, pip count equal, every mark owned by a pip), then adopt the copy. On a guard failure
+        nothing changes: `schema` stays 1, `migration_ok` is False and the report lists the problems, so the scene
+        refuses to boot and the world panel keeps rendering the last good frame. With `write_bak` the pre-migration
+        file is copied to `world.json.bak-v1-<stamp>` first (never pruned). `dry_run` verifies without adopting."""
+        if self.schema >= 2:
+            self.migration = {"ok": True, "skipped": True, "reason": "already schema %d" % self.schema}
+            self.migration_ok = True
+            return self.migration
+        old = self.data
+        moot = tuple(moot_xy) if moot_xy else (self._moot or tuple(old["world"].get("moot") or LAND.DEFAULT_MOOT))
+        new, report = migrate_v2_doc(old, moot=moot, passable=passable, water=water, log=self.log)
+        ok, problems = verify_migration(old, new)
+        report.update({"ok": ok, "problems": problems, "dry_run": bool(dry_run)})
+        if ok and not dry_run:
+            if write_bak and os.path.exists(self.path):
+                stamp_t = now if now is not None else (iso_to_epoch(old.get("updated_ts")) or 0.0)
+                stamp = _dt.datetime.fromtimestamp(stamp_t, tz=_dt.timezone.utc).strftime("%Y%m%dT%H%M%S") if stamp_t else "unknown"
+                bak = self.path + ".bak-v1-" + stamp
+                try:
+                    if not os.path.exists(bak):
+                        with open(self.path, "rb") as src, open(bak + ".tmp", "wb") as dst:
+                            dst.write(src.read())
+                        os.replace(bak + ".tmp", bak)
+                    report["bak"] = bak
+                except Exception as e:
+                    self.log("pre-migration backup failed (%r): NOT migrating" % (e,))
+                    report.update({"ok": False, "problems": problems + ["pre-migration backup failed: %r" % (e,)]})
+                    self.migration, self.migration_ok = report, False
+                    return report
+            self.data = new
+            self._moot = moot
+            self._terrain = None
+            self._land = None
+            self.dirty = True
+            self.log("world.json migrated schema 1 -> 2: %d pips, %d camps, %d flowers from moss, %d nests bonded" % (
+                len(new["pips"]), report.get("camps", 0), report.get("flowers", 0), report.get("nests", 0)))
+        elif not ok:
+            self.log("world.json migration REFUSED (%d problem%s): %s" % (len(problems), "" if len(problems) == 1 else "s", "; ".join(problems[:5])))
+        self.migration, self.migration_ok = report, ok
+        return report
 
 
 # ---------------------------------------------------------------------------- terrain defaults (WORLD.md 6.1)
@@ -942,3 +1195,362 @@ def protected_mask() -> np.ndarray:
     p[0:14, MOUTH_X[0] - 6:MOUTH_X[1] + 6] = True
     p[0:14, LANTERN_X - 2:LANTERN_X + 3] = True
     return p
+
+
+# ---------------------------------------------------------------------------- schema 1 -> 2 (OPENWORLD.md 5.4), pure
+def _ident(v: Any) -> str:
+    return json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def migrate_v2_doc(old: Dict[str, Any], moot: Tuple[float, float] = LAND.DEFAULT_MOOT, passable: Optional[np.ndarray] = None,
+                   water: Optional[np.ndarray] = None, log: Optional[Callable[[str], None]] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """A NEW schema-2 document from a schema-1 one; `old` is never touched (deep-copied first). Rules 5.4: `burrow` ->
+    `camp` at a position hashed from the name inside the Steading ring, tier from `sessions_seen`; each `moss` row ->
+    a `flower` mark credited to its planter beside that camp; `nests` -> bonded camps adjacent; `terrain_b64` dropped;
+    `digs` kept as history. Identity fields are copied, never rebuilt. Returns (new_doc, report)."""
+    log = log or (lambda m: None)
+    src = copy.deepcopy(old)
+    report: Dict[str, Any] = {"from_schema": int(src.get("schema") or 1), "to_schema": SCHEMA, "pips": 0, "camps": 0,
+                              "flowers": 0, "flowers_dropped": 0, "nests": 0, "nests_dropped": 0}
+    new = _default_data(SCHEMA)
+    for k in ("updated_ts", "cursor", "sessions", "banished", "quarantine"):
+        if k in src:
+            new[k] = src[k]
+    w1 = src.get("world") or {}
+    w2 = new["world"]
+    for k in ("milestones", "milestones_reached", "hatched_ever", "woke_log", "visits", "board", "last_board", "event_log"):
+        if k in w1:
+            w2[k] = w1[k]
+    w2["moot"] = [int(round(moot[0])), int(round(moot[1]))]
+    w2["history"] = {"v1": {"chambers": w1.get("chambers") or [], "nests": w1.get("nests") or [],
+                            "moss_rows": len(w1.get("moss") or []), "terrain_ver": w1.get("terrain_ver")}}
+
+    # pips: identity copied byte-for-byte (deepcopy), burrow -> camp, digs / moss_planted -> history
+    taken: List[Tuple[float, float]] = []
+    pips2: Dict[str, Dict[str, Any]] = {}
+    for key in sorted(src.get("pips") or {}):          # sorted: camp spots are deterministic across runs
+        p = src["pips"][key]
+        q = copy.deepcopy(p)
+        q["history"] = {"digs": p.get("digs", 0), "burrow": p.get("burrow"), "moss_planted": p.get("moss_planted", 0),
+                        "x_v1": p.get("x"), "y_v1": p.get("y")}
+        for f in ("digs", "burrow", "moss_planted"):
+            q.pop(f, None)
+        q.update({k: v for k, v in _v2_pip_fields(key).items() if k != "history"})
+        hatched = p.get("state") not in ("seed", "hatching")
+        tier = LAND.camp_tier_for_sessions(p.get("sessions_seen") or 0)
+        if hatched and tier >= 0:                      # they did sleep here: a camp where their nights were
+            x, y = LAND.hashed_camp_spot(key, moot, taken, passable, water)
+            taken.append((x, y))
+            q["camp"] = {"x": x, "y": y, "tier": tier, "built_ts": p.get("first_seen_ts") or p.get("born_ts"),
+                         "nights": list(p.get("session_ids") or [])}
+            q["home"] = [x, y]
+            q["x"], q["y"] = x, y
+            report["camps"] += 1
+        else:
+            q["camp"], q["home"], q["x"], q["y"] = None, None, None, None
+        if q.get("state") == "voting":
+            q["state"], q["vote"] = "asleep", None
+        pips2[key] = q
+        report["pips"] += 1
+    new["pips"] = pips2
+
+    # nests -> bonded camps adjacent (the second parent's camp moves within 6-8 cells of the first)
+    camp_of = lambda k: (pips2.get(k) or {}).get("camp")   # noqa: E731
+    for nest in w1.get("nests") or []:
+        parents = [str(x).lower() for x in (nest.get("parents") or [])][:2]
+        if len(parents) == 2 and camp_of(parents[0]) and camp_of(parents[1]):
+            a, b = camp_of(parents[0]), camp_of(parents[1])
+            others = [(c["x"], c["y"]) for k, c in ((k, camp_of(k)) for k in pips2) if c and k != parents[1]]
+            bx, by = LAND.spot_beside(parents[1], a["x"], a["y"], 7, others, passable, water, rmin=6, rmax=8, gap=LAND.CAMP_GAP_BONDED)
+            b["x"], b["y"] = bx, by
+            pips2[parents[1]]["home"] = [bx, by]
+            pips2[parents[1]]["x"], pips2[parents[1]]["y"] = bx, by
+            report["nests"] += 1
+        else:
+            report["nests_dropped"] += 1
+
+    # moss -> flower marks beside the planter's camp (a real mark keeps its owner; an ownerless row is dropped)
+    marks: List[Dict[str, Any]] = []
+    taken_marks: List[Tuple[float, float]] = []
+    per_owner: Dict[str, int] = {}
+    for m in w1.get("moss") or []:
+        owner = str(m.get("planter") or "").lower()
+        q = pips2.get(owner)
+        camp = q.get("camp") if q else None
+        if not q or not camp:
+            report["flowers_dropped"] += 1
+            continue
+        i = per_owner.get(owner, 0)
+        per_owner[owner] = i + 1
+        fx, fy = LAND.spot_beside(owner, camp["x"], camp["y"], i, taken_marks + taken, passable, water)
+        taken_marks.append((fx, fy))
+        w2["mark_seq"] = int(w2.get("mark_seq") or 0) + 1
+        marks.append({"id": "flower-%d" % w2["mark_seq"], "type": "flower", "x": fx, "y": fy, "owner": owner,
+                      "ts": m.get("ts"), "extra": {"from": "moss", "size": m.get("size"), "x_v1": m.get("x"), "y_v1": m.get("y")}})
+        q.setdefault("marks_planted", {"flower": 0, "tree": 0, "reed": 0, "stone": 0})["flower"] += 1
+        report["flowers"] += 1
+    w2["marks"] = marks
+    w2["fields"] = []
+    w2["hatched_ever"] = sum(1 for p in pips2.values() if not p.get("_test") and p.get("state") not in ("seed", "hatching"))
+    new["schema"] = SCHEMA
+    return new, report
+
+
+def verify_migration(old: Dict[str, Any], new: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """The 5.4 guard: every pre-migration pip's identity (name, n, colour_idx, genome incl. salt, born_ts) is
+    byte-identical in the new document, the pip count matches, the key sets match, banished / quarantine keys are kept,
+    every mark / camp resolves to a pip and lies inside the map. (ok, problems)."""
+    problems: List[str] = []
+    op, np_ = old.get("pips") or {}, new.get("pips") or {}
+    if len(op) != len(np_):
+        problems.append("pip count %d -> %d" % (len(op), len(np_)))
+    for key in op:
+        if key not in np_:
+            problems.append("pip %r missing after migration" % key)
+            continue
+        for f in IDENTITY_FIELDS:
+            if _ident(op[key].get(f)) != _ident(np_[key].get(f)):
+                problems.append("pip %r field %r changed: %s -> %s" % (key, f, _ident(op[key].get(f)), _ident(np_[key].get(f))))
+        if _ident((op[key].get("genome") or {}).get("salt")) != _ident((np_[key].get("genome") or {}).get("salt")):
+            problems.append("pip %r salt changed" % key)
+        for f in ("sessions_seen", "session_ids", "minutes_present", "own_messages", "last_seen_ts", "first_seen_ts", "tier"):
+            if _ident(op[key].get(f)) != _ident(np_[key].get(f)):
+                problems.append("pip %r record field %r changed" % (key, f))
+    for key in np_:
+        if key not in op:
+            problems.append("pip %r appeared from nowhere" % key)
+    for blk in ("banished", "quarantine"):
+        if set((old.get(blk) or {}).keys()) != set((new.get(blk) or {}).keys()):
+            problems.append("%s keys changed" % blk)
+    if int(new.get("schema") or 0) != SCHEMA:
+        problems.append("new schema is %r, not %d" % (new.get("schema"), SCHEMA))
+    w2 = new.get("world") or {}
+    mw, mh = int(w2.get("map_w") or LAND.MAP_W), int(w2.get("map_h") or LAND.MAP_H)
+    for key, p in np_.items():
+        c = p.get("camp")
+        if c is not None:
+            if not isinstance(c, dict) or not (0 <= int(c.get("x", -1)) < mw and 0 <= int(c.get("y", -1)) < mh):
+                problems.append("pip %r camp off the map: %r" % (key, c))
+            elif int(c.get("tier", -1)) not in (0, 1, 2, 3):
+                problems.append("pip %r camp tier %r" % (key, c.get("tier")))
+        for f in ("burrow", "digs", "moss_planted"):
+            if f in p:
+                problems.append("pip %r still carries schema-1 field %r" % (key, f))
+    for m in w2.get("marks") or []:
+        if m.get("owner") not in np_:
+            problems.append("mark %r owner %r has no pip" % (m.get("id"), m.get("owner")))
+        if not (0 <= int(m.get("x", -1)) < mw and 0 <= int(m.get("y", -1)) < mh):
+            problems.append("mark %r off the map" % (m.get("id"),))
+    for f in ("terrain_b64", "moss", "nests", "chambers"):
+        if f in w2:
+            problems.append("world block still carries schema-1 key %r" % f)
+    seen = set()
+    for key, p in np_.items():
+        c = p.get("camp")
+        if isinstance(c, dict):
+            pos = (int(c["x"]), int(c["y"]))
+            if pos in seen:
+                problems.append("two camps share cell %r" % (pos,))
+            seen.add(pos)
+    return (not problems), problems
+
+
+def migrate_copy(src_path: str, out_path: Optional[str] = None, moot: Optional[Tuple[float, float]] = None) -> Dict[str, Any]:
+    """CLI helper: read `src_path` (never written), migrate, verify, optionally write the schema-2 copy to `out_path`
+    (must not be a canonical live dir). Returns the report with `ok`."""
+    with open(src_path, "r", encoding="utf-8") as fh:
+        old = WorldState._adopt(json.load(fh))
+    if int(old.get("schema") or 1) >= 2:
+        return {"ok": True, "skipped": True, "reason": "source is already schema %s" % old.get("schema")}
+    new, report = migrate_v2_doc(old, moot=tuple(moot) if moot else LAND.DEFAULT_MOOT)
+    ok, problems = verify_migration(old, new)
+    report.update({"ok": ok, "problems": problems, "src": src_path})
+    if out_path:
+        rp = os.path.realpath(out_path)
+        canon = [os.path.realpath(os.path.expanduser(p)) for p in ("~/.local/share/kick-live/run-live", "~/.local/share/kick-live/run")]
+        if any(rp.startswith(c + os.sep) or rp == c for c in canon) or os.path.realpath(src_path) == rp:
+            report.update({"ok": False, "problems": problems + ["refusing to write into a live run dir or over the source"]})
+            return report
+        if ok:
+            os.makedirs(os.path.dirname(rp) or ".", exist_ok=True)
+            write_state_atomic(rp, new)
+            report["out"] = rp
+    return report
+
+
+def _fixture_v1(now: float) -> Dict[str, Any]:
+    """A schema-1 document like the live one: two sleepers in burrows, one moss row each, a nest, a quarantined orphan."""
+    d = _default_data(SCHEMA_V1)
+    for i, (key, name, n, sess) in enumerate((("atleastonce", "atleastonce", 1, 4), ("sami", "Sami", 2, 2), ("kai_dnb", "Kai_DnB", 3, 1))):
+        g, _ = P.resolve_genome(key, 0)
+        p = _default_pip(key, name, name, n, now - 86400 * (3 - i), g)
+        p.update({"state": "asleep", "x": 150 + 60 * i, "y": 107, "burrow": 7 + i, "sessions_seen": sess,
+                  "session_ids": ["hist-%d" % k for k in range(sess)], "digs": 12 * i, "moss_planted": 1,
+                  "tier": 2 if sess >= 3 else 0, "words": {"plant": 3}, "bonds": {}})
+        d["pips"][key] = p
+    d["pips"]["atleastonce"]["bonds"] = {"sami": 3}
+    d["pips"]["sami"]["bonds"] = {"atleastonce": 4}
+    d["world"]["moss"] = [{"x": 140, "y": 90, "planter": "sami", "ts": _iso(now - 3600), "size": 2},
+                          {"x": 200, "y": 90, "planter": "atleastonce", "ts": _iso(now - 7200), "size": 3},
+                          {"x": 210, "y": 90, "planter": "nobody-here", "ts": _iso(now - 7200), "size": 1}]
+    d["world"]["nests"] = [{"x": 180, "y": 92, "parents": ["atleastonce", "sami"], "built_ts": _iso(now - 600), "hatched": []}]
+    d["world"]["terrain_b64"] = base64.b64encode(np.packbits(default_terrain().reshape(-1))).decode("ascii")
+    d["sessions"] = [{"id": "hist-%d" % k, "started_ts": _iso(now - 86400 * (4 - k)), "last_ts": _iso(now - 86400 * (4 - k) + 3600)} for k in range(4)]
+    d["quarantine"] = {"phantom": {"record": {"name": "phantom"}, "reason": "no chat.jsonl record", "ts": _iso(now)}}
+    return d
+
+
+def _self_test() -> bool:
+    """v1 -> v2 on the fixture and on a broken copy (guard must refuse), land operations, wear round trip, save / load."""
+    import tempfile
+    ok = True
+    notes: List[str] = []
+
+    def check(cond, msg):
+        nonlocal ok
+        if not cond:
+            ok = False
+        notes.append(("PASS " if cond else "FAIL ") + msg)
+
+    now = 1_790_000_000.0
+    run_dir = tempfile.mkdtemp(prefix="lg-state-", dir="/tmp")
+    old = _fixture_v1(now)
+    write_state_atomic(os.path.join(run_dir, "world.json"), old)
+    with open(os.path.join(run_dir, "chat.jsonl"), "w") as fh:
+        for k in ("atleastonce", "Sami", "Kai_DnB"):
+            fh.write(json.dumps({"id": "id-" + k, "username": k, "content": "hi", "ts": _iso(now - 100)}) + "\n")
+
+    # 1. a schema-1 WorldState still reads and writes schema 1 (the cave's rollback contract)
+    ws1 = WorldState(run_dir, log=lambda m: None)
+    check(ws1.schema == 1 and ws1.land is None and "terrain_b64" in ws1.data["world"], "schema=None keeps a v1 file at schema 1")
+    ws1.dirty = True
+    ws1.save(now, force=True)
+    with open(ws1.path) as fh:
+        check(json.load(fh)["schema"] == 1, "v1 save() writes schema 1 (no silent upgrade)")
+
+    # 2. schema=2 migrates under the guard
+    ws = WorldState(run_dir, log=lambda m: None, schema=2, now=now)
+    rep = ws.migration or {}
+    check(ws.schema == 2 and ws.migration_ok, "schema=2 migrates a v1 file: ok=%s problems=%s" % (rep.get("ok"), rep.get("problems")))
+    check(rep.get("camps") == 3 and rep.get("flowers") == 2 and rep.get("flowers_dropped") == 1 and rep.get("nests") == 1,
+          "report camps=%s flowers=%s dropped=%s nests=%s" % (rep.get("camps"), rep.get("flowers"), rep.get("flowers_dropped"), rep.get("nests")))
+    check(bool(rep.get("bak")) and os.path.exists(rep.get("bak") or ""), "pre-migration copy written: %s" % os.path.basename(rep.get("bak") or "?"))
+    for key in old["pips"]:
+        for f in IDENTITY_FIELDS:
+            check(_ident(old["pips"][key][f]) == _ident(ws.pips[key][f]), "identity %s.%s byte-identical" % (key, f))
+    check(ws.pips["atleastonce"]["camp"]["tier"] == 1 and ws.pips["sami"]["camp"]["tier"] == 1 and ws.pips["kai_dnb"]["camp"]["tier"] == 0,
+          "camp tiers from sessions_seen 4/2/1 -> tent/tent/hollow (%s)" % [ws.pips[k]["camp"]["tier"] for k in ("atleastonce", "sami", "kai_dnb")])
+    a, b = ws.pips["atleastonce"]["camp"], ws.pips["sami"]["camp"]
+    d_ab = ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+    check(6 <= d_ab <= 9, "nest -> bonded camps adjacent (%.1f cells apart)" % d_ab)
+    check(ws.pips["atleastonce"]["history"]["digs"] == 0 and ws.pips["kai_dnb"]["history"]["digs"] == 24 and "burrow" not in ws.pips["sami"],
+          "digs kept as history, burrow dropped")
+    check(all(m["owner"] in ws.pips for m in ws.land.marks), "every migrated flower has a real owner")
+    check(ws.pips["sami"]["colour"] and ws.pips["sami"]["colour"].startswith("#"), "colour from the art genome (%s)" % ws.pips["sami"]["colour"])
+    check(not ws.land.provenance_violations(), "no provenance violations after migration")
+
+    # 3. the guard refuses a tampered migration (a pip lost / an identity changed)
+    bad_new, _ = migrate_v2_doc(old)
+    bad_new["pips"]["sami"]["genome"]["salt"] = 1
+    g_ok, g_problems = verify_migration(old, bad_new)
+    check(not g_ok and any("salt" in p or "genome" in p for p in g_problems), "guard refuses a changed salt: %s" % g_problems[:1])
+    bad_new2, _ = migrate_v2_doc(old)
+    del bad_new2["pips"]["kai_dnb"]
+    g_ok2, g_problems2 = verify_migration(old, bad_new2)
+    check(not g_ok2 and any("count" in p for p in g_problems2), "guard refuses a lost pip: %s" % g_problems2[:1])
+
+    # 4. land operations: wear never decrements, marks need owners, camps obey the gap, stones and the ladder
+    land = ws.land
+    cx, cy = ws.pips["sami"]["camp"]["x"], ws.pips["sami"]["camp"]["y"]
+    added = land.step("sami", cx + 20, cy)
+    check(added == 8 + 4 * 2, "step adds 8 + 4x2 (%d)" % added)
+    check(land.step("test-pip-01", cx, cy) == 0 and land.step("nobody", cx, cy) == 0, "test / unknown pips never write wear")
+    for _ in range(40):
+        land.step("sami", cx + 20, cy)
+    check(land.wear_at(cx + 20, cy) == 255 and land.trail_tier(cx + 20, cy) == 3, "wear caps at 255 -> road tier 3")
+    frac = land.walked_fraction()
+    # five worn cells (centre + 4 neighbours) dilated by 24 = a 51x51 square minus its 4 corners
+    check(0 < frac < 0.02 and land.walked_cells() == 51 * 51 - 4, "walked fraction from len(): %.4f (%d cells)" % (frac, land.walked_cells()))
+    mx, my = land.moot[0] + 120, land.moot[1] + 60           # well off the green and every camp
+    m, why = land.add_mark("flower", mx, my, "sami", now)
+    check(m is not None and why == "ok", "add_mark flower ok (%s)" % why)
+    m2, why2 = land.add_mark("flower", mx + 1, my, "atleastonce", now)
+    check(m2 is None and "close" in why2, "a mark within 4 cells of another's is refused (%s)" % why2)
+    m3, why3 = land.add_mark("flower", mx + 20, my, "ghost", now)
+    check(m3 is None, "an ownerless mark is refused (%s)" % why3)
+    m4, why4 = land.add_mark("flower", cx + 20, cy, "sami", now)
+    check(m4 is None and "trail" in why4, "not on a trail (%s)" % why4)
+    c_ok, c_why = land.camp_allowed("kai_dnb", a["x"] + 8, a["y"])
+    check(not c_ok, "an unbonded camp within 12 cells is refused (%s)" % c_why)
+    c_ok2, _ = land.camp_allowed("sami", a["x"] + 7, a["y"])
+    check(c_ok2, "a bonded camp may sit at 6-12 cells")
+    for k in ("sami", "atleastonce", "kai_dnb"):
+        land.stack(k, now)
+    check(land.stock == 3 and land.cairn_named() and land.ladder()["next"] == 20 and land.ladder()["stock"] == 3, "3 distinct stackers name the cairn; ladder next 20")
+    f, fw = land.sow("sami", now - 8 * 86400)
+    check(f is not None, "sow beside the camp (%s)" % fw)
+    check(land.field_stage(f, now)[1] == "gold" and land.fields_gold(now) == 1, "a field sown 8 days ago is gold")
+    h_ok, h_why = land.harvest("sami", now)
+    check(h_ok and land.field_of("sami")["harvests"] == 1 and land.field_stage(land.field_of("sami"), now)[1] == "tilled", "harvest resets to tilled (%s)" % h_why)
+    ver = land.bake_ver
+    land.set_camp("kai_dnb", cx + 100, cy + 40, now, check=False)
+    check(land.bake_ver == ver + 1, "a camp move bumps bake_ver")
+    stops = land.survey_stops([{"kind": "ford", "x": 500, "y": 150}])
+    check(sum(1 for s in stops if s["kind"] == "camp") == 3 and any(s["kind"] == "natural" for s in stops), "survey stops = real camps + fields + cairn + natural points (%d)" % len(stops))
+
+    # 5. save / load round trip keeps wear, marks, camps and the schema
+    land.save_camera({"x": 480.0, "y": 220.0, "zoom": 1.0, "mode": "DRIFT"})
+    ws.save(now + 1, force=True)
+    ws2 = WorldState(run_dir, log=lambda m: None, schema=2)
+    check(ws2.schema == 2 and ws2.migration.get("skipped"), "reload of a v2 file skips the migration")
+    check(ws2.land.wear_at(cx + 20, cy) == 255 and len(ws2.land.marks) == 3 and ws2.land.camera()["x"] == 480.0, "wear / marks / camera survive save + load")
+    check("moss" not in ws2.data["world"] and "terrain_b64" not in ws2.data["world"], "v2 load does not resurrect moss / terrain")
+    check(ws2.hatched_ever == 3, "hatched_ever = 3 real rows")
+
+    # 6. banish removes the land marks with an audit record; unbanish restores them
+    n_marks = len(ws2.land.marks)
+    ws2.banish("sami", now)
+    check(len(ws2.land.marks) == n_marks - 2 and ws2.land.stock == 2 and "sami" not in ws2.pips, "banish removes sami's 2 marks and stone")
+    check(not ws2.land.provenance_violations(), "no violations after banish")
+    ws2.unbanish("sami")
+    check(len(ws2.land.marks) == n_marks and ws2.land.stock == 3 and ws2.pips["sami"]["camp"] is not None, "unbanish restores marks, stone and camp")
+
+    # 7. a fresh run dir at schema 2 starts empty at schema 2; ensure_pip gives v2 fields; ensure_camp on first sleep
+    fresh = tempfile.mkdtemp(prefix="lg-state-fresh-", dir="/tmp")
+    ws3 = WorldState(fresh, log=lambda m: None, schema=2)
+    check(ws3.schema == 2 and ws3.migration_ok and len(ws3.pips) == 0, "fresh schema-2 document")
+    p, created = ws3.ensure_pip("newbie", "Newbie", "Newbie", 9, now)
+    check(created and "camp" in p and "burrow" not in p and p["colour"], "ensure_pip creates a v2 row")
+    p["state"] = "awake"
+    ws3.set_pos("newbie", ws3.land.moot[0] + 30, ws3.land.moot[1] + 5, facing=(0.7, -0.7))
+    check(ws3.pips["newbie"]["facing"] == [1, -1], "set_pos quantises facing to 8 directions")
+    camp = ws3.ensure_camp("newbie", now, "sess-1")
+    check(camp is not None and camp["tier"] == 0 and camp["nights"] == ["sess-1"], "first sleep pitches a hollow where the pip stood")
+    on_green = ws3.ensure_camp("greeny", now, "sess-1")
+    check(on_green is None, "ensure_camp refuses an unknown pip")
+
+    for n in notes:
+        print("[state] " + n)
+    print("[state] self-test %s (%s)" % ("PASS" if ok else "FAIL", run_dir))
+    return ok
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="world.json schema tools (OPENWORLD.md 5.4)")
+    ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--migrate-copy", metavar="SRC", help="read this world.json (never written), migrate 1 -> 2 in memory, verify the guard")
+    ap.add_argument("--out", metavar="PATH", help="write the migrated copy here (refused inside a live run dir)")
+    ap.add_argument("--moot", metavar="X,Y", help="Moot centre in cells for camp placement (default map centre)")
+    args = ap.parse_args()
+    rc = 0
+    if args.migrate_copy:
+        moot = tuple(float(v) for v in args.moot.split(",")) if args.moot else None
+        r = migrate_copy(args.migrate_copy, args.out, moot)
+        print(json.dumps({k: v for k, v in r.items()}, indent=1, default=str))
+        rc = 0 if r.get("ok") else 2
+    if args.self_test:
+        rc = rc or (0 if _self_test() else 1)
+    if not args.self_test and not args.migrate_copy:
+        ap.print_help()
+    sys.exit(rc)

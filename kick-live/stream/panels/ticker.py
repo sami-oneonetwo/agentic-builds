@@ -1,12 +1,19 @@
-"""Ticker (CONCEPT section 3, region 15): 880x64 right-to-left crawl at `micro.ticker_speed` px/s (default 120).
+"""Ticker (CONCEPT section 3, region 15; OPENWORLD.md 8 row 9, 12): 880x64 right-to-left crawl at `micro.ticker_speed`
+px/s (default 120).
 
 Items, separated by ` · `:
   * the last 10 patch notes from ships.jsonl  ->  `v0.3.11 @sam: palette ember` (agent picks: `v0.3.12 agent pick:
     tempo 100 bpm`; failed ships: `v0.3.12 FAILED: ...` in red; kill switch on: names become `[chat hidden by mod]`)
-  * a chamber carve    `SHIPPED v0.5.0 · the Ledge opened · by @kai's hatch` for 30 s (stream/world/keepers.py)
-  * the honesty line   `no camera, no mic, no fake viewers. every light in this cave is a real person.` (WORLD.md 5)
-  * the command legend `feed · pet · dig · plant   A / B / C   !idea` (`!ask` only when ask.enabled)
-  * the rule           `the keepers are AI agents. they build this cave live, from your !ideas, and you watch it land.`
+  * a keeper ship line  `SHIPPED v0.6.0 · Longgrass` for 30 s (stream/world/keepers.py `last_ticker`)
+  * the honesty line, on the land (OPENWORLD 12): `no camera, no mic, no fake viewers. every name on this land is a
+    real person in chat. the wind is just the wind.`; on the cave the WORLD.md 5 line (`every light in this cave...`)
+  * the legend: `say anything: a creature walks out with your name`, then ONLY the verbs the running world really
+    parses (the scene's `verbs()`, else stream.chat_bridge's VERBS minus its `LATER_VERBS`), in the spec's order
+    `go · plant · camp · sow · fire · stack · feed ...`, then `A / B / C walks your pip to a waystone`; the `!commands`
+    join once the room has company (awake > 1)
+  * `a day here is one hour` ONLY while the world runs the compressed day (`world_day: "hour"`, OPENWORLD 2.2)
+  * the rule, only while a keeper is on duty: `the keepers are AI agents. they raise this land live, from your
+    !ideas, and you watch it go up.` (cave: `...build this cave live... watch it land.`)
 
 The whole strip (opaque, panel fill, coloured segments) is rendered ONCE per content change; every frame is a
 crop (or two crops when the seam is on screen) of that strip, so a frame costs well under 1 ms. The crawl
@@ -15,18 +22,86 @@ without a jump, and the self-test's virtual clock stays deterministic.
 """
 from __future__ import annotations
 
+import sys
+from typing import List, Optional, Tuple
+
 from PIL import Image, ImageDraw
 
 from stream import layout as L
 from stream.panels import Panel, register
+from stream.state_store import iso_to_epoch
 
 FONT, SIZE = "HN Medium", 24
 SEP = "  ·  "
-HONESTY = "no camera, no mic, no fake viewers. every light in this cave is a real person."     # WORLD.md 5 row 9
-RULE = "the keepers are AI agents. they build this cave live, from your !ideas, and you watch it land."   # WORLD.md 9
-KEEPER_TICKER_S = 30.0          # a chamber carve rides the ticker this long (stream/world/keepers.py last_ticker)
+HONESTY_LAND = ("no camera, no mic, no fake viewers. every name on this land is a real person in chat. "
+                "the wind is just the wind.")                                                        # OPENWORLD 12
+RULE_LAND = "the keepers are AI agents. they raise this land live, from your !ideas, and you watch it go up."   # OPENWORLD 10
+HOUR_DAY = "a day here is one hour"                                                                  # OPENWORLD 2.2
+HONESTY_CAVE = "no camera, no mic, no fake viewers. every light in this cave is a real person."      # WORLD.md 5 row 9
+RULE_CAVE = "the keepers are AI agents. they build this cave live, from your !ideas, and you watch it land."   # WORLD.md 9
+HONESTY, RULE = HONESTY_LAND, RULE_LAND
+SAY_LAND = "say anything: a creature walks out with your name"
+SAY_CAVE = "say anything: a pip hatches with your name"
+# the spec's legend order (OPENWORLD 8 row 9); only verbs the running world parses are drawn, at most LEGEND_MAX
+LEGEND_ORDER = ("go", "plant", "camp", "sow", "fire", "stack", "feed", "pet", "gift", "swim", "wave", "sit", "dance")
+LEGEND_MAX = 8
+V0_VERBS = ("go", "plant", "feed", "pet")       # the v0 preview set, used only when neither the scene nor the parser says
+KEEPER_TICKER_S = 30.0          # a keeper ship rides the ticker this long (stream/world/keepers.py last_ticker)
 DEFAULT_SPEED = 120.0
 MIN_SPEED, MAX_SPEED = 20.0, 400.0
+
+
+def _wm():
+    return sys.modules.get("stream.panels.world")
+
+
+def _scene():
+    m = _wm()
+    if m is None or not hasattr(m, "scene"):
+        return None
+    try:
+        return m.scene()
+    except Exception:
+        return None
+
+
+def _is_land() -> bool:
+    return hasattr(_scene(), "land")
+
+
+def _world_day() -> str:
+    """`real` | `hour` from the scene's Nature (or the world block); `real` when unknown."""
+    sc = _scene()
+    if sc is None or not getattr(sc, "booted", False):
+        return "real"
+    nat = getattr(sc, "nature", None)
+    wd = getattr(nat, "world_day", None)
+    if wd:
+        return str(wd)
+    try:
+        return str(((sc.world.data.get("world") or {}).get("world_day")) or "real")
+    except Exception:
+        return "real"
+
+
+def available_verbs() -> Tuple[str, ...]:
+    """The verbs a viewer can type that DO something, from the running world: the scene's `verbs()` when it has one,
+    else stream.chat_bridge's VERBS minus the ones it parses only to refuse (`LATER_VERBS`), else the v0 set."""
+    sc = _scene()
+    fn = getattr(sc, "verbs", None)
+    if callable(fn):
+        try:
+            vs = tuple(str(v).lower() for v in fn())
+            if vs:
+                return vs
+        except Exception:
+            pass
+    cb = sys.modules.get("stream.chat_bridge")
+    vs = tuple(getattr(cb, "VERBS", ()) or ())
+    if vs:
+        later = set(getattr(cb, "LATER_VERBS", {}) or {})
+        return tuple(v for v in vs if v not in later)
+    return V0_VERBS
 
 
 class Ticker(Panel):
@@ -51,10 +126,9 @@ class Ticker(Panel):
 
     @staticmethod
     def _keeper_line(ctx):
-        """`SHIPPED v0.5.0 · the Ledge opened · by @kai's hatch` for 30 s after a milestone carve (names already
-        filtered by the keepers module), read through the world panel module so a hot reload is followed."""
-        import sys as _sys
-        m = _sys.modules.get("stream.panels.world")
+        """`SHIPPED v0.6.0 · Longgrass` for 30 s after a keeper ship (names already filtered by the keepers module),
+        read through the world panel module so a hot reload is followed."""
+        m = _wm()
         try:
             kp = m.keepers() if (m is not None and hasattr(m, "keepers")) else None
             if kp is not None and kp.last_ticker and (ctx.now - float(kp.last_ticker_t)) < KEEPER_TICKER_S:
@@ -66,33 +140,43 @@ class Ticker(Panel):
     @staticmethod
     def _room(ctx):
         """(awake <= 1, keeper on duty): a lone viewer gets the four words and the letters, not the !command legend; the
-        `keepers are AI agents` line rides only while a keeper is actually on duty (the lantern is lit)."""
-        import sys as _sys
+        `keepers are AI agents` line rides only while a keeper is actually on duty (the beacon is lit)."""
         awake = None
-        m = _sys.modules.get("stream.panels.world")
+        m = _wm()
         try:
             if m is not None and hasattr(m, "world_counts"):
                 awake = m.world_counts()[0]
         except Exception:
             awake = None
-        from stream.state_store import iso_to_epoch as _iso
-        hb = _iso((ctx.agent or {}).get("heartbeat_ts"))
+        hb = iso_to_epoch((ctx.agent or {}).get("heartbeat_ts"))
         fresh = hb is not None and (float(ctx.now) - hb) < 120.0
         return (awake is None or awake <= 1, fresh)
+
+    @classmethod
+    def legend_verbs(cls) -> Tuple[str, ...]:
+        """The verbs the legend draws: the spec's order filtered by what the world really parses (<= LEGEND_MAX)."""
+        have = set(available_verbs())
+        return tuple(v for v in LEGEND_ORDER if v in have)[:LEGEND_MAX]
 
     @classmethod
     def _content_key(cls, ctx):
         """Cheap hashable summary of everything that changes the strip's pixels."""
         ships = tuple((str(s.get("version")), str(s.get("picked_by")), str(s.get("title")), bool(s.get("agent_pick")),
                        s.get("ok") is not False) for s in (ctx.ships or [])[-10:])
+        land = _is_land()
         return (ships, ctx.chat_display is not False, bool((ctx.ask or {}).get("enabled")), ctx.preset, cls._keeper_line(ctx),
-                cls._room(ctx))
+                cls._room(ctx), land, cls.legend_verbs() if land else (), _world_day() if land else "real")
+
+    def texts(self, ctx) -> List[str]:
+        """The plain text of every item, in crawl order (the test surface)."""
+        return ["".join(t for t, _c in it) for it in self._items(ctx)]
 
     def _items(self, ctx):
         """-> list of items; each item is a list of (text, colour) segments."""
         accent = L.preset(ctx.preset)["accent"]
         text, text2, danger = L.COLORS["text"], L.COLORS["text2"], L.COLORS["danger"]
         names_ok = ctx.chat_display is not False
+        land = _is_land()
         items = []
         for s in (ctx.ships or [])[-10:]:
             ver = str(s.get("version") or "v?")
@@ -114,21 +198,38 @@ class Ticker(Panel):
         kl = self._keeper_line(ctx)
         if kl:
             items.append([(kl, accent)])
-        items.append([(HONESTY, text)])
-        # WORLD.md 5 row 9 legend: the world verbs (exact word), the letters; the !commands only once the room has company
+        items.append([(HONESTY_LAND if land else HONESTY_CAVE, text)])
         alone, keeper_here = self._room(ctx)
-        legend = [("say anything: a pip hatches with your name", text), ("   ", text2),
-                  ("feed", accent), (" · ", text2), ("pet", accent), (" · ", text2), ("dig", accent), (" · ", text2),
-                  ("plant", accent), ("   ", text2), ("A", accent), (" / ", text2), ("B", accent), (" / ", text2), ("C", accent),
-                  (" walks your pip to a platform", text2)]
-        if not alone:
-            legend += [("   ", text2), ("!idea <what to carve>", accent), ("   ", text2), ("!theme ember", accent),
-                       ("   ", text2), ("!stats", accent), ("   ", text2), ("!help", accent)]
+        if land:
+            # OPENWORLD 8 row 9 legend: only verbs the world parses, the letters; the !commands once the room has company
+            legend = [(SAY_LAND, text), ("   ", text2)]
+            verbs = self.legend_verbs()
+            for i, v in enumerate(verbs):
+                if i:
+                    legend.append((" · ", text2))
+                legend.append((v, accent))
+            if verbs:
+                legend.append(("   ", text2))
+            legend += [("A", accent), (" / ", text2), ("B", accent), (" / ", text2), ("C", accent),
+                       (" walks your pip to a waystone", text2)]
+            if not alone:
+                legend += [("   ", text2), ("!idea <what to raise>", accent), ("   ", text2), ("!theme ember", accent),
+                           ("   ", text2), ("!stats", accent), ("   ", text2), ("!help", accent)]
+        else:
+            legend = [(SAY_CAVE, text), ("   ", text2),
+                      ("feed", accent), (" · ", text2), ("pet", accent), (" · ", text2), ("dig", accent), (" · ", text2),
+                      ("plant", accent), ("   ", text2), ("A", accent), (" / ", text2), ("B", accent), (" / ", text2), ("C", accent),
+                      (" walks your pip to a platform", text2)]
+            if not alone:
+                legend += [("   ", text2), ("!idea <what to carve>", accent), ("   ", text2), ("!theme ember", accent),
+                           ("   ", text2), ("!stats", accent), ("   ", text2), ("!help", accent)]
         if (ctx.ask or {}).get("enabled"):
             legend += [("   ", text2), ("!ask <anything>", accent)]
         items.append(legend)
+        if land and _world_day() == "hour":
+            items.append([(HOUR_DAY, text2)])
         if keeper_here:
-            items.append([(RULE, text)])
+            items.append([(RULE_LAND if land else RULE_CAVE, text)])
         return items
 
     # ------------------------------------------------------------------ strip

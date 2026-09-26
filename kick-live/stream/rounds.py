@@ -46,20 +46,32 @@ by the in-memory copy on the next state.json write (a "drift" write happens imme
 Test hooks (KL_SEED, a non-180 s round, a redirected CHANGELOG) are REFUSED against the canonical run
 dir (~/.local/share/kick-live/run) so a test can never drive the live show.
 
-World events (WORLD.md 8.1): the MENU is a list of WORLD EVENTS (weather, colony_rule, feast, dig_site, music,
-light, chaos; anarchy v1.1 / migration v2 not drawn yet). The tally is EMBODIED: when a booted CaveScene is
-attached (engine.attach_world(scene), or discovered as `.scene` on a registered panel / `SCENE` on a panel module)
-the count under each letter is len(scene.platform_counts()[letter]), the pips STANDING on that platform, keys run
-through display_name (builder #N on a blocklist hit), voters ordered by vote time. Without a world the bridge's
-vote list is the tally. Both are len() over real chat records; round.tally_source says which. Zero votes: the
-ship stays agent_pick=True (ships.jsonl unchanged) and round.last_result.copy says who picked, honestly:
-"nobody voted. the keepers picked B." on a fresh agent heartbeat (< 120 s), else "nobody voted. the Hollow picked
-B itself." Ship effects land on the colony ONLY through the world API (Behaviour / WorldState methods, never
-world.json): glow-rain +0.3 energy on every awake pip; fog / lights-out / colony_rule are read by the scene from
-state.micro; feast feeds every awake pip at once (care_received + `feed` events); dig_site opens a 20x8 soil region
-recorded in micro.dig_site where a `dig` carves a second 3x3 (counts double). Timed events last one round
-(`<param>_until`, dig_site.until) and then fall back to their baseline (clear / free / closed); instant ones are
-recorded in micro.last_event, never as a sticky micro key. version.* and the ships.jsonl line shape are unchanged.
+World events (OPENWORLD.md 11): the MENU is a list of WORLD EVENTS on LONGGRASS (weather rain/wind/fog/clear,
+expedition to the Ford/Fell/Shore/Wood, bonfire, harvest day, raising day, colony_rule, music, light, chaos; anarchy
+v1.1 not drawn yet). The tally is EMBODIED at the three waystones on the Moot: when a booted world scene is attached
+(engine.attach_world(scene), or discovered as `.scene` on a registered panel / `SCENE` on a panel or scene module)
+the count under each letter is len(scene.platform_counts()[letter]) (the API name is kept; it reads the waystone
+slots), the pips STANDING at that waystone, keys run through display_name (builder #N on a blocklist hit), voters
+ordered by vote time. Without a world the bridge's vote list is the tally. Both are len() over real chat records;
+round.tally_source says which. Zero votes: the ship stays agent_pick=True (ships.jsonl unchanged) and
+round.last_result.copy says who picked, honestly: "nobody voted. the keepers picked B." on a fresh agent heartbeat
+(< 120 s), else "nobody voted. the land picked B itself." Ship effects land on the land ONLY through the world API
+(scene.command / Behaviour / Land methods, never world.json):
+  weather      land.set_weather + nature.weather.set_round for the round window (the scene reads micro.weather too);
+               rain also passes a RAIN_BOOST_S growth boost to every field (land.advance_fields)
+  expedition   every awake pip is sent with scene.command("go", key, arg=<place>); micro.expedition records the
+               walkers; a walker arriving within EXPEDITION_ARRIVE_CELLS of the landmark inside the round places
+               one cairn stone in its own name (land.stack) — the Migration idea as a round outcome
+  bonfire      the hearth is lit ONLY when a real person picked the card (land.light_hearth(picked_by)); every awake
+               pip walks to the Moot and is fed at once (care_received + `feed` events = the feast chord + hearts)
+  harvest day  every gold field is harvested through land.harvest (sowers credited in the text); everyone awake fed
+  raising day  micro.raising_day == "on" for one round: RoundEngine.stones_double(micro, now) tells the stack verb
+               to record two stones per stack (THE COMMONS graft)
+  colony_rule  behaviour.colony_rule (unchanged semantics in 2D)
+Timed events last one round (`<param>_until`) and then fall back to their baseline (clear / free / off); instant
+ones are recorded in micro.last_event, never as a sticky micro key. version.* and the ships.jsonl line shape are
+unchanged. Against the cave scene (hollow.py, still on disk for the rollback week) the same code degrades honestly:
+no land -> no hearth, no fields, `go` refused -> "nobody set off".
 
 Committing is NOT done here: the CHANGELOG line and the intended commit message
 ("ship v0.3.12: palette ember (voted by @sam)") are recorded (ships.jsonl `commit_msg`,
@@ -76,6 +88,9 @@ Self-test (isolated run dir, no ffmpeg, no stream):
 World round test (real StateStore + ChatBridge + CaveScene, 3 real chat records on the platforms, one full round
 per event, honesty asserted every frame):
     RUN_DIR=/tmp/pip-rounds $PYTHON -m stream.rounds --world-test --run-dir /tmp/pip-rounds
+Land effects test (a real schema-2 WorldState + Land + terrain + Nature under a duck-typed LONGGRASS scene: every
+MENU effect lands through the world API, arrival stones, hearth honesty, raising day):
+    RUN_DIR=/tmp/lg-rounds $PYTHON -m stream.rounds --land-test --run-dir /tmp/lg-rounds
 """
 from __future__ import annotations
 
@@ -103,30 +118,37 @@ CANONICAL_RUN_DIRS = tuple(os.path.realpath(d) for d in
                            [CANONICAL_RUN_DIR, os.path.expanduser("~/.local/share/kick-live/run-live")]
                            + ([os.environ["KL_LIVE_RUN_DIR"]] if os.environ.get("KL_LIVE_RUN_DIR") else []))
 
-# WORLD.md 8.1: the parameter menu is now WORLD EVENTS. One entry per state.micro key; a ship lands on the whole
-# colony at once. `timed` entries last one round (round_s) and then fall back to `baseline` (weather -> clear,
-# colony_rule -> free, dig_site -> closed) so a feast round never leaves fog behind. `instant` entries happen once at
-# ship time and are recorded in micro.last_event, never as a sticky micro key. Titles are the spec's platform titles
-# (WORLD.md 8.1 table) and what ships.jsonl / CHANGELOG / the RESULT record; `--check-titles` keeps them short.
-# anarchy (v1.1) and migration (v2, needs a second chamber) are not drawn yet (WORLD.md 12 row 7).
+# OPENWORLD.md 11: the parameter menu is WORLD EVENTS on LONGGRASS. One entry per state.micro key; a ship lands on the
+# whole land at once. `timed` entries last one round (round_s) and then fall back to `baseline` (weather -> clear,
+# colony_rule -> free, raising_day -> off) so a rain round never leaves fog behind. `instant` entries happen once at
+# ship time and are recorded in micro.last_event, never as a sticky micro key. Titles are the spec's waystone titles
+# (OPENWORLD.md 11 table) and what ships.jsonl / CHANGELOG / the RESULT record; `--check-titles` keeps them short.
+# anarchy (v1.1, rare) is not drawn yet.
+PLACES = ("ford", "fell", "shore", "wood")
+PLACE_LABELS = {"ford": "the Ford", "fell": "the Fell", "shore": "the Shore", "wood": "the Wood", "moot": "the Moot"}
 MENU: List[Dict] = [
-    {"param": "weather",      "values": ["glow-rain", "fog", "lights-out", "clear"],           "title": "{v}",
-     "labels": {"glow-rain": "glow-rain", "fog": "fog", "lights-out": "lights out", "clear": "clear"},
+    {"param": "weather",      "values": ["rain", "wind", "fog", "clear"],                      "title": "{v}",
+     "labels": {"rain": "rain", "wind": "wind", "fog": "fog", "clear": "clear skies"},
      "timed": True, "baseline": "clear"},
-    {"param": "colony_rule",  "values": ["follow", "scatter", "huddle", "free"],               "title": "{v}",
-     "labels": {"follow": "follow the newest voice", "scatter": "scatter across the cave",
-                "huddle": "huddle at the centre", "free": "wander free"},
-     "timed": True, "baseline": "free"},
-    {"param": "feast",        "values": ["now"],                                                "title": "feast: everyone eats",
+    {"param": "expedition",   "values": list(PLACES),                                           "title": "expedition to {v}",
+     "labels": PLACE_LABELS, "instant": True},
+    {"param": "bonfire",      "values": ["now"],                                                "title": "bonfire on the Moot",
      "instant": True},
-    {"param": "dig_site",     "values": ["open"],                                               "title": "open a dig site",
-     "timed": True},
+    {"param": "harvest_day",  "values": ["now"],                                                "title": "harvest day",
+     "instant": True},
+    {"param": "raising_day",  "values": ["on"],                                                 "title": "raising day: stones x2",
+     "timed": True, "baseline": "off"},
+    {"param": "colony_rule",  "values": ["follow", "scatter", "huddle", "free"],               "title": "{v}",
+     "labels": {"follow": "follow the newest voice", "scatter": "scatter across the land",
+                "huddle": "huddle on the Moot", "free": "wander free"},
+     "timed": True, "baseline": "free"},
     # music: as today (audio.py reads micro.audio_tempo / state.audio.tempo, pattern)
     {"param": "audio_tempo",  "values": [72, 85, 100],                                          "title": "tempo: {v} bpm"},
     {"param": "audio_pattern", "values": ["pad_pulse", "pad_only", "pulse_hats", "half_time"], "title": "{v}",
      "labels": {"pad_pulse": "music: pad + pulse", "pad_only": "music: pad only",
                 "pulse_hats": "music: add hi-hats", "half_time": "music: half-time"}},
-    # light: the existing palette ship (theme.preset); the cave, moss and every pip retint
+    # light: the palette ship (theme.preset) themes the UI accent, the waystone caps and the beacon; the land keeps its
+    # real season palette and every creature keeps its name colour (OPENWORLD.md 6 `!theme`)
     {"param": "palette",      "values": sorted(L.PRESETS.keys()),                               "title": "light: {v}",
      "labels": {"kick": "kick (green)", "ember": "ember (orange)", "ice": "ice (light blue)", "violet": "violet (purple)",
                 "gold": "gold (yellow)", "magenta": "magenta (pink)", "cyan": "cyan", "paper": "paper (off-white)"}},
@@ -145,10 +167,10 @@ REAL_PARAMS: List[str] = [m["param"] for m in MENU if m["param"] != CHAOS_PARAM]
 TIMED_PARAMS: Tuple[str, ...] = tuple(m["param"] for m in MENU if m.get("timed"))
 INSTANT_PARAMS: Tuple[str, ...] = tuple(m["param"] for m in MENU if m.get("instant"))
 BASELINE: Dict[str, Any] = {m["param"]: m["baseline"] for m in MENU if "baseline" in m}
-WORLD_EVENT_PARAMS = ("weather", "colony_rule", "feast", "dig_site")
-DIG_SITE_W, DIG_SITE_H = 20, 8          # WORLD.md 8.1: "a 20x8 region glows; digs there count double"
-GLOW_RAIN_ENERGY = 0.3                  # WORLD.md 8.1: "every awake pip +0.3 energy"
-KEEPER_FRESH_S = 120.0                  # WORLD.md 9: a heartbeat younger than this = keeper on duty
+WORLD_EVENT_PARAMS = ("weather", "expedition", "bonfire", "harvest_day", "raising_day", "colony_rule")
+RAIN_BOOST_S = 6 * 3600.0               # OPENWORLD.md 11: a rain round advances fields and trees "a fraction" (a quarter day)
+EXPEDITION_ARRIVE_CELLS = 24.0          # a walker this close to the landmark has arrived: its cairn stone is placed
+KEEPER_FRESH_S = 120.0                  # OPENWORLD.md 10: a heartbeat younger than this = keeper on duty (beacon lit)
 WORLD_FIND_EVERY_S = 2.0                # scene discovery cadence when nobody called attach_world()
 LETTERS = ("A", "B", "C")
 IDEA_MAX_BALLOTS = 2
@@ -367,9 +389,30 @@ def derive_version(ships: List[Dict], base: Optional[Dict] = None) -> Dict:
 
 
 def _is_world(obj) -> bool:
-    """Duck-typed CaveScene: platform_counts(), .behaviour, .world, .booted (WORLD_API.md 2)."""
+    """Duck-typed world scene (CaveScene or SteadingScene): platform_counts(), .behaviour, .world, .booted
+    (WORLD_API.md 2; the waystone tally keeps the platform_counts name)."""
     return (obj is not None and callable(getattr(obj, "platform_counts", None))
             and hasattr(obj, "behaviour") and hasattr(obj, "world") and hasattr(obj, "booted"))
+
+
+def _land_of(sc):
+    """The Land (schema 2) behind a scene, or None on the cave / before boot."""
+    if sc is None:
+        return None
+    land = getattr(sc, "land", None)
+    if land is None:
+        w = getattr(sc, "world", None)
+        land = getattr(w, "land", None) if w is not None else None
+    return land if (land is not None and hasattr(land, "camps")) else None
+
+
+def _places_of(sc) -> Dict[str, Dict]:
+    """terrain.py's places registry {name: {x, y, radius}} through the scene (`.terrain`, `.nature.T`, or `.places`)."""
+    for cand in (getattr(sc, "places", None), getattr(getattr(sc, "terrain", None), "places", None),
+                 getattr(getattr(getattr(sc, "nature", None), "T", None), "places", None)):
+        if isinstance(cand, dict) and cand:
+            return cand
+    return {}
 
 
 # ----------------------------------------------------------------------------- engine
@@ -432,7 +475,7 @@ class RoundEngine(object):
         self.world = None                 # a CaveScene (stream/scenes/hollow.py); attach_world() or discovery
         self._world_pinned = False        # attach_world() was called: never replaced by discovery
         self._world_find_t: Optional[float] = None
-        self._world_frames_seen = -1      # scene.frames already scanned for dig events
+        self._world_frames_seen = -1      # scene.frames already scanned for expedition arrivals
         self.tally_source = "votes"       # "platforms" while a booted world is attached
         self.world_effects = 0            # world reactions landed at ship time this process
 
@@ -697,7 +740,7 @@ class RoundEngine(object):
         entry = MENU_BY_PARAM[param]
         if entry.get("instant"):
             micro["last_event"] = {"param": param, "value": value, "ts": now_iso, "by": picked_by}
-        elif param != "dig_site":         # dig_site is a region record written by _world_effect, not a value
+        else:
             micro[param] = value
             if entry.get("timed"):
                 if value == entry.get("baseline"):
@@ -747,7 +790,7 @@ class RoundEngine(object):
                     break
             if found is None:
                 for name, mod in list(sys.modules.items()):
-                    if not (name.startswith("stream.panels.") or name == "stream.scenes.hollow"):
+                    if not (name.startswith("stream.panels.") or name in ("stream.scenes.hollow", "stream.scenes.steading")):
                         continue
                     sc = getattr(mod, "SCENE", None)
                     if _is_world(sc):
@@ -813,81 +856,165 @@ class RoundEngine(object):
         return out
 
     def _zero_vote_copy(self, s: Dict, letter: Optional[str], now: float) -> str:
-        """WORLD.md 8.1 plank copy for an agent pick: who picked is said honestly (keeper heartbeat fresh or not)."""
+        """OPENWORLD.md 11 plank copy for an agent pick: who picked is said honestly (keeper heartbeat fresh or not)."""
         hb = iso_to_epoch((s.get("agent") or {}).get("heartbeat_ts"))
         fresh = hb is not None and (now - hb) < KEEPER_FRESH_S
         if fresh:
             return "nobody voted. the keepers picked %s." % (letter or "one")
-        return "nobody voted. the Hollow picked %s itself." % (letter or "one")
+        return "nobody voted. the land picked %s itself." % (letter or "one")
 
-    def _pick_dig_site(self, sc) -> Dict[str, Any]:
-        """A 20x8 solid-soil region just under the floor that no platform footing, burrow or lantern column protects,
-        drawn with the engine RNG. Pure geometry from stream.world.state; falls back to x=100 if that import fails."""
-        x0, y0 = 100, 92
+    @staticmethod
+    def stones_double(micro: Optional[Dict], now: float) -> bool:
+        """True while a `raising day` round is on: the stack verb records TWO stones per stack (land.stack twice)."""
+        if not isinstance(micro, dict) or micro.get("raising_day") != "on":
+            return False
+        u = iso_to_epoch(micro.get("raising_day_until"))
+        return u is None or now < u
+
+    def _send_awake(self, sc, verb: str, arg: str, now: float) -> Tuple[List[str], List[str]]:
+        """scene.command(verb, key, arg=...) for every awake pip; (sent keys, refusal reasons). Nothing else moves them."""
+        sent: List[str] = []
+        reasons: List[str] = []
         try:
-            import numpy as np
-            from stream.world import SIM_W
-            from stream.world.state import SOIL_ROWS, BURROW_SLOTS, burrow_box, protected_mask
-            y0 = int(SOIL_ROWS[0])
-            blocked = protected_mask()
-            for i in range(BURROW_SLOTS):
-                bx, by, bw, bh = burrow_box(i)
-                blocked[by:by + bh, bx:bx + bw] = True
-            cands = [x for x in range(8, SIM_W - DIG_SITE_W - 8)
-                     if not blocked[y0:y0 + DIG_SITE_H, x:x + DIG_SITE_W].any()]
-            if sc is not None and cands:                        # prefer soil that is still solid (something to dig)
-                terr = sc.world.terrain()
-                solid = [x for x in cands if not terr[y0:y0 + DIG_SITE_H, x:x + DIG_SITE_W].all()]
-                cands = solid or cands
-            if cands:
-                x0 = int(self._rng.choice(cands))
-        except Exception as e:
-            self.log("dig site geometry fallback (%r)" % (e,))
-        return {"x": int(x0), "y": int(y0), "w": DIG_SITE_W, "h": DIG_SITE_H}
+            awake = list(sc.behaviour.awake())
+        except Exception:
+            awake = []
+        for e in awake:
+            key = getattr(e, "key", None)
+            if not key:
+                continue
+            try:
+                ok, why = sc.command(verb, key, arg=arg, now=now)
+            except Exception as ex:
+                ok, why = False, repr(ex)
+            if ok:
+                sent.append(str(key))
+            else:
+                reasons.append(str(why))
+        return sent, reasons
+
+    def _feast(self, sc, now: float, by: Optional[str]) -> int:
+        """Every awake pip fed at once through Behaviour.care_received (+ a `feed` event each: the chord and hearts)."""
+        b = sc.behaviour
+        fed = 0
+        for e in list(b.awake()):
+            try:
+                if b.care_received(e.key, now, by):
+                    b.events.append({"type": "feed", "pip": e.key, "by": by, "asleep": False, "feast": True})
+                    fed += 1
+            except Exception:
+                continue
+        return fed
+
+    def _shown_many(self, sc, keys: List[str], n: int = 3) -> str:
+        return " ".join("@%s" % self._display(sc, k) for k in keys[:n])
 
     def _world_effect(self, s: Dict, param: str, value: Any, now: float, by: Optional[str]) -> Optional[str]:
-        """Land a shipped event on the colony through the world API only (Behaviour / WorldState methods). Returns
-        plain words about what the world did, or None when nothing could land (feast with no booted world). Weather
-        and colony_rule also reach the scene through state.micro every frame, so they work without this."""
+        """Land a shipped event on the land through the world API only (scene.command / Behaviour / Land methods).
+        Returns plain words about what the world did, or None when nothing could land (no booted world). Weather and
+        colony_rule also reach the scene through state.micro every frame, so they work without this."""
         sc = self._booted_world(now)
+        land = _land_of(sc)
         micro = s.setdefault("micro", {})
         text = None
         if param == "weather":
-            if value == "glow-rain":
-                n = 0
-                if sc is not None:
-                    for e in sc.behaviour.awake():
-                        e.energy = min(1.0, float(e.energy) + GLOW_RAIN_ENERGY)
-                        e.last_attention_t = now
-                        n += 1
-                text = "glow-rain: %d awake pip%s +%.1f energy" % (n, "" if n == 1 else "s", GLOW_RAIN_ENERGY)
-            elif value == "fog":
-                text = "fog: every light radius halves"
-            elif value == "lights-out":
-                text = "lights out: only moss and the sky light the cave"
+            state = str(value)
+            if land is not None:
+                try:
+                    land.set_weather(state, now, until_ts=(None if state == "clear" else now + self.round_s))
+                except Exception as e:
+                    self.log("land.set_weather failed: %r" % (e,))
+            nat = getattr(sc, "nature", None)
+            if nat is not None and hasattr(getattr(nat, "weather", None), "set_round"):
+                try:
+                    nat.weather.set_round(state, now, duration_s=self.round_s)
+                except Exception as e:
+                    self.log("nature.weather.set_round failed: %r" % (e,))
+            if state == "rain":
+                grew = []
+                nfields = 0
+                if land is not None:
+                    try:
+                        nfields = len(land.fields())
+                        grew = land.advance_fields(now, boost_s=RAIN_BOOST_S)
+                    except Exception as e:
+                        self.log("land.advance_fields failed: %r" % (e,))
+                text = "rain sweeps in from the west: the river swells, %d field%s drink%s" % (
+                    nfields, "" if nfields == 1 else "s", (" · %d turned a stage" % len(grew)) if grew else "")
+            elif state == "wind":
+                text = "wind: the grass bands speed up and flatten in the gusts"
+            elif state == "fog":
+                text = "fog: the far ground hazes, the camps glow through it"
             else:
-                text = "clear: the light comes back"
+                text = "clear skies: the light comes back"
+        elif param == "expedition":
+            place = str(value)
+            if sc is None:
+                return None
+            sent, reasons = self._send_awake(sc, "go", place, now)
+            n_awake = len(list(sc.behaviour.awake())) if hasattr(sc.behaviour, "awake") else 0
+            micro["expedition"] = {"to": place, "ts": epoch_to_iso(now), "by": by, "walkers": sent, "arrived": [],
+                                   "until": epoch_to_iso(now + self.round_s)}
+            label = PLACE_LABELS.get(place, place)
+            if sent:
+                text = "expedition to %s: %d of %d awake set off (%s)" % (label, len(sent), n_awake, self._shown_many(sc, sent))
+            else:
+                why = (" · %s" % reasons[0][:60]) if reasons else ""
+                text = "expedition to %s: nobody set off (%d awake)%s" % (label, n_awake, why)
+        elif param == "bonfire":
+            if sc is None:
+                return None
+            lit = False
+            if land is not None and by:
+                try:
+                    lit = bool(land.light_hearth(by, now))
+                except Exception as e:
+                    self.log("land.light_hearth failed: %r" % (e,))
+            sent, _reasons = self._send_awake(sc, "go", "moot", now)
+            fed = self._feast(sc, now, by)
+            micro["bonfire"] = {"ts": epoch_to_iso(now), "by": by, "lit": lit, "gathered": sent,
+                                "until": epoch_to_iso(now + self.round_s)}
+            if lit:
+                text = "bonfire: @%s lit the hearth · %d gathered · %d fed" % (self._display(sc, by), len(sent), fed)
+            elif by:
+                text = "bonfire: %d gathered · %d fed · no hearth here to light" % (len(sent), fed)
+            else:
+                text = "bonfire: nobody voted, so nobody lit the hearth · %d gathered · %d fed" % (len(sent), fed)
+            try:
+                sc.behaviour.events.append({"type": "bonfire", "by": by, "lit": lit, "gathered": len(sent), "fed": fed})
+            except Exception:
+                pass
+        elif param == "harvest_day":
+            if sc is None:
+                return None
+            reaped: List[str] = []
+            if land is not None:
+                try:
+                    for f in list(land.fields()):
+                        k = str(f.get("owner") or "")
+                        ok_h, _why = land.harvest(k, now)
+                        if ok_h:
+                            reaped.append(k)
+                except Exception as e:
+                    self.log("land.harvest failed: %r" % (e,))
+            fed = self._feast(sc, now, by) if reaped else 0
+            if reaped:
+                text = "harvest day: %d field%s reaped (%s) · %d fed" % (len(reaped), "" if len(reaped) == 1 else "s",
+                                                                          self._shown_many(sc, reaped), fed)
+                for k in reaped:
+                    try:
+                        sc.behaviour.events.append({"type": "harvest", "pip": k, "by": by, "harvest_day": True})
+                    except Exception:
+                        pass
+            else:
+                text = "harvest day: no field is gold yet · the fields keep growing"
+        elif param == "raising_day":
+            text = "raising day: every stone stacked counts double for %d min" % int(round(self.round_s / 60.0))
         elif param == "colony_rule":
             if sc is not None:
                 sc.behaviour.colony_rule = value if value in ("free", "follow", "scatter", "huddle") else "free"
-            text = {"follow": "pips follow the newest voice", "scatter": "pips spread across the cave",
-                    "huddle": "pips gather at the centre"}.get(value, "pips wander free")
-        elif param == "feast":
-            if sc is None:
-                return None
-            b = sc.behaviour
-            fed = 0
-            for e in list(b.awake()):
-                if b.care_received(e.key, now, by):
-                    b.events.append({"type": "feed", "pip": e.key, "by": by, "asleep": False})
-                    fed += 1
-            text = "feast: %d awake pip%s fed at once" % (fed, "" if fed == 1 else "s")
-        elif param == "dig_site":
-            site = self._pick_dig_site(sc)
-            site.update({"until": epoch_to_iso(now + self.round_s), "opened_ts": epoch_to_iso(now), "opened_by": by,
-                         "digs": 0, "double_cells": 0})
-            micro["dig_site"] = site
-            text = "dig site open at x %d-%d: digs there count double" % (site["x"], site["x"] + site["w"] - 1)
+            text = {"follow": "pips follow the newest voice", "scatter": "pips spread across the land",
+                    "huddle": "pips gather on the Moot"}.get(value, "pips wander free")
         else:
             return None
         if sc is not None:
@@ -900,53 +1027,54 @@ class RoundEngine(object):
 
     @staticmethod
     def _until(micro: Dict, param: str) -> Optional[float]:
-        if param == "dig_site":
-            site = micro.get("dig_site")
-            return iso_to_epoch(site.get("until")) if isinstance(site, dict) else None
         return iso_to_epoch(micro.get(param + "_until"))
 
     def _events_due(self, micro: Dict, now: float) -> bool:
-        """Cheap: a timed event expired, or a dig site is open and the scene rendered a frame since we last looked."""
+        """Cheap: a timed event expired, or an expedition is walking and the scene rendered a frame since we looked."""
         for param in TIMED_PARAMS:
             u = self._until(micro, param)
             if u is not None and now >= u:
                 return True
-        if isinstance(micro.get("dig_site"), dict):
+        ex = micro.get("expedition")
+        if isinstance(ex, dict) and ex.get("walkers"):
             sc = self._booted_world(now)
             if sc is not None and getattr(sc, "frames", 0) != self._world_frames_seen:
                 return True
         return False
 
     def _expire_events(self, s: Dict, now: float) -> bool:
-        """Timed events last one round (WORLD.md 8.1 'for 3 min'); afterwards the baseline returns."""
+        """Timed events last one round (OPENWORLD.md 11 '3 min unless once'); afterwards the baseline returns."""
         micro = s.setdefault("micro", {})
         dirty = False
         for param in TIMED_PARAMS:
             u = self._until(micro, param)
             if u is None or now < u:
                 continue
-            if param == "dig_site":
-                site = micro.get("dig_site") or {}
-                micro["dig_site"] = None
-                self._activity("world", "dig site closed: %d dig(s) there, %d cells counted double" % (
-                    int(site.get("digs") or 0), int(site.get("double_cells") or 0)), now)
-            else:
-                base = BASELINE.get(param)
-                micro[param] = base
-                micro.pop(param + "_until", None)
-                sc = self._booted_world(now)
-                if param == "colony_rule" and sc is not None:
-                    sc.behaviour.colony_rule = base
-                self._activity("world", "%s over: back to %s" % (param.replace("_", " "), base), now)
+            base = BASELINE.get(param)
+            micro[param] = base
+            micro.pop(param + "_until", None)
+            sc = self._booted_world(now)
+            if param == "colony_rule" and sc is not None:
+                sc.behaviour.colony_rule = base
+            self._activity("world", "%s over: back to %s" % (param.replace("_", " "), base), now)
             dirty = True
+        ex = micro.get("expedition")
+        if isinstance(ex, dict):
+            u = iso_to_epoch(ex.get("until"))
+            if u is not None and now >= u:
+                n_w, n_a = len(ex.get("walkers") or []), len(ex.get("arrived") or [])
+                self._activity("world", "expedition to %s over: %d of %d arrived" % (
+                    PLACE_LABELS.get(str(ex.get("to")), str(ex.get("to"))), n_a, n_w), now)
+                micro["expedition"] = None
+                dirty = True
         return dirty
 
-    def _dig_site_watch(self, s: Dict, now: float) -> bool:
-        """While a dig site is open, a `dig` event from a pip standing over it carves a second 3x3 inside the site
-        (digs there count double), through WorldState.dig. scene.events is read once per scene frame."""
+    def _expedition_watch(self, s: Dict, now: float) -> bool:
+        """While an expedition is walking, a walker within EXPEDITION_ARRIVE_CELLS of the landmark has arrived: one
+        cairn stone is placed in its own name through land.stack (once per walker). scene frames are read once each."""
         micro = s.get("micro") or {}
-        site = micro.get("dig_site")
-        if not isinstance(site, dict):
+        ex = micro.get("expedition")
+        if not isinstance(ex, dict) or not ex.get("walkers"):
             return False
         sc = self._booted_world(now)
         if sc is None:
@@ -955,26 +1083,38 @@ class RoundEngine(object):
         if fr == self._world_frames_seen:
             return False
         self._world_frames_seen = fr
+        land = _land_of(sc)
+        place = _places_of(sc).get(str(ex.get("to")))
+        if land is None or not place:
+            return False
+        px, py = float(place.get("x", 0)), float(place.get("y", 0))
+        r = max(EXPEDITION_ARRIVE_CELLS, float(place.get("radius") or 0))
+        arrived = list(ex.get("arrived") or [])
         dirty = False
-        x0, w = int(site.get("x") or 0), int(site.get("w") or DIG_SITE_W)
-        cy = int(site.get("y") or 92) + 1
-        for ev in list(getattr(sc, "events", None) or []):
-            if ev.get("type") != "dig" or not ev.get("pip") or ev.get("double"):
+        for key in list(ex.get("walkers") or []):
+            if key in arrived:
                 continue
-            key = str(ev["pip"]).lower()
             e = sc.behaviour.get(key)
-            if e is None or not (x0 <= int(e.x) < x0 + w):
+            if e is None or not e.is_awake():
                 continue
-            prot = sc.protected() if callable(getattr(sc, "protected", None)) else getattr(sc, "_protected", None)
-            n, why = sc.world.dig(key, int(e.x), cy, prot)
-            site["digs"] = int(site.get("digs") or 0) + 1
-            if n:
-                site["double_cells"] = int(site.get("double_cells") or 0) + int(n)
-                sc.behaviour.events.append({"type": "dig", "pip": key, "cells": int(n), "double": True})
-                self._activity("world", "@%s dug in the dig site: %d extra cells" % (self._display(sc, key), n), now)
+            ex_, ey_ = float(getattr(e, "x", 0.0)), float(getattr(e, "y", 0.0))
+            if (ex_ - px) ** 2 + (ey_ - py) ** 2 > r * r:
+                continue
+            rec, why = land.stack(key, now)
+            arrived.append(key)
+            if rec is not None:
+                try:
+                    sc.behaviour.events.append({"type": "stack", "pip": key, "x": int(px), "y": int(py), "expedition": True,
+                                                "stock": land.stock})
+                except Exception:
+                    pass
+                self._activity("world", "@%s reached %s: a cairn stone in their name (%d stones)" % (
+                    self._display(sc, key), PLACE_LABELS.get(str(ex.get("to")), str(ex.get("to"))), land.stock), now)
             else:
-                self.log("dig site double dig for %s refused: %s" % (key, why))
+                self.log("expedition stone for %s refused: %s" % (key, why))
             dirty = True
+        if dirty:
+            ex["arrived"] = arrived
         return dirty
 
     # ------------------------------------------------------------------ ship
@@ -1226,7 +1366,8 @@ class RoundEngine(object):
         micro.pop(CHAOS_PARAM, None)
         for p_, base in BASELINE.items():           # weather / colony_rule baselines so "a value it does not have" works
             micro.setdefault(p_, base)
-        micro.setdefault("dig_site", None)
+        micro.pop("dig_site", None)                 # the cave's dig site: not a LONGGRASS event
+        micro.setdefault("expedition", None)
         sess = s.setdefault("session", {})
         if not sess.get("started_ts"):
             sess["started_ts"] = epoch_to_iso(now)
@@ -1246,6 +1387,8 @@ class RoundEngine(object):
         lr = (s.get("macro") or {}).get("last_reload") or {}
         if isinstance(lr, dict) and lr.get("ts") and lr.get("ts") != self._last_macro_ts:
             return True                                   # duty macro-done landed
+        if self._events_due((self._mem or s).get("micro") or {}, now):
+            return True                                   # a timed event expired / an expedition walker may have arrived
         rnd = (self._mem or s).get("round") or {}
         phase = rnd.get("phase") or "open"
         if phase == "ship":
@@ -1255,8 +1398,6 @@ class RoundEngine(object):
         if deadline_t is None or opened_t is None or now >= deadline_t:
             return True
         if phase == "open" and now - opened_t >= self.closing_s:
-            return True
-        if self._events_due((self._mem or s).get("micro") or {}, now):
             return True
         tallies = self._tallies(now)
         sig = tuple((k, tuple(v)) for k, v in sorted(tallies.items()))
@@ -1338,10 +1479,10 @@ class RoundEngine(object):
             self._refresh_commit_async()          # hash is current by ship time, without blocking a frame
             dirty = True
 
-        # world events: timed ones expire after one round; an open dig site doubles digs made inside it
+        # world events: timed ones expire after one round; an expedition places a stone per walker on arrival
         if self._expire_events(s, now):
             dirty = True
-        if self._dig_site_watch(s, now):
+        if self._expedition_watch(s, now):
             dirty = True
 
         # tallies -> options (only when they changed); embodied when a world is attached
@@ -1482,9 +1623,6 @@ def _self_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--self
         le = d["micro"].get("last_event") or {}
         check("ship 1: instant event %s recorded in micro.last_event, no sticky key" % won["param"],
               le.get("param") == won["param"] and won["param"] not in d["micro"], json.dumps(le))
-    elif won["param"] == "dig_site":
-        site = d["micro"].get("dig_site")
-        check("ship 1: dig_site opened (20x8 region with until)", isinstance(site, dict) and site.get("w") == 20 and site.get("h") == 8 and site.get("until"), json.dumps(site))
     else:
         got = d["micro"].get(won["param"])
         check("ship 1: micro[%s] == %s" % (won["param"], won["value"]), got == won["value"], str(got))
@@ -1647,7 +1785,6 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     from stream.state_store import StateStore
     from stream.chat_bridge import ChatBridge
     from stream.scenes.hollow import CaveScene
-    from stream.world.state import PLATFORMS, SOIL_ROWS
 
     run_dir = os.path.abspath(run_dir)
     rp = os.path.realpath(run_dir)
@@ -1794,24 +1931,26 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     def ev_types(since):
         return [e for e in events[since:]]
 
-    # --- 0. boot: MENU is the WORLD.md 8.1 event set, baselines in micro, world attached, embodied tally source
+    # --- 0. boot: MENU is the OPENWORLD.md 11 event set, baselines in micro, world attached, embodied tally source
     step(1)           # frame 1: the engine boots (round 1 open) BEFORE the scene boots, as in compositor.render_frame
     d = disk()
-    check("menu: WORLD.md 8.1 event set, nothing from the text show",
-          set(MENU_BY_PARAM) == {"weather", "colony_rule", "feast", "dig_site", "audio_tempo", "audio_pattern", "palette", "chaos"},
+    check("menu: OPENWORLD.md 11 event set (weather / expedition / bonfire / harvest day / raising day / colony rule / music / light / chaos)",
+          set(MENU_BY_PARAM) == {"weather", "expedition", "bonfire", "harvest_day", "raising_day", "colony_rule",
+                                 "audio_tempo", "audio_pattern", "palette", "chaos"},
           ",".join(sorted(MENU_BY_PARAM)))
     check("menu: chaos kept, never a micro key", CHAOS_PARAM in MENU_BY_PARAM and CHAOS_PARAM not in d["micro"])
-    check("boot: micro baselines weather=clear colony_rule=free dig_site=None",
-          d["micro"].get("weather") == "clear" and d["micro"].get("colony_rule") == "free" and d["micro"].get("dig_site") is None,
-          json.dumps({k: d["micro"].get(k) for k in ("weather", "colony_rule", "dig_site")}))
+    check("boot: micro baselines weather=clear colony_rule=free raising_day=off, no dig_site, expedition None",
+          d["micro"].get("weather") == "clear" and d["micro"].get("colony_rule") == "free" and d["micro"].get("raising_day") == "off"
+          and "dig_site" not in d["micro"] and d["micro"].get("expedition") is None,
+          json.dumps({k: d["micro"].get(k) for k in ("weather", "colony_rule", "raising_day", "expedition")}))
     check("boot: round 1 open, scene booted from an empty world (0 pips, nothing drawn)",
           d["round"]["number"] == 1 and scene.booted and scene.hatched_ever() == 0 and scene.awake_count() == 0)
     step(2)           # from the next engine tick on, the booted scene is the tally
-    check("world attached: tally source is the platforms from the frame after the scene boots", engine.tally_source == "platforms", engine.tally_source)
+    check("world attached: tally source is the waystones (platform_counts) from the frame after the scene boots", engine.tally_source == "platforms", engine.tally_source)
 
     # --- 1. three REAL chat records -> seeds -> hatch after the 3 s hold, names only after the hold
-    set_ballot([opt("A", "weather", "glow-rain"), opt("B", "feast", "now"), opt("C", "colony_rule", "huddle")])
-    say("sami", "hello cave")
+    set_ballot([opt("A", "weather", "rain"), opt("B", "bonfire", "now"), opt("C", "colony_rule", "huddle")])
+    say("sami", "hello land")
     say("kai", "hey there")
     say("lu", "yo")
     step(10)          # the store tails chat.jsonl every 250 ms; the seed drops on the frame the raw record lands
@@ -1824,7 +1963,7 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     check("no name before the hold: hatch events came >= 3 s after the seeds",
           sum(1 for e in events if e.get("type") == "hatch") == 3 and scene.frames >= int(3.0 * FPS), "%d hatch events" % sum(1 for e in events if e.get("type") == "hatch"))
 
-    # --- 2. letters walk the pips to the platforms; the embodied tally mirrors into round.options
+    # --- 2. letters walk the pips to the waystones; the embodied tally mirrors into round.options
     n_ev = len(events)
     say("sami", "A")
     step(3)
@@ -1833,44 +1972,38 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     say("lu", "B")
     ok_stand = run_until(lambda: sorted(len(v) for v in scene.platform_counts().values()) == [0, 1, 2], WALK_S, "stand")
     pc = scene.platform_counts()
-    check("embodied tally: 2 pips STANDING on A, 1 on B, 0 on C (real keys)", ok_stand and set(pc["A"]) == {"sami", "kai"} and pc["B"] == ["lu"] and pc["C"] == [], json.dumps(pc))
+    check("embodied tally: 2 pips STANDING at A, 1 at B, 0 at C (real keys)", ok_stand and set(pc["A"]) == {"sami", "kai"} and pc["B"] == ["lu"] and pc["C"] == [], json.dumps(pc))
     check("walk + arrive events for all three", sum(1 for e in ev_types(n_ev) if e.get("type") == "arrive") == 3 and sum(1 for e in ev_types(n_ev) if e.get("type") == "walk") >= 3)
     step(2)
     d = disk()
     votes = {o["letter"]: o["votes"] for o in d["round"]["options"]}
     voters_a = next(o["voters"] for o in d["round"]["options"] if o["letter"] == "A")
-    check("round.options votes == platform counts, tally_source platforms", votes == {"A": 2, "B": 1, "C": 0} and d["round"].get("tally_source") == "platforms", "%s %s" % (votes, d["round"].get("tally_source")))
+    check("round.options votes == waystone counts, tally_source platforms", votes == {"A": 2, "B": 1, "C": 0} and d["round"].get("tally_source") == "platforms", "%s %s" % (votes, d["round"].get("tally_source")))
     check("voters are display names ordered by vote time (sami first)", voters_a == ["sami", "kai"], str(voters_a))
 
-    # --- 3. ship 1: glow-rain lands on the whole colony (+0.3 energy on every awake pip)
-    before = energies()
+    # --- 3. ship 1: rain lands on the whole land for one round (micro.weather + weather_until; the cave has no fields)
     ship_of(1)
     d = disk()
     lr = d["round"]["last_result"]
-    after = energies()
     lines = read_ships(os.path.join(run_dir, "ships.jsonl"))
-    check("ship 1: A (glow-rain) won 2/3 by the embodied tally, picked_by the first voter",
+    check("ship 1: A (rain) won 2/3 by the embodied tally, picked_by the first voter",
           lr["letter"] == "A" and lr["votes"] == 2 and lr["total_votes"] == 3 and lr["picked_by"] == "sami" and lr["tally_source"] == "platforms" and lr["copy"] is None,
           json.dumps(lr)[:220])
-    check("ship 1: micro.weather == glow-rain with weather_until one round out",
-          d["micro"]["weather"] == "glow-rain" and abs((iso_to_epoch(d["micro"].get("weather_until")) or 0) - (iso_to_epoch(lr["ts"]) + ROUND_S)) < 0.5,
+    check("ship 1: micro.weather == rain with weather_until one round out",
+          d["micro"]["weather"] == "rain" and abs((iso_to_epoch(d["micro"].get("weather_until")) or 0) - (iso_to_epoch(lr["ts"]) + ROUND_S)) < 0.5,
           "%s until %s" % (d["micro"]["weather"], d["micro"].get("weather_until")))
-    gained = {k: round(after.get(k, 0) - before.get(k, 0), 3) for k in before}
-    check("ship 1: every awake pip +0.3 energy (clamped at 1.0) through the world API",
-          len(before) == 3 and all(abs(after[k] - min(1.0, before[k] + GLOW_RAIN_ENERGY)) < 0.02 for k in before),
-          "before %s after %s" % ({k: round(v, 2) for k, v in before.items()}, {k: round(v, 2) for k, v in after.items()}))
-    check("ship 1: last_result.world says what the colony did", str(lr.get("world") or "").startswith("glow-rain: 3 awake pips"), str(lr.get("world")))
+    check("ship 1: last_result.world says what the land did (0 fields on the cave, honestly)", str(lr.get("world") or "").startswith("rain sweeps in from the west: the river swells, 0 fields drink"), str(lr.get("world")))
     evlog = scene.world.data["world"].get("event_log") or []
-    check("ship 1: world.json event_log has the event with the real picker", bool(evlog) and "glow-rain" in evlog[-1]["text"] and "picked by @sami" in evlog[-1]["text"], evlog[-1]["text"] if evlog else "none")
+    check("ship 1: world.json event_log has the event with the real picker", bool(evlog) and "rain" in evlog[-1]["text"] and "picked by @sami" in evlog[-1]["text"], evlog[-1]["text"] if evlog else "none")
     check("ship 1: version v0.0.1, ships.jsonl shape unchanged", d["version"]["string"] == "v0.0.1" and len(lines) == 1 and set(lines[0].keys()) <= {
         "ts", "version", "kind", "option_id", "title", "picked_by", "agent_pick", "ok", "commit", "error", "votes", "total_votes",
         "source", "requested_by", "round", "commit_msg", "chaos"}, ",".join(sorted(lines[0].keys())))
 
-    # --- 4. round 2 opens: platforms release; feast feeds every awake pip at once
+    # --- 4. round 2 opens: waystones release; bonfire gathers and feeds every awake pip (no hearth on the cave: said so)
     next_open(1)
     pc = scene.platform_counts()
-    check("round 2 open: every platform released (leave_platform x3)", all(len(v) == 0 for v in pc.values()) and sum(1 for e in events if e.get("type") == "leave_platform") >= 3, json.dumps(pc))
-    set_ballot([opt("A", "feast", "now"), opt("B", "dig_site", "open"), opt("C", "weather", "fog")])
+    check("round 2 open: every waystone released (leave_platform x3)", all(len(v) == 0 for v in pc.values()) and sum(1 for e in events if e.get("type") == "leave_platform") >= 3, json.dumps(pc))
+    set_ballot([opt("A", "bonfire", "now"), opt("B", "expedition", "ford"), opt("C", "weather", "fog")])
     say("sami", "A")
     run_until(lambda: len(scene.platform_counts()["A"]) == 1, WALK_S, "sami on A")
     before = energies()
@@ -1881,58 +2014,38 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     lr = d["round"]["last_result"]
     after = energies()
     feeds = [e for e in ev_types(n_ev) if e.get("type") == "feed"]
-    check("ship 2: feast won 1/1 (sami standing on A)", lr["letter"] == "A" and lr["votes"] == 1 and lr["total_votes"] == 1 and lr["picked_by"] == "sami", json.dumps(lr)[:200])
-    check("ship 2: feast fed all 3 awake pips at once (3 feed events, by the real picker, +0.10 energy)",
+    check("ship 2: bonfire won 1/1 (sami standing at A)", lr["letter"] == "A" and lr["votes"] == 1 and lr["total_votes"] == 1 and lr["picked_by"] == "sami", json.dumps(lr)[:200])
+    check("ship 2: bonfire fed all 3 awake pips at once (3 feed events, by the real picker, +0.10 energy)",
           len(feeds) == 3 and all(f.get("by") == "sami" and f.get("asleep") is False for f in feeds)
           and all(abs(after[k] - min(1.0, before[k] + 0.10)) < 0.02 for k in before),
           "feeds=%d before %s after %s" % (len(feeds), {k: round(v, 2) for k, v in before.items()}, {k: round(v, 2) for k, v in after.items()}))
-    check("ship 2: instant event in micro.last_event, no sticky 'feast' key", (d["micro"].get("last_event") or {}).get("param") == "feast" and "feast" not in d["micro"], json.dumps(d["micro"].get("last_event")))
-    check("ship 2: glow-rain expired after one round -> weather back to clear, no weather_until",
+    check("ship 2: no Land on the cave -> the hearth is NOT claimed lit; micro.bonfire records lit False + the real picker",
+          isinstance(d["micro"].get("bonfire"), dict) and d["micro"]["bonfire"]["lit"] is False and d["micro"]["bonfire"]["by"] == "sami"
+          and "no hearth here to light" in str(lr.get("world")), str(lr.get("world")))
+    check("ship 2: instant event in micro.last_event, no sticky 'bonfire' value key", (d["micro"].get("last_event") or {}).get("param") == "bonfire", json.dumps(d["micro"].get("last_event")))
+    check("ship 2: rain expired after one round -> weather back to clear, no weather_until",
           d["micro"]["weather"] == "clear" and "weather_until" not in d["micro"], "%s %s" % (d["micro"]["weather"], d["micro"].get("weather_until")))
     check("ship 2: version v0.0.2", d["version"]["string"] == "v0.0.2", d["version"]["string"])
 
-    # --- 5. round 3: nobody votes -> honest zero-vote copy; dig_site opens; a dig inside it counts double
+    # --- 5. round 3: nobody votes -> honest zero-vote copy; expedition on the cave: `go` is refused, nobody set off
     next_open(2)
-    set_ballot([opt("A", "dig_site", "open"), opt("B", "dig_site", "open"), opt("C", "dig_site", "open")])
+    set_ballot([opt("A", "expedition", "ford"), opt("B", "expedition", "ford"), opt("C", "expedition", "ford")])
     ship_of(3)
     d = disk()
     lr = d["round"]["last_result"]
-    site = d["micro"].get("dig_site")
-    check("ship 3: zero votes -> agent pick with honest copy (no keeper heartbeat -> the Hollow picked it)",
-          lr["agent_pick"] is True and lr["total_votes"] == 0 and lr["copy"] == "nobody voted. the Hollow picked %s itself." % lr["letter"], str(lr.get("copy")))
+    check("ship 3: zero votes -> agent pick with honest copy (no keeper heartbeat -> the land picked it)",
+          lr["agent_pick"] is True and lr["total_votes"] == 0 and lr["copy"] == "nobody voted. the land picked %s itself." % lr["letter"], str(lr.get("copy")))
     fresh = engine._zero_vote_copy({"agent": {"heartbeat_ts": epoch_to_iso(now[0] - 10)}}, "B", now[0])
     stale = engine._zero_vote_copy({"agent": {"heartbeat_ts": epoch_to_iso(now[0] - 600)}}, "B", now[0])
-    check("zero-vote copy: fresh heartbeat -> keepers, stale -> the Hollow", fresh == "nobody voted. the keepers picked B." and stale == "nobody voted. the Hollow picked B itself.", "%s | %s" % (fresh, stale))
-    site_ok = isinstance(site, dict) and site.get("w") == 20 and site.get("h") == 8 and site.get("y") == SOIL_ROWS[0] and 0 <= site.get("x", -1) <= 300
-    clear_of_platforms = site_ok and all(not (site["x"] < px + pw + 1 and site["x"] + 20 > px - 1) for px, pw in PLATFORMS)
-    check("ship 3: dig_site is a 20x8 soil region clear of the platform footings, open one round", site_ok and clear_of_platforms and abs((iso_to_epoch(site.get("until")) or 0) - (iso_to_epoch(lr["ts"]) + ROUND_S)) < 0.5, json.dumps(site))
-    if site_ok:
-        tx = site["x"] + site["w"] // 2
-        digger = min(scene.behaviour.awake(), key=lambda e: abs(e.x - tx)).key      # the real pip nearest the site
-        okw, why = scene.command("walk", digger, arg=str(tx), now=now[0])
-        arrived = run_until(lambda: site["x"] <= scene.behaviour.get(digger).x < site["x"] + site["w"], WALK_S, "walk to site")
-        carved0 = int(scene.world.terrain().sum())
-        digs0 = int(scene.world.pip(digger).get("digs") or 0)
-        n_ev = len(events)
-        okd, whyd = scene.command("dig", digger, now=now[0])
-        step(2)      # frame 1: the scene emits `dig`; frame 2: the engine tick sees it and digs again inside the site
-        d = disk()
-        site2 = d["micro"].get("dig_site") or {}
-        carved1 = int(scene.world.terrain().sum())
-        digs1 = int(scene.world.pip(digger).get("digs") or 0)
-        digs_ev = [e for e in ev_types(n_ev) if e.get("type") == "dig"]
-        dbl = [e for e in digs_ev if e.get("double")]
-        check("dig site: @%s walked onto it and dug (%s)" % (digger, whyd), okw and arrived and okd, "walk=%s/%s dig=%s/%s x=%.1f site x %d-%d" % (okw, why, okd, whyd, scene.behaviour.get(digger).x, site["x"], site["x"] + site["w"] - 1))
-        check("dig site: the dig counted double (second 3x3 carved inside the site through WorldState.dig)",
-              int(site2.get("digs") or 0) == 1 and int(site2.get("double_cells") or 0) > 0 and len(dbl) == 1
-              and carved1 - carved0 == sum(int(e.get("cells") or 0) for e in digs_ev) and digs1 - digs0 == carved1 - carved0,
-              "site %s cells %d->%d (+%d) pip digs %d->%d events %s" % ({k: site2.get(k) for k in ("digs", "double_cells")}, carved0, carved1, carved1 - carved0, digs0, digs1,
-                                                                        [(e.get("cells"), bool(e.get("double"))) for e in digs_ev]))
-    closed = run_until(lambda: disk()["micro"].get("dig_site") is None, ROUND_S + 2, "dig site close")
+    check("zero-vote copy: fresh heartbeat -> keepers, stale -> the land", fresh == "nobody voted. the keepers picked B." and stale == "nobody voted. the land picked B itself.", "%s | %s" % (fresh, stale))
+    ex = d["micro"].get("expedition")
+    check("ship 3: expedition on the cave: `go` refused for every pip -> 'nobody set off (3 awake)', walkers [] (no fake walkers)",
+          isinstance(ex, dict) and ex.get("to") == "ford" and ex.get("walkers") == [] and "nobody set off (3 awake)" in str(lr.get("world")), str(lr.get("world")))
+    over = run_until(lambda: disk()["micro"].get("expedition") is None, ROUND_S + 2, "expedition over")
     acts = [json.loads(ln) for ln in open(os.path.join(run_dir, "activity.jsonl"), encoding="utf-8") if ln.strip()]
-    check("dig site closed after one round with an activity line", closed and any(a.get("actor") == "world" and "dig site closed" in a.get("text", "") for a in acts))
+    check("expedition record closed after one round with an activity line", over and any(a.get("actor") == "world" and "expedition to the Ford over" in a.get("text", "") for a in acts))
 
-    # --- 6. colony_rule lands on the behaviour and resets to free after one round
+    # --- 6. colony_rule lands on the behaviour and resets to free after one round; raising day is a timed flag
     cur = rnd_no()
     if disk()["round"]["phase"] != "open":
         next_open(cur)
@@ -1953,6 +2066,17 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     d = disk()
     check("colony_rule back to free after one round (micro + behaviour)", d["micro"]["colony_rule"] == "free" and "colony_rule_until" not in d["micro"] and scene.behaviour.colony_rule == "free",
           "%s %s" % (d["micro"].get("colony_rule"), scene.behaviour.colony_rule))
+    cur = rnd_no()
+    if disk()["round"]["phase"] != "open":
+        next_open(cur)
+    set_ballot([opt("A", "raising_day", "on"), opt("B", "raising_day", "on"), opt("C", "raising_day", "on")])
+    ship_of(rnd_no())
+    d = disk()
+    check("raising day: micro.raising_day == on with an until; stones_double() True now, False after the round",
+          d["micro"].get("raising_day") == "on" and d["micro"].get("raising_day_until") and RoundEngine.stones_double(d["micro"], now[0])
+          and not RoundEngine.stones_double(d["micro"], now[0] + ROUND_S + 1), json.dumps({k: d["micro"].get(k) for k in ("raising_day", "raising_day_until")}))
+    run_until(lambda: disk()["micro"].get("raising_day") == "off", ROUND_S + 2, "raising day expiry")
+    check("raising day back to off after one round", disk()["micro"].get("raising_day") == "off" and "raising_day_until" not in disk()["micro"])
 
     # --- 7. honesty, persistence, isolation
     scene.world.save(now[0], force=True)
@@ -1975,7 +2099,7 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
         try:
             with open(fp, encoding="utf-8") as fh:
                 live = json.load(fh)
-            if (live.get("session") or {}).get("id") == my_session or (live.get("micro") or {}).get("dig_site") is not None:
+            if (live.get("session") or {}).get("id") == my_session or (live.get("micro") or {}).get("expedition") is not None:
                 leaked.append(fp)
         except Exception:
             continue
@@ -1990,6 +2114,278 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     print("scene frame over %d frames: avg %.2f ms, p95 %.2f ms, max %.2f ms (frame 0 boots the world)" % (len(frame_ms), sum(frame_ms) / len(frame_ms), p95f, frame_ms[-1]))
     print("ships.jsonl lines: %d  world effects: %d  events seen: %d  virtual time: %.1f s  run_dir: %s" % (
         len(read_ships(os.path.join(run_dir, "ships.jsonl"))), engine.world_effects, len(events), now[0] - t0, run_dir))
+    print("%d check(s) failed" % fails if fails else "ALL CHECKS PASSED")
+    return fails
+
+
+def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land-test`
+    """OPENWORLD.md 11 effects against a REAL schema-2 WorldState + Land + terrain + Nature under a duck-typed
+    LONGGRASS scene (the scene module is built by another agent; this proves the engine's side of the contract):
+    every effect lands only through the world API, arrival stones carry the walkers' real names, the hearth is lit
+    only by a real picker, harvest day reaps only gold fields, raising day flags stones_double. Isolated /tmp only."""
+    import shutil
+    import time as _time
+    from stream.state_store import StateStore
+    from stream.chat_bridge import ChatBridge
+    from stream.world import terrain as TERR, nature as NAT
+    from stream.world.state import WorldState
+
+    run_dir = os.path.abspath(run_dir)
+    rp = os.path.realpath(run_dir)
+    if rp in CANONICAL_RUN_DIRS or not (rp.startswith("/tmp/") or rp.startswith("/private/tmp/")):
+        print("land-test refuses run_dir %s (use an isolated /tmp/lg-* dir)" % run_dir)
+        return 1
+    shutil.rmtree(run_dir, ignore_errors=True)
+    os.makedirs(run_dir)
+    for k in ("STATE_FILE", "CHAT_FILE", "ACTIVITY_FILE", "METRICS_FILE", "KL_TEST_PIPS"):
+        os.environ.pop(k, None)
+    os.environ["RUN_DIR"] = run_dir
+    os.environ["KL_SEED"] = "7"
+    fails = 0
+    logs: List[str] = []
+
+    def log(m):
+        logs.append(m)
+        sys.stderr.write("land-test: %s\n" % m)
+
+    def check(name, cond, detail=""):
+        nonlocal fails
+        print("%s %s%s" % ("PASS" if cond else "FAIL", name, (" -- %s" % detail) if detail else ""))
+        if not cond:
+            fails += 1
+
+    def disk():
+        with open(os.path.join(run_dir, "state.json")) as fh:
+            return json.load(fh)
+
+    ROUND_S, CLOSING_S, HOLD_S = 6.0, 5.0, 1.0
+    FPS, DT = 30, 1.0 / 30
+    t0 = _time.time()
+    now = [t0]
+    frame = [0]
+    T = TERR.generate(4471)
+    N = NAT.Nature(T, seed=4471)
+    ws = WorldState(run_dir, log=log, schema=2, moot=(T.site[0], T.site[1]), passable=T.passable, water=T.water, now=t0)
+    ws.begin_session("land-test-session", t0)
+    land = ws.land
+    land.set_terrain_layers(T.passable, T.water, (T.site[0], T.site[1]))
+    names = ["sami", "kai", "lu"]
+    for i, nm in enumerate(names):
+        ws.ensure_pip(nm, nm, nm, i + 1, t0 - 3600)
+        ws.record_message(nm, t0 - 60, "land-test-session", "hello")
+
+    class _Ent(object):
+        def __init__(self, key, x, y):
+            self.key, self.x, self.y, self.state = key, float(x), float(y), "awake"
+            self.energy = 0.5
+            self.facing = (1, 0)
+
+        def is_awake(self):
+            return self.state == "awake"
+
+    class _Beh(object):
+        def __init__(self):
+            self.entities = {nm: _Ent(nm, T.site[0] + 10 * (i - 1), T.site[1] + 30) for i, nm in enumerate(names)}
+            self.events: List[Dict] = []
+            self.colony_rule = "free"
+            self.walks: List[Tuple[str, str]] = []
+            self.cared: List[Tuple[str, Optional[str]]] = []
+
+        def awake(self):
+            return [e for e in self.entities.values() if e.is_awake()]
+
+        def awake_count(self):
+            return len(self.awake())
+
+        def get(self, key):
+            return self.entities.get(key)
+
+        def care_received(self, key, t, by=None):
+            self.cared.append((key, by))
+            return True
+
+    class _Scene(object):
+        """Duck-typed SteadingScene: what rounds.py reads (WORLD_API 2 + OPENWORLD 4/10)."""
+        def __init__(self):
+            self.booted = True
+            self.frames = 0
+            self.world = ws
+            self.land = land
+            self.behaviour = _Beh()
+            self.terrain = T
+            self.nature = N
+            self.events: List[Dict] = []
+            self.pending: List[Tuple[str, str]] = []
+            self.refuse_go = False
+            self.standing: Dict[str, List[str]] = {"A": [], "B": [], "C": []}
+
+        def platform_counts(self):
+            return {k: list(v) for k, v in self.standing.items()}
+
+        def awake_count(self):
+            return self.behaviour.awake_count()
+
+        def command(self, verb, actor, target=None, arg=None, now=None):
+            if verb == "go":
+                if self.refuse_go:
+                    return False, "the land is still waking"
+                self.behaviour.walks.append((actor, arg))
+                self.pending.append((actor, arg))
+                return True, "ok"
+            return False, "unknown verb"
+
+        def frame(self, ctx, size):
+            """The walk itself is the behaviour agent's; here a `go` arrives on the next frame (teleport, test only)."""
+            self.frames += 1
+            for actor, arg in self.pending:
+                pl = T.places.get(arg)
+                e = self.behaviour.get(actor)
+                if pl and e is not None:
+                    e.x, e.y = float(pl["x"]), float(pl["y"])
+            self.pending = []
+            self.events = list(self.behaviour.events)
+            self.behaviour.events = []
+
+    store = StateStore(run_dir, log=log)
+    store.ensure_state_file(now[0])
+    store.refresh(now[0], force=True)
+    bridge = ChatBridge(run_dir, log=log)
+    engine = RoundEngine(run_dir, store, bridge, log=log, round_s=ROUND_S, closing_s=CLOSING_S, ship_hold_s=HOLD_S,
+                         changelog_path=os.path.join(run_dir, "CHANGELOG.md"))
+    scene = _Scene()
+    engine.attach_world(scene)
+    events: List[Dict] = []
+    tick_ms: List[float] = []
+
+    def step(n=1):
+        for _ in range(n):
+            now[0] += DT
+            frame[0] += 1
+            store.refresh(now[0])
+            ctx = store.ctx(now[0], frame[0], FPS, tallies=bridge.tallies(now[0]), vote_count=bridge.vote_count(),
+                            compositor_live={"fps_target": 30, "fps_actual": 30.0, "frame_ms_avg": 1.0, "frame_ms_p95": 2.0,
+                                             "dropped_frames": 0, "scene": "LAND", "uptime_s": int(now[0] - t0), "selftest": True},
+                            audio_source="none")
+            a = _time.perf_counter()
+            engine.tick(now[0], ctx, [])
+            tick_ms.append((_time.perf_counter() - a) * 1000.0)
+            N.update(now[0], 0.0)
+            scene.frame(ctx, (1280, 440))
+            events.extend(scene.events)
+
+    def opt(letter, param, value):
+        entry = MENU_BY_PARAM[param]
+        return {"letter": letter, "id": "micro.%s.%s" % (param, value), "title": RoundEngine._title(entry, value),
+                "source": "menu", "votes": 0, "voters": [], "param": param, "value": value}
+
+    def set_ballot(opts):
+        engine._mem["round"]["options"] = copy.deepcopy(opts)
+        store.state["round"]["options"] = copy.deepcopy(opts)
+        engine._last_tally_sig = None
+
+    def ship_with(param, value, voter=None):
+        """Put one card on all three waystones, optionally let `voter` stand at A, run to the ship, return last_result."""
+        d = disk()
+        if d["round"]["phase"] != "open":
+            n0 = d["round"]["number"]
+            while not (disk()["round"]["phase"] == "open" and disk()["round"]["number"] > n0):
+                step(1)
+            step(1)
+        set_ballot([opt("A", param, value), opt("B", param, value), opt("C", param, value)])
+        scene.standing = {"A": [voter] if voter else [], "B": [], "C": []}      # the voter STANDS at waystone A
+        if voter:
+            bridge._votes[voter] = ("A", now[0])
+        engine._last_tally_sig = None
+        no = disk()["round"]["number"]
+        while not (disk()["round"]["phase"] == "ship" and disk()["round"]["number"] == no):
+            step(1)
+        scene.standing = {"A": [], "B": [], "C": []}
+        step(1)
+        return disk()["round"]["last_result"]
+
+    step(3)
+    check("boot: engine attached to the duck LONGGRASS scene; land found through scene.land", engine._booted_world(now[0]) is scene and _land_of(scene) is land)
+    check("boot: every walker is a real pip (real_pip resolves), no test pips", all(land.real_pip(n) is not None for n in names))
+
+    # --- 1. rain: land.set_weather + nature.weather + a field boost; text counts real fields with len()
+    camp, why = land.set_camp("sami", T.site[0] + 30, T.site[1] + 30, t0 - 8 * 86400, check=False)
+    f, whyf = land.sow("sami", t0 - 8 * 86400)          # sown 8 days ago -> gold today
+    check("fixture: sami has a camp and a field (%s / %s)" % (why, whyf), camp is not None and f is not None)
+    lr = ship_with("weather", "rain", voter="sami")
+    w = land.weather()
+    check("rain: land.weather state rain with until, nature.weather.state_at == rain for the window",
+          w.get("state") == "rain" and w.get("until_ts") and N.weather.state_at(now[0]) == "rain" and N.weather.state_at(now[0] + ROUND_S + 5) == "clear",
+          json.dumps(w))
+    check("rain: the field drank RAIN_BOOST_S (boost_s) and the text says '1 field drinks'",
+          abs(float(land.field_of("sami").get("boost_s") or 0) - RAIN_BOOST_S) < 1 and "1 field drink" in str(lr.get("world")), str(lr.get("world")))
+    check("rain: picked_by the real voter, world text in world.json event_log", lr["picked_by"] == "sami" and any("rain" in e["text"] and "@sami" in e["text"] for e in ws.data["world"]["event_log"]))
+
+    # --- 2. expedition to the Ford: every awake pip sent with `go`, a stone per arrival in the walker's own name
+    stock0 = land.stock
+    lr = ship_with("expedition", "ford", voter="kai")
+    step(3)      # the duck scene "arrives" the walkers on the next frame; the engine sees it a frame later
+    d = disk()
+    ex = d["micro"].get("expedition") or {}
+    stackers = land.stackers()
+    check("expedition: 3 of 3 awake set off via scene.command('go', key, arg='ford'); walkers recorded",
+          sorted(ex.get("walkers") or []) == sorted(names) and sorted(scene.behaviour.walks) == sorted((n, "ford") for n in names)
+          and "3 of 3 awake set off" in str(lr.get("world")), str(lr.get("world")))
+    check("expedition: one cairn stone per arrived walker, in the walker's name (land.stack), stock +3",
+          land.stock == stock0 + 3 and sorted(ex.get("arrived") or []) == sorted(names) and all(stackers.get(n) == 1 for n in names),
+          "stock %d->%d stackers %s arrived %s" % (stock0, land.stock, stackers, ex.get("arrived")))
+    check("expedition: `stack` events for the audio / plank carry the real keys and expedition=True",
+          sorted(e["pip"] for e in events if e.get("type") == "stack" and e.get("expedition")) == sorted(names))
+    while disk()["micro"].get("expedition") is not None:
+        step(1)
+    acts = [json.loads(ln) for ln in open(os.path.join(run_dir, "activity.jsonl"), encoding="utf-8") if ln.strip()]
+    check("expedition: closed after the round with '3 of 3 arrived'", any("expedition to the Ford over: 3 of 3 arrived" in a.get("text", "") for a in acts))
+
+    # --- 3. bonfire: the hearth is lit ONLY by a real picker; everyone gathers on the Moot and is fed
+    lr = ship_with("bonfire", "now", voter="lu")
+    h = land.hearth
+    check("bonfire (lu voted): hearth lit by lu this session, 3 gathered (go moot), 3 fed, feast feed events",
+          h.get("by") == "lu" and land.hearth_lit(t0) and "@lu lit the hearth" in str(lr.get("world")) and "3 gathered · 3 fed" in str(lr.get("world"))
+          and sum(1 for e in events if e.get("type") == "feed" and e.get("feast")) >= 3 and ("sami", "moot") in scene.behaviour.walks,
+          "%s | %s" % (json.dumps(h), lr.get("world")))
+    lit_ts = h.get("lit_ts")
+    lr = ship_with("bonfire", "now", voter=None)
+    check("bonfire (nobody voted): the hearth is NOT re-lit by the agent pick; the copy says so",
+          land.hearth.get("lit_ts") == lit_ts and "nobody voted, so nobody lit the hearth" in str(lr.get("world")) and lr["agent_pick"] is True, str(lr.get("world")))
+
+    # --- 4. harvest day: only gold fields are reaped, the sower is credited; a second harvest day finds nothing gold
+    st = land.field_stage(land.field_of("sami"), now[0])
+    lr = ship_with("harvest_day", "now", voter="sami")
+    f2 = land.field_of("sami")
+    check("harvest day: sami's gold field reaped (harvests 1, back to tilled), credited, 3 fed",
+          st[1] == "gold" and int(f2.get("harvests") or 0) == 1 and f2.get("stage") == "tilled" and "1 field reaped (@sami)" in str(lr.get("world")) and "3 fed" in str(lr.get("world")),
+          "%s | %s" % (st, lr.get("world")))
+    lr = ship_with("harvest_day", "now", voter="kai")
+    check("harvest day again: no field is gold -> honest 'keeps growing' copy, nobody fed", "no field is gold yet" in str(lr.get("world")), str(lr.get("world")))
+
+    # --- 5. raising day + colony_rule against the duck scene
+    lr = ship_with("raising_day", "on", voter="kai")
+    check("raising day: stones_double True during the window", RoundEngine.stones_double(disk()["micro"], now[0]) and disk()["micro"]["raising_day"] == "on")
+    lr = ship_with("colony_rule", "huddle", voter="lu")
+    check("colony rule: behaviour.colony_rule huddle, copy 'gather on the Moot'", scene.behaviour.colony_rule == "huddle" and "gather on the Moot" in str(lr.get("world")))
+
+    # --- 6. `go` refused by the scene -> honest 'nobody set off', no walkers, no stones
+    scene.refuse_go = True
+    stock1 = land.stock
+    lr = ship_with("expedition", "fell", voter="sami")
+    step(3)
+    check("expedition with `go` refused: 'nobody set off (3 awake)', walkers [], stock unchanged",
+          "nobody set off (3 awake)" in str(lr.get("world")) and (disk()["micro"].get("expedition") or {}).get("walkers") == [] and land.stock == stock1, str(lr.get("world")))
+
+    # --- 7. provenance: every mark / stone / hearth lighter resolves to a real pip; state stays in the run dir
+    viol = land.provenance_violations()
+    check("provenance: no mark, stone or hearth lighter without a real pip row", viol == [], str(viol))
+    ws.save(now[0], force=True)
+    wj = json.load(open(os.path.join(run_dir, "world.json"), encoding="utf-8"))
+    check("world.json (schema 2) in the isolated run dir: 3 real pips, %d stones, hearth by lu" % land.stock,
+          wj.get("schema") == 2 and sorted(wj["pips"].keys()) == sorted(names) and len(wj["world"]["stones"]) == land.stock and wj["world"]["hearth"]["by"] == "lu")
+    tick_ms.sort()
+    print("engine tick over %d frames: avg %.3f ms, p95 %.3f ms, max %.3f ms" % (len(tick_ms), sum(tick_ms) / len(tick_ms), tick_ms[int(len(tick_ms) * 0.95)], tick_ms[-1]))
+    print("ships.jsonl lines: %d  world effects: %d  stones: %d  run_dir: %s" % (len(read_ships(os.path.join(run_dir, "ships.jsonl"))), engine.world_effects, land.stock, run_dir))
     print("%d check(s) failed" % fails if fails else "ALL CHECKS PASSED")
     return fails
 
@@ -2018,6 +2414,12 @@ if __name__ == "__main__":
             rd = sys.argv[sys.argv.index("--run-dir") + 1]
         rd = rd or os.environ.get("RUN_DIR") or "/tmp/pip-rounds"
         sys.exit(1 if _world_test(rd) else 0)
+    if "--land-test" in sys.argv:
+        rd = None
+        if "--run-dir" in sys.argv:
+            rd = sys.argv[sys.argv.index("--run-dir") + 1]
+        rd = rd or os.environ.get("RUN_DIR") or "/tmp/lg-rounds"
+        sys.exit(1 if _land_test(rd) else 0)
     if "--self-test" in sys.argv:
         rd = None
         if "--run-dir" in sys.argv:
