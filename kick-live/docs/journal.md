@@ -941,3 +941,76 @@ Tick 17:24 (loop): not paused; 10/10 processes alive (incl. category_sampler). V
 Software Development (29 category viewers), followers 2, new title live. Chat quiet since 15:58; honesty 0. HUD QA:
 owner lens PASS; stranger lens FAIL on two blockers (clock chip pasted over the waystone letters when the camera frames
 the stones low-right; zero-vote copy duplicated on plank + vote card). Fix agent running. Nothing deployed.
+
+## 030 — 2026-09-26 17:55 — HUD fix pass: the clock leaves the land, the card owns the vote, the hold shows its hand (not deployed)
+
+Fix agent on the HUD pass (journal 028; owner 15:50 "too much information on the screen"). Two review blockers plus the
+cheap suggestions, all in the tree (RUN_DIR /tmp/lg-hud-fix, MODE=test; nothing live touched; layout.py changed again, so
+still ONE relay-held compositor child restart with every changed file copied together).
+
+Blockers closed:
+- **The clock chip sat over the waystone counts** when the camera framed the stones low-right (hud-build noon / night
+  frame 1199). The clock row LEFT the land: `header_right` is now 400 px (880-1280; header_center 880, `SAY ANYTHING`
+  484 px + the column still fit) with two rows, `LONGGRASS ● LIVE` (y 7) and the muted clock row (Menlo 20, y 38): `midday
+  · wind NE fresh · spring`. The wall clock is no longer printed on the real-time land (every viewer has one; a time zone
+  that is not theirs reads wrong); hour mode keeps `14:30 · afternoon · a day here is one hour`. The world panel still
+  derives the string (`last_clock_row`), the header draws it; the world region carries only the plank, the vote card and
+  the minimap. The minimap became a BOTTOM box in the camera's dead zone (`camera._hud_dead_zone`: framed feet are
+  pushed above it, capped so no head comes back under a top box; heads outrank feet; self-test 4c: without the box the
+  east pip's feet land at (1137, 371) inside the minimap, with it at (1137, 342), push peaked at 7.3 cells, no head under a
+  top chip).
+- **The same vote fact twice** (plank `nobody has voted · one letter from you decides this round` + card `one letter
+  decides it`; plank `nobody voted. the land picked C itself.` + card `nobody voted · land picked C`). The zero-vote line
+  and the ship-hold result left the plank (`ZERO_VOTE_LINE` removed); the card header is the vote's one home; the plank at 0
+  awake shows the DRIFT caption through the ship hold (`surveying · the Ford`, grid_0awake). The raising notices
+  (`the keepers raised X` / `are raising X`) left the plank too: land strip row 3 carries them pinned / for 10 min.
+
+Suggestions taken: card header `type A, B or C to vote` at 0 standing for every awake count (`stand at a stone to vote`
+named nothing to type); the card timer is Menlo Bold 24 (text / amber < 30 s / red < 10 s with the fuse; it was the
+smallest text on screen for the owner's priority (4)); a vote inside a newcomer's 3 s hold is acked `someone new walks
+to A · counts while standing there · closes in 0:35` in the same frame (the tuft is nameless; `@builder #N` for a name
+that is merely waiting is gone) and again BY NAME at the hold's end (`chat_bridge._pump_held_acks`; noon8 plank log:
+`someone new walks to A` -> `@fern_ok walks to A`); the chat log shows a record inside its hold as a muted `kai_dnb: …`
+(a chatter past their first hold: their name is already on their pip; the text waits) or `someone is arriving...` (a
+first record), bounded to 2 rows, one per chatter, and only once the record's own `t` has been reached (a record stamped
+ahead of this clock is not shown as held: the harness's pacing lag made 5 `…` rows pile up in the first rerun); camp
+plates rotate only while their owner is awake (or when the DRIFT stop pins them) once anyone is awake, and every plate
+is clamped whole inside the region (drop frame 1400 had one cut at the bottom edge); mark plates say `flower · @name ·
+planted today` / `tree · @name · sapling · planted 3 days ago` / `the Shore · first reached by @name · yesterday` (no
+`day N` without the header's day); land row 3 `a keeper is on duty now · type !idea <what to raise>` / `no keeper on
+duty · your !idea waits on the board` (`one is on duty` had no subject). Found on the way: a voter still WALKING to a
+stone who was sent elsewhere (`A`, then `go north` ten seconds later) dropped the vote silently (`behaviour._start_walk`
+emitted `leave_platform` only for a standing voter; the first drop rerun lost `@lumen_k walked off A · that vote is
+dropped · type A to stand again`); the walker's case now emits the same event, so the plank says it.
+
+Frame budget (60 test pips, 0.75x, 300 frames unpaced, three runs; the gate is < 12 ms scene avg): 10.13 / 10.90 / 11.00
+ms, **median 10.90** (the previous pass measured 11.5-12.5 with one run at 12.51 including the warm-up spike; the
+per-run scene avg still includes frame 8's ~55 ms boot spike, so the median of three is the gate value from now on). The
+440 px rung stays ready; nothing was added to the world text layer (the clock chip left it).
+
+Evidence (/tmp/lg-hud-fix, chain.log + chain2.log): noon / dawn / 23:00 x 1200 paced frames with the 42-message plan at
+60 s rounds (the normal `type A, B or C to vote` / `A leads` / `tied` states in the grid; the 8 s-round edge case is its
+own run noon8): honesty PASS, vote acks 6/6, land strip check 1200/1200, vote card check 3576/3576, header band PASS,
+watchdog PASS on every run; 0-awake x3 (300) PASS; drop plan (1500, 60 s) with the dropped-vote copy; sticky plan (660,
+23:00); camera run 4200 frames: DRIFT->EVENT->FOLLOW->EVENT->DRIFT->EVENT->FOLLOW->EVENT->FOLLOW->EVENT->FOLLOW (10
+transitions), max per-frame jump 2.01 cells (the 60 cells/s cap, no cut), 0 at-rest frames with a framed point under a
+HUD chip, 0 frames with any awake head under a chip (the previous run had 13), 99.3 % of awake-settler-frames in the safe
+band, 27 settled FOLLOW frames with nobody in view (the previous run: 30; the sleep hook's walk-home); night floor:
+night / noon tile mean 0.64 (0.62 at 0 awake; gate 0.50), 93 % of the world band > 0.12; textual check over every run's
+plank log: 0 vote-state lines, 0 raising lines, 0 text-layer errors; header row 2 luminance std ~38 in every last frame
+(the clock row is there). Module self-tests: py_compile all, camera PASS (4c added), behaviour PASS, honesty PASS,
+steading PASS, chat_bridge 68 cases PASS + a hold-ack / held-rows unit (report/bridge_unit.txt). Grids: report/grid.png,
+grid_0awake.png, grid_states.png (the 8 s-round card states with a person-only plank), tiles.png,
+crop_header_card_2x.png, drop_chatlog_hold_sheet.png.
+
+Known and left: a speaking label for a pip at the region's bottom edge can overprint a plate clamped to the same edge
+(noon8 frame 1170: `@willow_9: what colour is this` over `@kai_dnb's camp · night 1`; labels win by design, the plate used
+to be clipped there instead); the by-name ack at a hold's end is shadowed when a newer person line lands in the same
+5 s (newest wins, by design); the season drops off the header clock row when the wind word is long (`midday · wind NW
+fresh`, 368 px). Deploy: as journal 028 (deploy.sh child restart, all changed files copied together, owner told first);
+the frame no longer shows a clock on the land; status.sh / the compositor log keep the telemetry.
+
+Tick 18:00 (loop): not paused; 10/10 alive. Viewers 1-5 (avg 2.6), followers 2 -> 3 (first new follower since the
+settlement went up), rank #3 of 10 in Software Development (34 category viewers). Chat: two `b` votes from the staff
+account at 17:39 and 17:43. Honesty 0. HUD fix agent still re-proving (drop-debug run in /tmp/lg-hud-fix). Nothing
+deployed.
