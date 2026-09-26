@@ -1087,3 +1087,15 @@ Tick 19:21 (loop): not paused; 10/10 alive. Viewers 1-4 (avg 2.1), followers 3, 
 Funnel: 178 arrivals, 1 first-time chatter. `!idea remove the large grey area of the screen. fill the space with the world
 instead` (i-0007, staff account, 19:12) classified macro/queued: it is the full-bleed build, implementing now (report dir
 has its first tile probe). Honesty 0. Nothing deployed this tick.
+
+## 034 — 2026-09-26 19:28 — Owner: no chat panel; the world progresses through ages; nobody sleeps
+
+Owner (terminal): "Remove the bottom part of the screen where chat is and just have the main thing. Let's make the world
+progress through the ages. Nobody falls asleep, everybody continues to walk around." Memory: owner-world-rules-ages-
+no-sleep.md. (1) is the full-bleed build (implementing). (2) and (3) change the world's rules: the sleep state goes
+(settlers wander after their person goes quiet; camps stay as homes), the honesty presence assertion "awake == recent
+chatters" is replaced by "entities == real chatters ever minus banished" (nothing invented; everyone may move), and the
+settlement gets an age ladder driven by real collective activity (distinct chatters, rounds, stones, marks, time on
+air) shown in the world (buildings, gear, palette, a monument), never as HUD copy. Design workflow launched now
+(three lenses -> judges -> synthesis -> spec doc); implementation starts the moment the full-bleed build is on air so
+two agents never edit steading/behaviour/honesty at once.
