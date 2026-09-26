@@ -1076,3 +1076,9 @@ independently (10.3 / 8.9 ms, assertion code unchanged); camera, behaviour, hone
 Hot-reloaded into live-snapshot-v3 at 18:43:12: world batch re-executed, scene resumed with 3 pips in 12 ms, panel
 committed after 30 clean renders, no relay gap. Lesson: a self-test with a thread-timing assertion needs three runs before
 it convicts a diff.
+
+Tick 18:59 (loop): not paused; 10/10 alive. Viewers 1-4 (avg 2.0), followers 3, rank #9 of 11 (a 100+ viewer channel
+entered Software Development: 147 category viewers). Funnel today: 165 arrivals, 1 first-time chatter. Owner's staff
+account in chat 18:42: "surely you don't need the space at the bottom of the screen for grey boxes" — the blank strip
+left by the copy removal; the full-bleed build (design + judges + synthesis done, implementing now) removes the strip
+entirely. Honesty 0. Nothing deployed this tick.
