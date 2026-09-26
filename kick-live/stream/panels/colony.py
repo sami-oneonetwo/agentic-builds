@@ -53,7 +53,7 @@ KEEPERS_LINE_CAVE = ""
 HONESTY_LAND = ()   # owner 2026-09-26 18:35: the honesty PRINCIPLE stays (ADR-000); its on-screen recital is gone
 HONESTY_CAVE = ()
 ON_DUTY = ""
-OFF_DUTY = "no keeper on duty · your !idea waits on the board"                          # 493 px
+OFF_DUTY = ""   # owner 2026-09-26: no keeper-meta copy on screen                          # 493 px
 FAILED = "a raising failed · reverting to the last good version"                       # 494 px
 FAILED_CAVE = "a carving failed · reverting to the last good version"
 
