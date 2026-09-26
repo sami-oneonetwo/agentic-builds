@@ -936,3 +936,8 @@ village · Day 3 · 2 settled". custom_tags were sent (10) but GET /channels ret
 them for this account is open. stop.sh now stops category_sampler and ops_switch too. The HUD implementer wrote journal
 028 + a HANDOFF addendum: the HUD pass changes layout.py regions, so it ships as ONE child restart with every changed
 file copied together (a partial copy shows a black strip).
+
+Tick 17:24 (loop): not paused; 10/10 processes alive (incl. category_sampler). Viewers 1-4 (avg 2.6), rank #3 of 9 in
+Software Development (29 category viewers), followers 2, new title live. Chat quiet since 15:58; honesty 0. HUD QA:
+owner lens PASS; stranger lens FAIL on two blockers (clock chip pasted over the waystone letters when the camera frames
+the stones low-right; zero-vote copy duplicated on plank + vote card). Fix agent running. Nothing deployed.
