@@ -688,3 +688,47 @@ plain chat (exact-token rule). Fix-pass test case for the leading-verb rule's th
 kick", "kick colours", "make it kick coloured" → `!theme kick`. On-screen guidance when a message
 mentions a known preset but no verb: plank hint "type !theme kick". Chat asks for `!idea gems` and
 "go out of the cave" were classified carving-next (i-0005, i-0006).
+
+---
+
+## 024 — 2026-09-26 14:20 — LONGGRASS on air by hot-reload; owner's chat kill switch
+
+Fresh session (HANDOFF.md). Integrate-only workflow run from disk: **pass_with_fixes** in 25 min. Fixes in the tree:
+camera SAFE BAND (HUD_TOP_PX 152 / HUD_BOTTOM_PX 44, every mode's target lifted so framed people sit at region y ~274;
+DRIFT survey starts from the framed point, no hand-over sprint; 100 % awake-in-view over three 900-frame runs),
+SETTLER_SCALE 1.2 rendered at 2x and BOX-downsampled, waystone tallies centred under the letters, keeper strip alternates
+`the keepers are AI agents building this show live`, plank `beacon lit · a keeper (an AI agent) is on duty · !idea <text>
+asks for something` once per session, `chat_bridge.theme_phrase()` reads `kick colours` / `theme kick` / `make it kick
+coloured` (<= 8 words, one preset + a theme word) as `!theme kick`. QA: honesty PASS; stranger FAIL (3 blocking) and art
+FAIL (2 blocking) -> fix agent running at the time of writing; its output lands as a second hot-reload.
+
+Incident during integrate: the agent's `pkill -f 'duty.py heartbeat'` killed the LIVE keeper heartbeat (pid 48689) for
+69 s; restored from the repo tree (pid 38660) inside the 120 s freshness window, lantern never went dark. Lesson: test
+harnesses must never pkill by pattern; kill only pids they started.
+
+Owner gates run by hand on the current tree: (1) `hollowghost` planted in a schema-2 copy with a camp, flower and cairn
+-> quarantined at boot, marks purged, 150 frames 0 violations; (2) real-time run: `gate_hidden` chatted, broadcaster
+`!hide` landed 1 s into the hold -> plank `the wind took that one`, chat log `mod hid a user` (no target), never a pip
+even after chatting again; control user hatched and was named; 480 frames, unknown-name draws 0.
+
+Owner: "Do it" (deploy before the QA fix pass, wants to watch it progress on air). Staging copy /tmp/lg-deploy-stage
+(compile, honesty/camera/chat_bridge/steading self-tests PASS, migration guard ok on a fresh live copy), backups
+`live-snapshot-v3-pre-longgrass` and `run-live/world.json.bak-pre-longgrass-20260926T140956`, prebake into run-live/bake.
+**Step 1** 14:12:28: compositor/chat_bridge/rounds/audio/state_store into live-snapshot-v3 + deploy.sh: relay held 20
+frames (0.67 s), ffmpeg 40018 UNCHANGED. deploy.sh printed FAIL because relay_status.json caps `gaps` at 20 entries so
+`len(gaps)` can never grow past it (fix: compare the last gap's start_ts, or use child_restarts alone). **Step 2**
+14:13:46: world/*.py + art + scenes/steading.py + panels/*.py dropped together: HotReloader re-executed the world batch,
+rebound hollow -> SteadingScene attached 14:13:48, world.json migrated 1 -> 2 in place (bak-v1-20260926T041348), 2 pips
+2 camps, relay gap #36 = 5 frames (0.17 s), encoder never saw EOF, all panels committed after 30 clean renders. Note the
+scene painted `ground-4471-0-o6-v1.npy` in 612 ms in the bake thread instead of loading the prebaked `-v3` files: the
+prebake script's bake `ver` (3) does not match the scene's (1); harmless, fix the key. Title set via OAuth (token
+refreshed from the kickapp code restored from origin/worktree-kick-ngrok-tunnel into /tmp/lg-kickapp; the worktree dir
+is gone from disk while its receiver process still runs): `Say anything in chat. A creature walks out with your name`.
+Kick HLS probe PASS 1280x720@30 2331 kbps; 3 watching at the swap.
+
+Owner rule change (terminal, 14:08): exact `nuke` from the broadcaster account stops the stream, exact `init` restarts
+it. Implemented as `scripts/ops_chat_switch.py` (outside world code): Pusher shape only, `atleastonce` + `broadcaster`
+badge, whole message == token, fresh within 120 s, de-duplicated by id, 20 s cooldown; `nuke` TERMs the supervisor and
+keeps kick_api/chat_listener alive so `init` can arrive; `init` double-forks supervisor.sh from live-current with the
+RESUME.md env. Self-test caught a zombie-child bug (an init-launched supervisor read as alive after a later nuke) and a
+tail-after-truncation miss; both fixed. Adversarial review (3 lenses) before it runs against run-live.
