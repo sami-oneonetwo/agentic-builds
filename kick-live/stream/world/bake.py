@@ -3,7 +3,11 @@
 The display is PAINTED ONCE at screen resolution (4 px per cell, 3840x1760x3 uint8 = 20.3 MB) into a memory-mapped
 file under $RUN_DIR/bake/, and CROPPED per frame; the simulation and every per-frame effect stay at cell resolution
 (nature.Nature.modulation) and are multiplied into the crop in fixed point. Whole-map work never runs on the frame
-path: the bake runs in a background thread (numpy releases the GIL), a mark change repaints only its region.
+path: the bake runs in a background thread (numpy releases the GIL), a mark change repaints only its region. Landing
+the file is the one step that could stall a frame: CPython's mmap.flush() runs msync(2) WITH the GIL held (15-60 ms
+for the 20 MB map on APFS, measured), so the sync goes through libc via ctypes (`msync_released`, GIL dropped for the
+call) and the painted mapping is kept across the rename instead of being re-opened (np.load's mmap constructor holds
+the GIL for its fstat + mmap, ~7 ms right after a 20 MB write).
 
     ground-<seed>-<season>-o<octant>-v<bake_ver>.npy      one file per (map seed, season 0-3, sun octant, bake_ver)
 
@@ -35,8 +39,10 @@ numpy + pillow only, Python 3.9.
 """
 from __future__ import annotations
 
+import ctypes
 import math
 import os
+import sys
 import threading
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -55,6 +61,32 @@ KEEP_FILES = 4
 HOLLOW_W, HOLLOW_H = 8, 6            # pressed grass of a tier-0 camp, in cells
 CAMP_TO_BUILDING = {0: None, 1: 0, 2: 1, 3: 2}     # camp tier -> buildings.render("hut", tier): tent / hut / chimney
 HUT_CASTER = {1: 3, 2: 4, 3: 4}
+
+
+# ----------------------------------------------------------------------------- the memmap sync (never with the GIL)
+MS_SYNC = 0x0010 if sys.platform == "darwin" else 0x0004        # <sys/mman.h>: darwin / linux values differ
+_libc = None
+
+
+def msync_released(arr: np.ndarray) -> bool:
+    """msync(MS_SYNC) the whole mapping behind a np.memmap with the GIL RELEASED (a ctypes foreign call drops it;
+    mmap.flush() does not: the frame thread would wait out the whole disk write). Returns False when it could not
+    (not a memmap, no libc, msync error); the caller then leaves the pages to the kernel's writeback, which is what
+    a bake needs anyway: the file is a cache, `start()` repaints a torn one."""
+    global _libc
+    mm = getattr(arr, "_mmap", None)
+    if mm is None or not len(mm):
+        return False
+    try:
+        if _libc is None:
+            lib = ctypes.CDLL(None, use_errno=True)
+            lib.msync.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+            lib.msync.restype = ctypes.c_int
+            _libc = lib
+        base = ctypes.addressof(ctypes.c_char.from_buffer(mm))       # the mapping's base: page aligned by definition
+        return _libc.msync(base, len(mm), MS_SYNC) == 0
+    except Exception:
+        return False
 
 
 # ----------------------------------------------------------------------------- naming
@@ -256,14 +288,14 @@ class GroundBake:
         return self.ready
 
     def close(self) -> None:
+        """Drop the mapping. The manager calls this on the FRAME thread when a newer bake takes over, so the sync of
+        the region repaints written since (dirty pages) runs on a daemon thread that owns the last reference; the
+        mapping is unmapped when it ends. Nothing here waits on the disk."""
         with self._lock:
-            if self.arr is not None:
-                try:
-                    self.arr.flush()
-                except Exception:
-                    pass
-                self.arr = None
+            arr, self.arr = self.arr, None
             self.ready = False
+        if arr is not None:
+            threading.Thread(target=msync_released, args=(arr,), name="ground-bake-close", daemon=True).start()
 
     def _open(self) -> None:
         arr = np.load(self.path, mmap_mode="r+")
@@ -301,10 +333,11 @@ class GroundBake:
             self.progress = 0.7 * (k + 1) / n_strips
         self.paint_props(arr, (0, 0, T.w, T.h))
         self.progress = 1.0
-        arr.flush()
-        del arr
-        os.replace(self.tmp, self.path)
-        self._open()
+        msync_released(arr)                            # the disk write, GIL released (mmap.flush() would hold it)
+        os.replace(self.tmp, self.path)                # the mapping follows the inode: no re-open, nothing else to sync
+        with self._lock:
+            self.arr = arr
+            self.ready = True
         prune(self.run_dir, keep=(self.path,))
 
     def paint_strip(self, arr: np.ndarray, cells: np.ndarray, y0: int, y1: int, x0: int = 0, x1: Optional[int] = None) -> None:
