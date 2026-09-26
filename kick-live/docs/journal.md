@@ -836,3 +836,22 @@ chat quiet since 15:58 (58 msgs this session). Two silent misses from the second
 with a place/direction word but no verb gets `type: go south`). Rounds keep shipping as agent picks with 0 votes. No
 !idea pending. In flight: HUD reshape (design + judges + synthesis done, implementing), Kick research (2/5 angles done).
 Nothing deployed this tick.
+
+## 027 — 2026-09-26 16:35 — Kick growth research in; backlog adopted
+
+`docs/research/kick-growth-2026-09-26.md` (five angles, all sourced). Hard facts sampled 06:14-06:24 UTC (Sat 16:14
+AEST, NA off-peak): Kick ~696k concurrent viewers over 198 live subcategories; Software Development = 8 live channels,
+31 viewers total, median 2; we sit #5-7 with 1-2 viewers, #1 needs ~16-21. Category pages sort by concurrent viewers for
+anonymous browsers, so category choice is the only row-position lever; Just Chatting/IRL are invisible below ~600-900
+CCV. The homepage Featured row is editorial and currently carries channels with 2 and 7 viewers that have a hook (a
+world-record attempt, a 30-day marathon): the featured/pitch pack is the biggest discovery lever at our size. Games +
+Demos (42 live / 353 viewers / rank-24 cutoff 2) is the honest alternative when the world is the show; category
+hopping into inaccurate categories is a Guidelines violation and is off the table. Backlog adopted (top 8): (1) positive
+zero-state header + tile gate [in the HUD workflow], (2) title with live counters `Your name becomes a pixel settler.
+Type anything. AI agents build the village · Day N · S settled` + tags, (3) instrumentation: category sampler, our rank
+in metrics.jsonl, per-chatter first-message funnel + daily report, (4) chat-said/pip-did ledger, (5) a big creature in
+every frame at low awake (disclosed keeper pip), (6) arrival beat within 10 s of a viewer_count rise, (7) 48 h category
+sampler then a measured Games + Demos vs Software Development test, (8) keeper persona + build ledger. Declined: a
+chat-posting keeper bot (owner said no bots earlier; also needs chat:write consent). Launched: workflow
+kick-instrumentation-and-title (items 2, 3, 7; monitor/ + scripts/ only; title stays dry-run until the orchestrator
+sets it). HUD reshape is in its implement phase (layout.py + 8 panels + compositor + chat_bridge being edited).
