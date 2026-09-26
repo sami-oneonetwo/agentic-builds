@@ -31,14 +31,11 @@ If the pipeline is down: `RUN_DIR=$L KL_LIVE=1 MODE=live SOURCE=compositor AUDIO
 and `RUN_DIR=$L ~/.local/share/kick-live/venv/bin/python agentic-builds/kick-live/agents/duty.py heartbeat &`.
 If the receiver/tunnel is down: `bash ~/Workspace/agentic-builds/.claude/worktrees/kick-ngrok-tunnel/kick-live/scripts/kick-app.sh up`.
 
-## Continuing the LONGGRASS build (state as of 2026-09-26 10:35)
-Gate + all 8 modules are on disk and committed (bbb0ad8). Integration/QA/Fix were in flight.
-- Same session: `Workflow({scriptPath: "kick-live/agents/workflows/settlement-build.js", resumeFromRunId: "wf_876c9b0b-2b9", args: {mode: "v0"}})`
-- New session: `Workflow({scriptPath: "kick-live/agents/workflows/settlement-integrate.js", args: {mode: "v0"}})`
-Then: owner gates (planted fake creature refused; hidden-in-hold user never drawn), then deploy per
-OPENWORLD.md §14 (hot-reload scene swap under the relay; `scripts/swap-build.sh live-snapshot-v4
---title "Say anything in chat. A creature walks out with your name"` as fallback). Owner is told
-before either path.
+## LONGGRASS is live (state as of 2026-09-26 15:40)
+The integrate-only workflow ran to completion (journal 024, 025); LONGGRASS was hot-reloaded into live-snapshot-v3 at
+14:13 and fix pass 2 at 15:34. See docs/HANDOFF.md for the current state, open items and the proven deploy recipe.
+Also check the owner's chat kill switch: `kill -0 $(cat $L/pids/ops_switch.pid)`; relaunch recipe in the docstring of
+`scripts/ops_chat_switch.py` (never `source env.sh` first).
 
 ## Using a different API key / gateway
 Claude Code reads `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) and

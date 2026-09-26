@@ -795,3 +795,13 @@ Known and left: at pinned 1x two people further apart than the 61-cell safe band
 the harness's realtime pacing lags wall clock so `@builder #8 voted A` for a not-yet-cleared newcomer is timing drift,
 not a hold bug; `NOBODY AWAKE` at 72 px stays (spec §8, the thumbnail hook) while the plank carries the land's voice.
 Not deployed: the parent session hot-reloads it after telling the owner (memory rule).
+
+Addendum to 025 (15:36): **fix pass 2 on air.** Staging /tmp/lg-deploy-stage2: compile + honesty/camera/behaviour/
+state/keepers/chat_bridge/steading self-tests PASS; a 300-frame compositor self-test on a copy of the live world FAILED
+honesty when run with an empty chat.jsonl (both pips quarantined, then 567 draws of the quarantined names from
+builders.json copy, caught by the new name-leak assertion) and PASSED with the live chat.jsonl alongside (0 violations).
+Backups live-snapshot-v3-longgrass-v0a + world.json.bak-pre-fix2. Step 1 15:33:13: compositor.py + deploy.sh child
+restart, 20 frames held (0.67 s), ffmpeg 40018 unchanged. Step 2 15:34:11: behaviour/camera/honesty/steading/chat_log/
+world.py dropped together, scene re-attached at 15:34:13 with a 2-frame gap (0.07 s), panel committed after 30 clean
+renders, 2 pips 2 camps, honesty 0. Kick HLS probe PASS 2335 kbps. deploy.sh false-FAIL fixed (newest gap start_ts
+instead of the capped gap count) and copied into v3. HANDOFF.md rewritten for the new state; RESUME.md pointed at it.

@@ -47,6 +47,12 @@ fi
 if ! pid_alive "$FF_PID"; then echo "deploy.sh: REFUSING: ffmpeg.pid='${FF_PID:-none}' is not alive; nothing to protect, nothing to deploy into." >&2; exit 1; fi
 if ! pid_alive "$COMP_PID"; then echo "deploy.sh: note: compositor.pid='${COMP_PID:-none}' not alive; the relay is already respawning it"; fi
 GAPS0="$(jget gaps 0)"; RESTARTS0="$(jget child_restarts 0)"; OUT0="$(jget out 0)"
+# relay_status.json keeps only the LAST 20 gaps, so len(gaps) stops growing once the list is full (journal 024: two
+# successful deploys printed FAIL). Success is judged on the newest gap's start_ts changing, not on the count.
+jlastgap() { "$PYTHON" -c 'import json,sys
+try: d=json.load(open(sys.argv[1])); g=(d.get("gaps") or [{}])[-1]; print(g.get("start_ts") or "")
+except Exception: print("")' "$STATUS"; }
+LASTGAP0="$(jlastgap)"
 FF_START="$(ps -o lstart= -p "$FF_PID" 2>/dev/null | sed 's/^ *//')"
 echo "  before: ffmpeg pid=$FF_PID (started $FF_START)  relay pid=$RELAY_PID  compositor pid=${COMP_PID:-none}  relay frames out=$OUT0 gaps=$GAPS0 restarts=$RESTARTS0"
 
@@ -65,7 +71,8 @@ NEW=""; DEADLINE=$(( $(date +%s) + WAIT )); OK=0
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   NEW="$(pidfile compositor)"
   G="$(jget gaps 0)"; R="$(jget child_restarts 0)"; C="$(jget connected)"
-  if [ -n "$NEW" ] && [ "$NEW" != "$COMP_PID" ] && pid_alive "$NEW" && [ "$R" -gt "$RESTARTS0" ] && [ "$G" -gt "$GAPS0" ] && [ "$C" = True ]; then OK=1; break; fi
+  LG="$(jlastgap)"
+  if [ -n "$NEW" ] && [ "$NEW" != "$COMP_PID" ] && pid_alive "$NEW" && [ "$R" -gt "$RESTARTS0" ] && { [ "$G" -gt "$GAPS0" ] || { [ -n "$LG" ] && [ "$LG" != "$LASTGAP0" ]; }; } && [ "$C" = True ]; then OK=1; break; fi
   sleep 0.25
 done
 T1=$(date +%s.%N 2>/dev/null || date +%s)
