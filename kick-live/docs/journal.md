@@ -1037,3 +1037,8 @@ self-test fails one gate, "bake thread never blocked a frame" (84 frames during 
 the previous build under the same load passes it (max 9.5 ms). Regression from the reshape; a bisect + fix workflow
 is running. Backups taken: live-snapshot-v3-longgrass-v0b, world.json.bak-pre-hud-*. Deploy plan unchanged: one
 relay-held child restart with every changed file copied together.
+
+Tick 18:24 (loop): not paused; 10/10 alive. Viewers 1-4 (avg 2.3), followers 3, rank #6 of 11 in Software Development
+(34 category viewers). Chat: `bbbbb` from the staff account at 18:22 fell through as plain (votes are exactly one
+letter): another silent miss for the plank-hint list (a message that is only repeated a/b/c letters -> `type just B`).
+Honesty 0. Bake-thread bisect running with instrumented new-vs-control runs. Nothing deployed.
