@@ -7,8 +7,10 @@ Reads (all optional; missing or empty files produce "no data", never a crash):
   $RUN_DIR/chat_stats.json                 {msgs_last_1m, msgs_per_min_5m, unique_chatters_5m,
                                             unique_chatters_15m, last_message_ts, total}
   $RUN_DIR/supervisor_events.jsonl         {ts, event, detail}
-  $PID_DIR/*.pid                           one pid per file
+  $PID_DIR/*.pid                           one pid per file (every EXPECTED_PIDS name is reported, absent or not)
   $LOG_DIR/supervisor.log                  free text, last lines are shown
+  $RUN_DIR/world.json                      the settlers record (schema 2/3): pips, hatched_ever, stones, age, days_on_air
+  $RUN_DIR/wishes.jsonl + wishes.out.jsonl the wish ledger and the scene's outcomes (IDLEWORLD.md 2.1, 6.2)
 
 Modes:
   (default)                    one-screen human status for --window (default 15m)
@@ -425,11 +427,22 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+# Every long-running process the pipeline knows by pid file (scripts/start.sh, stream/run.sh, stream/supervisor.sh,
+# monitor/kick_api.py, monitor/category_sampler.py, scripts/ops_chat_switch.py, agents/probe.py, agents/duty.py
+# heartbeat --pid-file). scripts/stop.sh and scripts/status.sh carry the same list; a name with no pid file is
+# reported as absent rather than left out, so a dead probe or duty heartbeat is visible.
+EXPECTED_PIDS: Tuple[str, ...] = ("supervisor", "run", "relay", "ffmpeg", "compositor", "kick_api", "chat_listener",
+                                  "category_sampler", "ops_switch", "probe", "duty")
+
+
 def process_health() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    if not os.path.isdir(PID_DIR):
-        return out
-    for path in sorted(glob.glob(os.path.join(PID_DIR, "*.pid"))):
+    paths = sorted(glob.glob(os.path.join(PID_DIR, "*.pid"))) if os.path.isdir(PID_DIR) else []
+    seen = {os.path.splitext(os.path.basename(p))[0] for p in paths}
+    for name in EXPECTED_PIDS:
+        if name not in seen:
+            out.append({"name": name, "pid": None, "alive": None, "pidfile": None, "note": "no pidfile"})
+    for path in paths:
         name = os.path.splitext(os.path.basename(path))[0]
         entry: Dict[str, Any] = {"name": name, "pid": None, "alive": None, "pidfile": path}
         try:
@@ -475,6 +488,72 @@ def supervisor_events(start: datetime, end: datetime) -> Dict[str, Any]:
     if rows:
         le = rows[-1]
         out["last_event"] = {"ts": iso(le["_ts"]), "event": clean(le.get("event"), 40), "detail": clean(le.get("detail"))}
+    return out
+
+# --------------------------------------------------------------------------- world + wishes (IDLEWORLD.md 6.1 / 6.2)
+
+WORLD_FILE = os.path.join(RUN_DIR, "world.json")
+WISHES_FILE = os.path.join(RUN_DIR, "wishes.jsonl")
+WISHES_OUT_FILE = os.path.join(RUN_DIR, "wishes.out.jsonl")
+# a wishes.out.jsonl stage after which a ledger row is no longer open (2.4 / 6.2)
+WISH_CLOSED_STAGES = ("placed", "raised", "refused", "promoted", "unpinned")
+
+
+def world_status() -> Dict[str, Any]:
+    """Counts from $RUN_DIR/world.json, every one a len() or a stored int; absence is reported, never a crash."""
+    out: Dict[str, Any] = {"exists": os.path.exists(WORLD_FILE), "schema": None, "updated_ts": None, "pips": None,
+                           "hatched_ever": None, "stones": None, "age": None, "age_built": None, "days_on_air": None,
+                           "pinned": None, "placed_standing": None, "error": None}
+    if not out["exists"]:
+        return out
+    try:
+        with open(WORLD_FILE, "r", encoding="utf-8") as fh:
+            w = json.load(fh)
+    except (OSError, ValueError) as exc:
+        out["error"] = "%s: %s" % (type(exc).__name__, exc)
+        return out
+    if not isinstance(w, dict):
+        out["error"] = "world.json is not an object"
+        return out
+    world = w.get("world") if isinstance(w.get("world"), dict) else {}
+    pips = w.get("pips") if isinstance(w.get("pips"), dict) else {}
+    out["schema"] = w.get("schema")
+    out["updated_ts"] = w.get("updated_ts")
+    out["pips"] = len([1 for p in pips.values() if isinstance(p, dict) and not p.get("_test")])
+    out["hatched_ever"] = world.get("hatched_ever")
+    out["stones"] = len(world.get("stones") or []) if isinstance(world.get("stones"), list) else None
+    for k in ("age", "age_built"):                     # schema 3 only; None on schema 2
+        out[k] = world.get(k) if isinstance(world.get(k), int) else None
+    doa = world.get("days_on_air")
+    out["days_on_air"] = len(doa) if isinstance(doa, list) else None
+    wp = world.get("wish_post")
+    out["pinned"] = len(wp) if isinstance(wp, list) else None
+    placed = world.get("placed")
+    if isinstance(placed, list):
+        out["placed_standing"] = len([1 for r in placed if isinstance(r, dict) and r.get("status") == "stands"])
+    return out
+
+
+def wishes_status() -> Dict[str, Any]:
+    """The ledger: rows, wish-tagged rows, and open = wish-tagged rows with no closing stage in wishes.out.jsonl."""
+    out: Dict[str, Any] = {"exists": os.path.exists(WISHES_FILE), "rows": None, "tagged": None, "open": None,
+                           "out_exists": os.path.exists(WISHES_OUT_FILE), "out_rows": None, "last_ts": None, "error": None}
+    if not out["exists"]:
+        return out
+    rows, info = read_jsonl(WISHES_FILE)
+    if info.get("error"):
+        out["error"] = info["error"]
+    out["rows"] = info.get("lines", len(rows))        # every non-empty ledger line, parsable ts or not
+    tagged = {str(r.get("id")) for r in rows if r.get("wish") is True and r.get("id") is not None}
+    out["tagged"] = len(tagged)
+    if rows:
+        out["last_ts"] = iso(rows[-1]["_ts"])
+    closed = set()
+    if out["out_exists"]:
+        orows, oinfo = read_jsonl(WISHES_OUT_FILE)
+        out["out_rows"] = oinfo.get("rows", len(orows))
+        closed = {str(r.get("id")) for r in orows if r.get("stage") in WISH_CLOSED_STAGES and r.get("id") is not None}
+    out["open"] = len(tagged - closed)
     return out
 
 # --------------------------------------------------------------------------- report builders
@@ -541,6 +620,8 @@ def build_status(window_s: float, now: datetime, log_lines: int = 5, window_text
             "total_logged": len(chat),
         },
         "processes": process_health(),
+        "world": world_status(),
+        "wishes": wishes_status(),
         "supervisor": supervisor_events(start, now),
         "supervisor_log_tail": tail_lines(SUPERVISOR_LOG, log_lines),
         "supervisor_log_lines": log_lines,
@@ -670,12 +751,44 @@ def render_status(r: Dict[str, Any]) -> str:
         lines.append("procs     no pidfiles in %s" % PID_DIR)
     else:
         parts = []
+        absent = []
         for p in procs:
-            if p["pid"] is None:
+            if p.get("note") == "no pidfile":
+                absent.append(p["name"])
+            elif p["pid"] is None:
                 parts.append("%s[?] BAD PIDFILE" % p["name"])
             else:
                 parts.append("%s[%d] %s" % (p["name"], p["pid"], "alive" if p["alive"] else "DEAD"))
-        lines.append("procs     " + "   ".join(parts))
+        lines.append("procs     " + ("   ".join(parts) if parts else "no pidfiles in %s" % PID_DIR))
+        if absent:
+            lines.append("          absent: " + " ".join(absent))
+
+    wd = r.get("world") or {}
+    if not wd.get("exists"):
+        lines.append("world     world.json absent in %s" % r["run_dir"])
+    elif wd.get("error"):
+        lines.append("world     world.json unreadable: %s" % clean(wd["error"]))
+    else:
+        bits = ["schema %s" % _nd(wd.get("schema")), "%s pips" % _nd(wd.get("pips")),
+                "hatched_ever %s" % _nd(wd.get("hatched_ever")), "%s stones" % _nd(wd.get("stones"))]
+        if wd.get("age") is not None:
+            bits.append("age %s%s" % (wd["age"], (" (built %s)" % wd["age_built"]) if wd.get("age_built") is not None else ""))
+        if wd.get("days_on_air") is not None:
+            bits.append("%s days on air" % wd["days_on_air"])
+        if wd.get("pinned") is not None:
+            bits.append("%s pinned" % wd["pinned"])
+        if wd.get("placed_standing") is not None:
+            bits.append("%s standing" % wd["placed_standing"])
+        lines.append("world     " + "   ".join(bits) + "   (updated %s)" % clean(wd.get("updated_ts") or "-", 24))
+
+    ws = r.get("wishes") or {}
+    if not ws.get("exists"):
+        lines.append("wishes    ledger absent (wishes.jsonl)")
+    else:
+        lines.append("wishes    %s rows   %s tagged   %s open   outcomes %s   last %s%s" % (
+            _nd(ws.get("rows")), _nd(ws.get("tagged")), _nd(ws.get("open")),
+            (_nd(ws.get("out_rows")) + " rows") if ws.get("out_exists") else "absent",
+            ws.get("last_ts") or "-", ("   [%s]" % clean(ws["error"])) if ws.get("error") else ""))
 
     sv = r["supervisor"]
     if not sv["file_exists"]:
@@ -757,7 +870,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.paths:
         for k, v in (("RUN_DIR", RUN_DIR), ("METRICS_FILE", METRICS_FILE), ("CHAT_FILE", CHAT_FILE),
                      ("CHAT_STATS_FILE", CHAT_STATS_FILE), ("EVENTS_FILE", EVENTS_FILE),
-                     ("LOG_DIR", LOG_DIR), ("PID_DIR", PID_DIR), ("SUPERVISOR_LOG", SUPERVISOR_LOG)):
+                     ("LOG_DIR", LOG_DIR), ("PID_DIR", PID_DIR), ("SUPERVISOR_LOG", SUPERVISOR_LOG),
+                     ("WORLD_FILE", WORLD_FILE), ("WISHES_FILE", WISHES_FILE), ("WISHES_OUT_FILE", WISHES_OUT_FILE)):
             print("%-16s %s  [%s]" % (k, v, "exists" if os.path.exists(v) else "missing"))
         return 0
 

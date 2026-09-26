@@ -15,7 +15,9 @@ round` / `carving next` / `declined: <reason>`). stream/world/keepers.py turns t
 lantern and the strip; nothing here draws.
 
 Usage (source scripts/env.sh first, or pass --run-dir):
-  duty.py heartbeat [--name claude] [--interval 30]      loop: on_duty=true + fresh heartbeat_ts (lantern lit)
+  duty.py heartbeat [--name claude] [--interval 30] [--pid-file [PATH]]
+                                                          loop: on_duty=true + fresh heartbeat_ts (lantern lit);
+                                                          --pid-file writes $RUN_DIR/pids/duty.pid (or PATH), removed on exit
   duty.py off                                             on_duty=false (clean hand-off; lantern goes dark in 120 s)
   duty.py list                                            open ideas with id/class/status + the scroll label the world shows
   duty.py classify <id> <instant|macro|declined> [--reason TEXT] [--status queued|declined|open]
@@ -139,8 +141,41 @@ def mutate(run_dir: str, fn, note: str = "") -> dict:
     return d
 
 
+def _pid_file_path(a):
+    """--pid-file with no PATH -> $RUN_DIR/pids/duty.pid (the name scripts/stop.sh, status.sh and report.py know)."""
+    pf = getattr(a, "pid_file", None)
+    if pf is None:
+        return None
+    return pf or os.path.join(a.run_dir, "pids", "duty.pid")
+
+
+def _write_pid_file(path):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as fh:
+        fh.write("%d\n" % os.getpid())
+    os.replace(tmp, path)
+
+
+def _remove_pid_file(path):
+    """Remove only when the file still names this process (a later heartbeat may have taken the name over)."""
+    try:
+        with open(path) as fh:
+            mine = fh.read().strip() == str(os.getpid())
+    except Exception:
+        mine = False
+    if mine:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def cmd_heartbeat(a):
     sp, ap = paths(a.run_dir)
+    pid_path = _pid_file_path(a)
+    if pid_path:
+        _write_pid_file(pid_path)
 
     def on(d):
         d.setdefault("agent", {}).update({"on_duty": True, "heartbeat_ts": now_iso(), "name": a.name})
@@ -162,6 +197,8 @@ def cmd_heartbeat(a):
     finally:
         mutate(a.run_dir, lambda d: d.setdefault("agent", {}).update({"on_duty": False}),
                "%s going off duty" % a.name)
+        if pid_path:
+            _remove_pid_file(pid_path)
 
 
 def cmd_off(a):
@@ -335,9 +372,9 @@ def cmd_world(a):
     pips = w.get("pips") or {}
     real = {k: p for k, p in pips.items() if not p.get("_test")}
     world = w.get("world") or {}
-    asleep = sum(1 for p in real.values() if p.get("state") in ("asleep", "burrowed"))
-    print("world.json: %d pips (len), %d asleep by last state, hatched_ever %d, banished %d" % (
-        len(real), asleep, len(real), len(w.get("banished") or {})))
+    hidden = sum(1 for p in real.values() if p.get("state") in ("hidden", "burrowed"))
+    print("world.json: %d pips (len), %d hidden by last state (nobody sleeps, AGES 1.1), hatched_ever %d, banished %d" % (
+        len(real), hidden, len(real), len(w.get("banished") or {})))
     print("milestones: ladder %r reached %r" % (world.get("milestones"), world.get("milestones_reached")))
     for c in world.get("chambers") or []:
         print("  chamber %-14s milestone %-3s opened %s by %s" % (c.get("name"), c.get("milestone"), c.get("opened_ts") or "-", c.get("by") or "-"))
@@ -373,7 +410,10 @@ def main(argv):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run-dir", default=RUN_DIR)
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("heartbeat"); s.add_argument("--name", default="claude"); s.add_argument("--interval", type=int, default=30); s.set_defaults(f=cmd_heartbeat)
+    s = sub.add_parser("heartbeat"); s.add_argument("--name", default="claude"); s.add_argument("--interval", type=int, default=30)
+    s.add_argument("--pid-file", nargs="?", const="", default=None, metavar="PATH",
+                   help="write this process's pid (default $RUN_DIR/pids/duty.pid) and remove it on exit")
+    s.set_defaults(f=cmd_heartbeat)
     s = sub.add_parser("off"); s.set_defaults(f=cmd_off)
     s = sub.add_parser("list"); s.set_defaults(f=cmd_list)
     s = sub.add_parser("classify"); s.add_argument("id"); s.add_argument("klass", choices=["instant", "macro", "declined"])

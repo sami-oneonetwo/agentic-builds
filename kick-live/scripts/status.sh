@@ -67,7 +67,7 @@ fi
 pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 echo "kick-live status  $(date -u +%Y-%m-%dT%H:%M:%SZ)  channel=$KICK_CHANNEL  root=$KICK_LIVE_ROOT"
 echo "--- processes"
-for n in supervisor run ffmpeg compositor kick_api chat_listener; do
+for n in supervisor run ffmpeg compositor kick_api chat_listener category_sampler ops_switch probe duty; do
   f="$PID_DIR/$n.pid"
   if [ -f "$f" ]; then p="$(cat "$f")"; if pid_alive "$p"; then s="RUNNING pid=$p"; else s="DEAD (stale pid $p)"; fi
   else s="not running"; fi
