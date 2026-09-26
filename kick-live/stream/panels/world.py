@@ -1,33 +1,48 @@
-"""stream/panels/world.py - the WORLD region (0,72,1280,440): the scene frame + the screen-scale TEXT LAYER.
+"""stream/panels/world.py - the WORLD region (0,66,1280,456): the scene frame + the screen-scale TEXT LAYER.
 
 Two scenes, one panel (OPENWORLD.md 8 row 5, 13 row 8, 14; WORLD.md 5 row 5, 11 still normative):
 
   LONGGRASS  `stream/scenes/steading.py` `SteadingScene` (the painted land, a camera). The scene draws the ground, the
              modulation, the sprites and NO text. This panel draws, at screen scale (nothing under 20 px, every string
              cached as an RGBA strip, everything placed through the float camera and CULLED off-view):
-    plank        HN Medium 22 on a 60 % dark chip at region (16, 12) (canvas 16, 84): verb refusals in amber (ctx.notice),
-                 event notices 4-10 s, `@name walked into Longgrass · 21:14`, `that's you. try: go river · plant a flower ·
-                 camp · fire · A/B/C`, zero-vote amber line, `!help` legend, DRIFT `surveying the steading · @sami's hut ·
-                 last here yesterday 10:40`, then the 8 s idle rotation (pitch / `N settled here. nobody awake...` / the
-                 LAST FIVE REAL VISITORS with real timestamps)
-    land line    Menlo 22 at (16, 44): `2 settled here · nobody awake · day 2 · dawn` (every number a len())
-    time dial    64x64 at (16, 80): the sun or the real-phase moon on an arc over a ground stripe; to its right
-                 `18:07 · evening` (`1 h = 1 day` on world_day "hour") and `wind E · fresh · spring · waning gibbous`
-    minimap      top-right (1120, 16) 148x104: the WHOLE 960x440 map at 0.15 px/cell (144x66), walked land saturated and
-                 unwalked at 55 % (a real record: within 24 cells of a footstep), the camera rectangle #E6E8EE, one dot
-                 per awake pip in its colour, dim squares for camps, fields, an amber dot at the Moot when the beacon is
-                 lit (fresh keeper heartbeat), `4 % walked` Menlo 20 under it. No fog of war: nothing is hidden
+    plank        HN Medium 22 on a 60 % dark chip at region (16, 12) (canvas 16, 78): THE LAND'S SINGLE VOICE (HUD pass,
+                 journal 028). Priority, top wins: chat listener down `chat is reconnecting…` (amber, sticky) > person
+                 acks newest first (hatch, vote ack / moved / dropped, refusals in amber, unparsed-with-hint, !idea ack,
+                 the returning regular's care log, !stats, the next-two hint at awake <= 1) > world events (round open,
+                 the cairn named, land opened) > idle: the DRIFT caption at 0 awake (`surveying · @sami's tent · last
+                 here 14:19`), a FOLLOW retarget (`@kai is walking to the Ford`, 4 s), else BLANK. The vote's states
+                 (zero votes in the last 30 s, the ship hold's result) are the VOTE CARD's alone (journal 030: the same
+                 fact was on the plank and the card header in one frame); a raising is land strip row 3's alone. Row 2 (16, 52): the newcomer's sticky `that's you, @name · try: go river · plant a flower ·
+                 camp · or A, B, C` while row 1 is busy (awake <= 1, until their first verb).
+    vote card    top-right (864, 12) 400x136 on a 60 % chip: a Menlo 20 header (state left: `type A, B or C to vote` /
+                 `B leads` / `tied` / `one letter decides it` / the ship result), the round timer right in Menlo Bold 24
+                 (text, amber < 30 s, red < 10 s: the deadline is priority (4) for a viewer and was the smallest text on
+                 screen), three option rows [letter chip][title HN Medium 22][count Menlo 22 = len(pips standing), `0 +1` while a voter
+                 walks], the leader's chip filled in the accent, and the round's FUSE (392x4) along its bottom edge. The
+                 primary interaction fixture: one fixed place, found once.
+    clock row    NOT drawn here any more (HUD fix pass, journal 030: the chip was pasted over the waystone letters when the
+                 camera framed the stones low-right). The panel still derives the string from the nature model every
+                 frame (`midday · wind NE fresh · spring`; `last_clock_row`) and stream/panels/header.py draws it as
+                 header_right's muted second row, where nothing on the land can collide with it. Nature is declared.
+    minimap      bottom-right (1116, 362) 148x78: the WHOLE 960x440 map at 0.15 px/cell (144x66), walked land saturated
+                 and unwalked at 55 % (a real record: within 24 cells of a footstep), the camera rectangle #E6E8EE, one
+                 dot per awake pip in its colour, dim squares for camps, fields, an amber dot at the Moot when the beacon
+                 is lit (fresh keeper heartbeat). No fog of war: nothing is hidden. No caption, no compass letter.
     labels       Menlo 20 `@name` in the creature's genome colour, stroked, on a CONTRAST CHIP (60 % dark; a hue that
                  misses 4.5:1 over the brightest grass gets a darker chip, never a different colour), above the sprite,
                  de-collided by the cave's placer; `#N` for 3 s after a hatch; standing pips have no floating label
     bubbles      Menlo 22 in #11151D, 1 px #1C2130 border, max 408 px, 3 lines, 6 s, ONE per pip; care log first line
     waystones    AB 56 letters above the three stones on the Moot, count Menlo 22 = len(pips standing there), up to 3
                  names untruncated (else `N standing`)
-    plates       HN Medium 22 on a chip, 5 s rotation over the marks IN VIEW: `@sami's hut · night 4 · last here
-                 yesterday 10:40`, `flower · @name · day 1`, `tree · @name · sapling`, `field · @name · gold`, the cairn
-                 plaque `cairn · 13 stones · @a @b @c`; the DRIFT stop's plate stays up while the camera dwells
+    plates       HN Medium 22 on a chip, 5 s rotation over the marks IN VIEW, always whole inside the region: `@sami's
+                 hut · night 4 · last here yesterday 10:40`, `flower · @name · planted today`, `tree · @name · sapling ·
+                 planted 3 days ago`, `field · @name · gold`, the cairn plaque `cairn · 13 stones · @a @b @c`; the DRIFT
+                 stop's plate stays up while the camera dwells. With anyone awake, a camp's plate rotates only while its
+                 owner is awake (their own camp) or when the DRIFT stop pins it: a sleeper's `last here` is the least
+                 useful text for a stranger (journal 030)
     edge arrows  `@kai · 210 paces →` in their colour at the nearest frame edge for awake pips outside the window
-    place label  HN Medium 22 stroked, bottom-left, for 4 s after a camera retarget (`the Ford`), from terrain.places
+    (the land line, the time dial, the floating A/B/C options row and the bottom-left place label are gone: their facts
+    live once each in the header, the header's clock row, the vote card and the plank's idle caption)
     degrade      labels_on_speak / bubbles_single from scene.degrade; plates stop rotating at level >= 2; density
                  fallback above 40 awake unchanged; `!kill` -> no name anywhere in this region
   PIP HOLLOW `stream/scenes/hollow.py` `CaveScene`: the cave text layer is kept VERBATIM below (`_text_layer_cave`) so
@@ -109,21 +124,42 @@ LABEL_MAX_STEPS = 3
 SOIL_LABEL_Y = 372                    # moss labels live in the soil band (region y 368-440 = canvas 440-512), never at pip height
 PRIO_EVENT, PRIO_VERB, PRIO_LIGHT, PRIO_YOU, PRIO_CREDITS = 1, 2, 3, 4, 5   # plank priority: the person outranks the world
 
-# ----------------------------------------------------------------------------- LONGGRASS text-layer geometry (OPENWORLD 8 row 5)
-LAND_LINE_XY = (16, 44)               # canvas (16, 116)
-DIAL_XY = (16, 80)                    # canvas (16, 152), 64x64
-DIAL_R = 32
-DIAL_TEXT_X = 92                      # `18:07 · evening` / `wind E · fresh` to the dial's right
-DIAL_ROW2_DY = 34
-DIAL_TEXT_MAX_W = 560
-MINIMAP_XY = (1120, 16)               # canvas (1120, 88)
-MINIMAP_W, MINIMAP_H = 148, 104
+# ----------------------------------------------------------------------------- LONGGRASS text-layer geometry (OPENWORLD 8 row 5; HUD pass, journal 028)
+DIAL_R = 32                           # dial_img() is kept for the cave rollback; the land no longer draws a dial
+REGION_H = 456
+CARD_XY = (864, 12)                   # canvas (864, 78): the vote card's top-left
+CARD_W, CARD_H = 400, 136
+CARD_PAD_X = 16                       # header text / letter chips at card x 16; counts right-aligned to card x 384
+CARD_HEADER_Y = 6                     # Menlo 20 header row (canvas y 84)
+CARD_ROW_Y = (34, 64, 94)             # option rows (canvas y 112 / 142 / 172)
+CARD_CHIP = 30                        # the letter chip, AB 28 centred
+CARD_TITLE_X = 58                     # HN Medium 22 title
+CARD_TITLE_MAX_W = 260                # widened when the count is short (every live title fits untruncated)
+CARD_FUSE = (4, 130, 392, 4)          # the round's fuse along the card's bottom edge (canvas 868, 208)
+CARD_TIMER_W = 60
+CARD_TIMER_FONT, CARD_TIMER_SIZE, CARD_TIMER_Y = "Menlo Bold", 24, 2   # `1:27` 56 px wide, glyphs y 2-30 above row 1 (y 34)
+FUSE_IDLE_SWEEP_W = 120
+FUSE_IDLE_SWEEP_S = 8.0
+CLOCK_ROW_MAX_W = 368                 # the clock row is drawn by header_right (400 px - 2 * PAD); this panel only derives the string
+MINIMAP_XY = (1116, 362)              # canvas (1116, 428): bottom-right, 16 px above the footer
+MINIMAP_W, MINIMAP_H = 148, 78
 MINIMAP_MAP = (144, 66)               # 0.15 px/cell over 960x440
 MINIMAP_REBUILD_S = 2.0               # the walked/unwalked base is re-derived at most this often while people walk
 MINIMAP_EVERY = 5                     # the composed minimap is rebuilt every N frames (7.4: amortised)
-HUD_RESERVE_LEFT = (0, 0, 700, 152)   # plank rows + land line + dial rows: labels / plates never land under them
-HUD_RESERVE_RIGHT = (1104, 0, 1280, 132)
+HUD_RESERVE_LEFT = (0, 0, 840, 46)    # the plank row: labels / plates never land under it (fallback; the real box is used)
+HUD_RESERVE_RIGHT = (848, 0, 1280, 152)   # the vote card (fallback)
 HUD_BOXES_FALLBACK = (HUD_RESERVE_LEFT, HUD_RESERVE_RIGHT)
+NEXT_TWO = {"go": "next: camp pitches your tent here · plant a flower leaves your mark",
+            "camp": "next: fire lights your camp · plant a tree grows for weeks",
+            "plant": "next: A, B or C votes on the next round · go river to explore",
+            "fire": "next: A, B or C · go north to see more of the land",
+            "vote": "next: camp · plant a flower"}
+NEXT_TWO_S = 8.0
+STICKY_S, STICKY_CAP_S = 20.0, 60.0    # the newcomer's `that's you` line: seen-time, hard cap
+ROUND_OPEN_LINE = "new round · everyone steps off the stones · type A, B or C"
+RECONNECT_LINE = "chat is reconnecting…"
+CHAT_STATS_FRESH_S = 60.0
+_PLANK_LOG = os.environ.get("KL_PLANK_LOG") == "1" and os.environ.get("MODE") == "test"   # test hook: log every plank change
 CHIP_FONT, CHIP_SIZE = "HN Medium", 22
 CHIP_PAD = 8
 CHIP_ALPHAS = (153, 204, 235, 255)    # 60 % base; a hue that misses 4.5:1 over the brightest grass gets the next one
@@ -160,6 +196,12 @@ LEGEND_LAND = ("go river · plant a flower · camp · fire   (a verb first, four
 ARROWS = {"left": "←", "right": "→", "top": "↑", "bottom": "↓"}
 
 _LONELY_RE = re.compile(r"\b(anyone|anybody|here|hello|alone|else|nobody|empty|dead)\b", re.IGNORECASE)
+
+
+def _mss(sec) -> str:
+    """`1:27`: the vote card's timer and the plank's `closes in` tail (m:ss, no leading zero)."""
+    sec = max(0, int(sec or 0))
+    return "%d:%02d" % (sec // 60, sec % 60)
 
 
 def _ordinal(n: int) -> str:
@@ -825,6 +867,24 @@ class _Placer(object):
         return None
 
 
+def _days_ago_text(t0: Optional[float], now: float) -> str:
+    """`today` / `yesterday` / `N days ago` from a real timestamp (calendar days in local time); `today` when unknown."""
+    if t0 is None:
+        return "today"
+    try:
+        d0 = _time.localtime(float(t0))
+        d1 = _time.localtime(float(now))
+        days = int((_time.mktime((d1.tm_year, d1.tm_mon, d1.tm_mday, 0, 0, 0, 0, 0, -1)) -
+                    _time.mktime((d0.tm_year, d0.tm_mon, d0.tm_mday, 0, 0, 0, 0, 0, -1))) // 86400)
+    except Exception:
+        return "today"
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return "%d days ago" % days
+
+
 def _hud_bottom_under(x0: int, y0: int, x1: int, y1: int, boxes: Sequence[Tuple[int, int, int, int]]) -> Optional[int]:
     """The lowest bottom edge among the top-hanging HUD boxes a box overlaps, or None when it overlaps none."""
     out = None
@@ -869,8 +929,16 @@ class WorldPanel(Panel):
     def __init__(self):
         self.name_leaks = 0                           # drawn strings carrying a raw hidden / blocklisted / quarantined name (must stay 0)
         self._leaks_logged = 0
-        self.last_options_row: Optional[str] = None   # the guaranteed A/B/C options row as drawn (None while no round is open)
-        self.last_options_row_placed = ""             # "stones" (by the letters) / "fixed" (bottom-right fallback) / ""
+        self.last_vote_card: Optional[Tuple[str, ...]] = None   # (header, timer, row A, row B, row C) as drawn (self-test surface)
+        self.last_card_counts: Dict[str, str] = {}   # letter -> the count string the card drew (must equal the stone's)
+        self.last_stone_counts: Dict[str, str] = {}  # letter -> the count string drawn over the stone
+        self._card_img: Optional[Image.Image] = None
+        self._card_key = None
+        self._go_pending: Dict[str, float] = {}       # key -> t of a verb-walk (`go`) whose arrival earns a next-two hint
+        self._verbed: set = set()                     # keys that used a verb this session (the newcomer sticky ends)
+        self._round_seen: Optional[float] = None      # the round opened_t last seen (round-open notice once per round)
+        self._follow_caption: Optional[Tuple[str, float]] = None   # (`@kai is walking to the Ford`, until)
+        self._breath_t: Dict[str, float] = {}         # key -> t of its hatch / first breath (the hearth it lights is not a verb)
         self.last_hud_boxes: List[Tuple[int, int, int, int]] = list(HUD_BOXES_FALLBACK)
         self.last_sprite_boxes = 0
         self._notices: List[Dict[str, Any]] = []      # {start, until, text, colour, named}
@@ -889,8 +957,7 @@ class WorldPanel(Panel):
         self.last_placed: List[Tuple[int, int, int]] = []
         self.last_plates: List[str] = []                 # plate texts drawn last frame (QA)
         self.last_arrows: List[str] = []
-        self.last_land_line: Optional[str] = None
-        self.last_dial: Optional[Tuple[str, str]] = None
+        self.last_clock_row: Optional[str] = None
         self._alone_since: Optional[float] = None       # WORLD.md 10: one person, dead night
         self._alone_prompted = False
         self._sleepers_lit_until = 0.0
@@ -942,19 +1009,25 @@ class WorldPanel(Panel):
 
     # ------------------------------------------------------------------ events -> notices
     def _notice(self, now: float, text: str, colour, dur: float = NOTICE_S, named: bool = True, start: Optional[float] = None,
-                prio: int = PRIO_EVENT, sticky: bool = False) -> None:
+                prio: int = PRIO_EVENT, sticky: bool = False, key: Optional[str] = None, cap: Optional[float] = None) -> None:
         """Queue a plank line. `prio` decides who wins when several are live (person-facing lines outrank world events;
         never last-appended-wins). `sticky` lines count only the seconds they were actually shown toward `dur` (a vote
         ack or a refusal covering them pauses their clock), capped at 2.5 x dur."""
         st = start if start is not None else now
-        self._notices.append({"start": st, "until": st + dur, "dur": dur, "shown": 0.0, "hard_until": st + dur * 2.5,
-                              "text": text, "colour": colour, "named": named, "prio": int(prio), "sticky": bool(sticky)})
+        self._notices.append({"start": st, "until": st + dur, "dur": dur, "shown": 0.0, "hard_until": st + (cap if cap else dur * 2.5),
+                              "text": text, "colour": colour, "named": named, "prio": int(prio), "sticky": bool(sticky), "key": key})
         if len(self._notices) > 16:
             self._notices.sort(key=lambda n: (n["prio"], n["start"]))
             del self._notices[:-16]
 
     def _consume_events(self, sc, ctx, now: float, accent: str, land_mode: bool = False) -> None:
         w = sc.world
+        names_on_ev = self._names_on(ctx)
+        # first breath lights the hearth for the newcomer (steading 3.1): that `hearth` event, which lands a frame or two
+        # after the first_light, is not the `fire` verb (it must not end the sticky or earn a hint)
+        for ev in sc.events or []:
+            if ev.get("type") in ("first_light", "first_breath", "hatch") and ev.get("pip"):
+                self._breath_t[ev["pip"]] = now
         for ev in sc.events or []:
             typ = ev.get("type")
             try:
@@ -970,15 +1043,14 @@ class WorldPanel(Panel):
                     nm = self._shown(sc, key)
                     if land_mode and nm:
                         self._notice(now, "@%s walked into Longgrass · %s" % (nm, _time.strftime("%H:%M", _time.localtime(now))), accent, dur=4.0, prio=PRIO_EVENT)
+                    if land_mode and nm and key not in self._verbed and sc.awake_count() <= 1:
+                        # OPENWORLD 3.1 T+4 s (HUD pass): the newcomer's sticky line, by name, once, until their first verb
+                        # (20 s of SEEN time, 60 s cap); at awake >= 2 the bubbles teach by example
+                        self._notice(now, "that's you, @%s · try: go river · plant a flower · camp · or A, B, C" % nm, L.COLORS["text"],
+                                     dur=STICKY_S, start=now + 1.0, prio=PRIO_YOU, sticky=True, key=key, cap=STICKY_CAP_S)
                     if ev.get("first_ever"):
                         if land_mode:
-                            # OPENWORLD 3.1 T+4 to T+10 s: one second after the hatch, for a SEEN 8 s (sticky), above every world line
-                            self._notice(now, "that's you. try: go river · plant a flower · camp · fire · A/B/C", L.COLORS["text"], dur=8.0,
-                                         named=False, start=now + 1.0, prio=PRIO_YOU, sticky=True)
-                            self._notice(now, "your creature sleeps at its camp when you go. it is here tomorrow.", L.COLORS["text2"], dur=6.0,
-                                         named=False, start=now + 9.0, prio=PRIO_LIGHT, sticky=True)
-                            self._notice(now, "stay ten minutes and your creature grows a size.", L.COLORS["text2"], dur=6.0,
-                                         named=False, start=now + 17.0, prio=PRIO_LIGHT, sticky=True)
+                            pass
                         else:
                             # WORLD.md 2.2 T+4 to T+10 s: one second after the hatch, for a SEEN 8 s (sticky), above every world line
                             self._notice(now, "that's you. try: feed · pet · dig · plant", L.COLORS["text"], dur=8.0, named=False,
@@ -1045,6 +1117,8 @@ class WorldPanel(Panel):
                         what = str(ev.get("kind") or ev.get("mark") or ("flower" if land_mode else "glowmoss"))
                         art = "" if what == "glowmoss" else ("a " if what[:1] not in "aeiou" else "an ")
                         self._notice(now, "@%s planted %s%s" % (nm, art, what), accent, prio=PRIO_VERB)
+                    if land_mode:
+                        self._verb_done(sc, ev.get("pip"), "plant", now)
                 # -- LONGGRASS events (OPENWORLD 6, camera EVENT_TYPES); unknown types are ignored, never invented
                 elif typ in ("camp", "camp_new"):
                     nm = self._shown(sc, ev.get("pip"))
@@ -1053,6 +1127,7 @@ class WorldPanel(Panel):
                         pl = (ld0.plate(ev.get("pip"), now) if ld0 is not None else None) or {}
                         word = str(ev.get("word") or pl.get("word") or "camp")
                         self._notice(now, "@%s pitched a %s" % (nm, word), accent, prio=PRIO_VERB)
+                    self._verb_done(sc, ev.get("pip"), "camp", now)
                 elif typ == "camp_raised":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
@@ -1063,6 +1138,8 @@ class WorldPanel(Panel):
                     if nm:
                         line = ("@%s lit the hearth" % nm) if (typ == "hearth" or ev.get("hearth")) else ("@%s lit a fire" % nm)
                         self._notice(now, line, accent, prio=PRIO_VERB)
+                    if now - self._breath_t.get(ev.get("pip") or ev.get("by"), -1e9) > 15.0:
+                        self._verb_done(sc, ev.get("pip") or ev.get("by"), "fire", now)
                 elif typ == "sow":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
@@ -1088,16 +1165,50 @@ class WorldPanel(Panel):
                 elif typ in ("raising", "raising_ship", "land_open"):
                     name = L.strip_non_bmp(str(ev.get("name") or ""))
                     if name:
-                        verb = {"raising": "the keepers are raising", "raising_ship": "raised:", "land_open": "land opened:"}[typ]
-                        self._notice(now, "%s %s" % (verb, name), accent, dur=8.0, named=False)
-                elif typ in ("go", "walk") and (ev.get("place") or isinstance(ev.get("to"), str)):
-                    nm = self._shown(sc, ev.get("pip"))
-                    to = str(ev.get("place") or ev.get("to") or "")
-                    T0 = getattr(sc, "terrain", None)
-                    pl = (getattr(T0, "places", None) or {}).get(to.lower()) if T0 is not None else None
-                    place = L.strip_non_bmp(str(ev.get("place_label") or (pl or {}).get("label") or ""))
-                    if nm and place and not to.startswith("@") and to.lower() not in ("a", "b", "c", "home"):
-                        self._notice(now, "@%s heads for %s" % (nm, place), L.COLORS["text"], dur=3.0, prio=PRIO_VERB)
+                        by = self._shown(sc, ev.get("by")) if (ev.get("by") and names_on_ev) else None
+                        tail = (" · asked by @%s" % by) if by else ""
+                        # a raising (started / landed) is land strip row 3's line (pinned while raising, 10 min after);
+                        # the plank no longer repeats it (journal 030). The camera's EVENT cut still shows the moment.
+                        if typ == "land_open":
+                            self._notice(now, "the keepers opened %s%s" % (name, tail), accent, dur=6.0, named=bool(by))
+                elif typ in ("go", "walk") and land_mode and isinstance(ev.get("to"), str):
+                    # a VERB walk (the wander's `to` is a cell pair): the sticky ends, the arrival earns a next-two hint,
+                    # and the FOLLOW camera's idle caption names where the person is going
+                    key = ev.get("pip")
+                    if key and str(ev.get("then") or "idle") == "idle":
+                        self._go_pending[key] = now
+                        self._verbed.add(key)
+                        self._end_sticky(key)
+                        nm = self._shown(sc, key)
+                        to = str(ev.get("to") or "")
+                        if nm and to.lower() not in ("a", "b", "c"):
+                            T0 = getattr(sc, "terrain", None)
+                            pl = (getattr(T0, "places", None) or {}).get(to.lower()) if T0 is not None else None
+                            if to.startswith("@"):
+                                other = self._shown(sc, to[1:])
+                                where = ("to @%s" % other) if other else None
+                            elif to.lower() == "home":
+                                where = "home"
+                            elif pl and pl.get("label"):
+                                where = "to %s" % L.strip_non_bmp(str(pl["label"]))
+                            elif to.lower() in ("north", "south", "east", "west"):
+                                where = to.lower()
+                            else:
+                                where = None
+                            if where:
+                                self._follow_caption = ("@%s is walking %s" % (nm, where), now + 4.0)
+                elif typ == "arrive" and land_mode:
+                    key = ev.get("pip")
+                    at = str(ev.get("at") or "")
+                    if key and at in PLATFORM_LETTERS:
+                        self._verb_done(sc, key, "vote", now)
+                    elif key and key in self._go_pending:
+                        self._go_pending.pop(key, None)
+                        self._verb_done(sc, key, "go", now)
+                elif typ == "leave_platform" and land_mode:
+                    if _PLANK_LOG:
+                        _log("leave_platform: %r" % (ev,))       # TEST HOOK (KL_PLANK_LOG=1): the event as evidence
+                    self._vote_left(sc, ctx, ev, now, accent)
                 elif typ == "swim":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
@@ -1156,6 +1267,56 @@ class WorldPanel(Panel):
         self._lonely_t = now
         self._notice(now, txt, L.COLORS["text"], dur=8.0, prio=PRIO_LIGHT, sticky=True)
 
+    def _end_sticky(self, key: Optional[str]) -> None:
+        """The newcomer's `that's you` line ends at their first verb."""
+        if key:
+            self._notices = [n for n in self._notices if not (n.get("sticky") and n.get("key") == key)]
+
+    def _verb_done(self, sc, key: Optional[str], verb: str, now: float) -> None:
+        """A verb completed (walk arrived / mark placed / vote counted): the sticky ends and, while the person is alone
+        (awake <= 1), the plank offers the next two things for 8 s (priority 3, delivered when relevant)."""
+        if not key:
+            return
+        self._verbed.add(key)
+        self._end_sticky(key)
+        line = NEXT_TWO.get(verb)
+        if line and sc.awake_count() <= 1:
+            self._notice(now, line, L.COLORS["text"], dur=NEXT_TWO_S, named=False, start=now + 0.5, prio=PRIO_YOU, key=key)
+
+    def _vote_left(self, sc, ctx, ev: Dict[str, Any], now: float, accent: str) -> None:
+        """A standing / walking voter left a stone (behaviour `leave_platform`). The tally is who stands at close
+        (rounds tally_source `platforms`), so the plank says the true thing: the vote is dropped (a move to another
+        letter is the bridge's vote ack).
+        Silent when the round just opened (everyone steps off: the round-open line says so), when the tally is not
+        embodied, or when the person is walking home to sleep."""
+        key = ev.get("pip")
+        left = str(ev.get("platform") or "")
+        why = None
+        e = sc.behaviour.get(key) if key else None
+        nm = self._shown(sc, key) if key else None
+        opened = ctx.round_opened_t
+        if not key or left not in PLATFORM_LETTERS:
+            why = "no key / letter"
+        elif str((ctx.round or {}).get("tally_source") or "") != "platforms":
+            why = "tally_source %r" % (ctx.round or {}).get("tally_source")
+        elif (ctx.round or {}).get("phase") == "ship":
+            why = "ship hold"
+        elif opened is not None and now - float(opened) < 3.0:
+            why = "round just opened"
+        elif e is None or e.state == "asleep" or getattr(e, "then", None) in ("sleep", "credits"):
+            why = "asleep / walking home"
+        elif not nm:
+            why = "no shown name"
+        if why is not None:
+            if _PLANK_LOG:
+                _log("vote_left: silent (%s) for %r" % (why, key))    # TEST HOOK (KL_PLANK_LOG=1)
+            return
+        if e.platform in PLATFORM_LETTERS and e.platform != left:
+            return          # moved to another letter: the bridge's same-frame ack (`@x walks to A · counts while standing there ·
+                            # closes in 0:28`) already says it; a second `moved to A` line would be the same fact twice (journal 030)
+        self._notice(now, "@%s walked off %s · that vote is dropped · type %s to stand again" % (nm, left, left),
+                     L.COLORS["warn"], dur=5.0, prio=PRIO_VERB, key=key)
+
     def _care_line(self, sc, ev: Dict[str, Any], now: float) -> None:
         """`back after 2 nights · your tree grew · fed by @kai x2 · gift from @sami` from the REAL care log / land."""
         key = ev.get("pip")
@@ -1182,9 +1343,115 @@ class WorldPanel(Panel):
             parts.append("%s @%s%s" % (word, by, (" x%d" % n) if n > 1 else ""))
         if parts:
             self._care[key] = (" · ".join(parts), now + 6.0)
+            nm = self._shown(sc, key)
+            if nm and getattr(sc, "camera", None) is not None:
+                head = parts[0]
+                if head.startswith("back after"):
+                    line = "@%s is %s" % (nm, " · ".join(parts))
+                else:
+                    line = "@%s is back · %s" % (nm, " · ".join(parts))
+                self._notice(now, line, L.preset(getattr(self, "_preset", None) or "kick")["accent"], dur=6.0, prio=PRIO_VERB, key=key)
 
     # ------------------------------------------------------------------ plank
-    def _plank_text(self, sc, ctx, now: float, names_on: bool, accent: str, land_mode: bool = False) -> Tuple[str, Any]:
+    @staticmethod
+    def _chat_down(ctx) -> bool:
+        """The chat listener is disconnected or its stats file is stale (typing will not land): the plank says so.
+        Never in a self-test with no listener at all (nothing to reconnect to)."""
+        cs = ctx.chat_stats or {}
+        if cs:
+            t = iso_to_epoch(cs.get("ts"))
+            fresh = t is not None and (float(ctx.now) - t) < CHAT_STATS_FRESH_S
+            return not (bool(cs.get("connected")) and fresh)
+        if (ctx.compositor_live or {}).get("selftest"):
+            return False
+        return (ctx.chat_cfg or {}).get("connected") is False
+
+    def _plank_text(self, sc, ctx, now: float, names_on: bool, accent: str, land_mode: bool = False) -> Optional[Tuple[str, Any]]:
+        """(text, colour) for plank row 1, or None for a blank plank (the land only: a quiet plank is fine, journal 028)."""
+        if land_mode:
+            return self._plank_text_land(sc, ctx, now, names_on, accent)
+        return self._plank_text_cave(sc, ctx, now, names_on, accent, land_mode=False)
+
+    def _plank_text_land(self, sc, ctx, now: float, names_on: bool, accent: str) -> Optional[Tuple[str, Any]]:
+        # 0. the one flag that changes what a viewer should do: typing will not land
+        if self._chat_down(ctx):
+            return RECONNECT_LINE, L.COLORS["warn"]
+        # 1. a direct answer to a person, NEWEST FIRST across both sources: the bridge's same-frame vote ack (`@name walks
+        #    to C · counts while standing there · closes in 1:27`), a refusal (amber), an unparsed-with-hint (`to do that,
+        #    type: go north`), a mod notice; and this panel's own person lines (vote dropped / moved, the care log, hints)
+        nt = ctx.notice if (ctx.notice and isinstance(ctx.notice, (tuple, list)) and ctx.notice[0] and names_on) else None
+        live = self._live_notices(now, names_on)
+        person = [q for q in live if q["prio"] >= PRIO_VERB and not q.get("sticky")]
+        if nt is not None:
+            nt_start = nt[2] if (len(nt) > 2 and nt[2] is not None) else now
+            # a tie (same frame) goes to this panel's line: it is the world's consequence of the verb the bridge just
+            # echoed (`go north` -> bridge `@x walks north`, world `@x walked off A · that vote is dropped`; journal 030:
+            # with a strict `>` the dropped-vote line never showed)
+            newer = [q for q in person if q["start"] >= float(nt_start)]
+            if not newer:
+                lvl = (nt[1] if len(nt) > 1 else None)
+                col = L.COLORS["danger"] if lvl == "danger" else (accent if lvl in ("ok", "accent", "info") else L.COLORS["warn"])
+                return str(nt[0]), col
+            live = newer + [q for q in live if q.get("sticky")]
+        if live:
+            n = max(live, key=lambda q: (q["prio"], q["start"]))        # the person outranks the world; then newest
+            if n.get("sticky"):
+                n["shown"] += 1.0 / float(ctx.fps or 30)
+            return n["text"], n["colour"]
+        if ctx.mod_paused:
+            return "chat paused by mod · creatures keep moving", L.COLORS["warn"]
+        # !help: the newcomer legend again for 20 s (by name when the bridge says who asked)
+        if ctx.help_until and now < float(ctx.help_until):
+            who = shown_name(getattr(ctx, "help_by", None)) if names_on else None
+            head = ("@%s · " % who) if who else ""
+            return head + "try: go river · plant a flower · camp · or A, B, C", L.COLORS["text"]
+        # !stats: a personal answer, to the asker, 10 s
+        if ctx.stats_until and now < float(ctx.stats_until):
+            card = self._stats_card(sc, ctx, now, names_on)
+            if card:
+                return card, L.COLORS["text"]
+        # the vote's own states (zero standing in the last 30 s, the ship hold's result) are the VOTE CARD's header, not
+        # the plank's: one fact, one home (HUD fix pass, journal 030)
+        # idle: the camera's caption at 0 awake (DRIFT), a FOLLOW retarget for 4 s, else a blank plank
+        if sc.awake_count() == 0:
+            drift = self._drift_plank(sc, ctx, now, names_on)
+            if drift is not None:
+                return drift
+            return None
+        if self._follow_caption and self._follow_caption[1] > now and names_on:
+            return self._follow_caption[0], L.COLORS["text2"]
+        return None
+
+    def _stats_card(self, sc, ctx, now: float, names_on: bool) -> Optional[str]:
+        """`@name · camp: hut · 4 marks · 2 stones · 41 min here` for the asker (ctx.stats_by), every number a len()."""
+        key = str(getattr(ctx, "stats_by", None) or "").lower()
+        nm = self._shown(sc, key) if (key and names_on) else None
+        if not nm:
+            return None
+        ld = land()
+        parts = ["@%s" % nm]
+        try:
+            pl = (ld.plate(key, now) if ld is not None else None) or {}
+            if pl.get("word"):
+                parts.append("camp: %s" % pl["word"])
+            n_marks = sum(1 for m in (ld.marks if ld is not None else []) if str(m.get("owner") or "").lower() == key)
+            if n_marks:
+                parts.append("%d mark%s" % (n_marks, "" if n_marks == 1 else "s"))
+            stones = 0
+            for k, n in (ld.plaque("moot", 50) if ld is not None else []):
+                if str(k).lower() == key:
+                    stones = int(n)
+            if stones:
+                parts.append("%d stone%s" % (stones, "" if stones == 1 else "s"))
+            e = sc.behaviour.get(key)
+            mins = int(round(float(getattr(e, "minutes_tonight", 0.0) or 0.0))) if e is not None else 0
+            if mins:
+                parts.append("%d min here" % mins)
+        except Exception:
+            pass
+        return " · ".join(parts)
+
+    def _plank_text_cave(self, sc, ctx, now: float, names_on: bool, accent: str, land_mode: bool = False) -> Tuple[str, Any]:
         nt = ctx.notice if (ctx.notice and isinstance(ctx.notice, (tuple, list)) and ctx.notice[0] and names_on) else None
         lvl = (nt[1] if nt is not None and len(nt) > 1 else None)
         if nt is not None:
@@ -1281,17 +1548,14 @@ class WorldPanel(Panel):
         if cam is None or cam.mode != "DRIFT":
             return None
         stop = cam.drift_stop
-        slot = int(now // ROTATE_S)
-        if slot % 2 == 0:
-            return None
         ld = land()
         if stop is None:
             visits = list((sc.world.data.get("world") or {}).get("visits") or [])
             if names_on and visits:
                 nm = self._shown(sc, visits[-1].get("name"))
                 if nm:
-                    return "surveying the steading · last here: @%s %s" % (nm, when_text(visits[-1].get("ts"), now)), L.COLORS["text2"]
-            return "surveying the steading · the wind is just the wind", L.COLORS["text2"]
+                    return "surveying · last here: @%s %s" % (nm, when_text(visits[-1].get("ts"), now)), L.COLORS["text2"]
+            return "surveying the land", L.COLORS["text2"]
         kind = str(stop.get("kind") or "")
         owner = stop.get("owner")
         nm = self._shown(sc, owner) if (owner and names_on) else None
@@ -1300,25 +1564,25 @@ class WorldPanel(Panel):
         if kind == "cairn" and ld is not None:
             return "surveying · the cairn · %d stone%s" % (ld.stock, "" if ld.stock == 1 else "s"), L.COLORS["text2"]
         if not nm:
-            return "surveying the steading", L.COLORS["text2"]
+            return "surveying the land", L.COLORS["text2"]
         if kind == "camp" and ld is not None:
             pl = ld.plate(owner, now) or {}
-            return "surveying the steading · @%s's %s · last here %s" % (nm, pl.get("word") or "camp", when_text(pl.get("last_seen_ts"), now)), L.COLORS["text2"]
+            return "surveying · @%s's %s · last here %s" % (nm, pl.get("word") or "camp", when_text(pl.get("last_seen_ts"), now)), L.COLORS["text2"]
         if kind == "tree" and ld is not None:
             m = next((m for m in ld.marks_of_type("tree") if m.get("id") == stop.get("id")), None)
             stage = ld.tree_stage(m, now)[1] if m else "tree"
-            return "surveying the steading · @%s's tree · %s" % (nm, stage), L.COLORS["text2"]
+            return "surveying · @%s's tree · %s" % (nm, stage), L.COLORS["text2"]
         if kind == "field" and ld is not None:
             f = ld.field_of(owner)
             stage = ld.field_stage(f, now)[1] if f else "field"
-            return "surveying the steading · @%s's field · %s" % (nm, stage), L.COLORS["text2"]
-        return "surveying the steading · @%s's %s" % (nm, kind or "mark"), L.COLORS["text2"]
+            return "surveying · @%s's field · %s" % (nm, stage), L.COLORS["text2"]
+        return "surveying · @%s's %s" % (nm, kind or "mark"), L.COLORS["text2"]
 
     def _live_notices(self, now: float, names_on: bool) -> List[Dict[str, Any]]:
         return [n for n in self._notices if n["start"] <= now and (names_on or not n["named"])
                 and (n["until"] > now if not n.get("sticky") else n["hard_until"] > now)]
 
-    def _plank_row2(self, ctx, now: float, names_on: bool, primary: str) -> Optional[Tuple[str, Any]]:
+    def _plank_row2(self, ctx, now: float, names_on: bool, primary: Optional[str]) -> Optional[Tuple[str, Any]]:
         """The newcomer's sticky line (`that's you. try: ...`) when row 1 is held by something else (a vote ack, a
         refusal to another person): it drops to a second plank row instead of vanishing, and its seen-clock runs."""
         for n in sorted(self._live_notices(now, names_on), key=lambda q: -q["prio"]):
@@ -1492,15 +1756,14 @@ class WorldPanel(Panel):
         labels_on_speak = bool(deg.get("labels_on_speak")) or awake > DENSITY_FALLBACK
         dense = awake > DENSITY_FALLBACK
         plates_static = bool(deg.get("plates_static")) or deg.get("plates_rotate") is False or dense
+        self._preset = ctx.preset
         self._consume_events(sc, ctx, now, accent, land_mode=True)
-        # the beacon's first light of a session explains itself once (journal 023: the owner asked what keepers are)
-        fresh = self._keeper_fresh(ctx)
-        if fresh and not getattr(self, "_beacon_explained", False):
-            self._beacon_explained = True
-            self._notice(now, "beacon lit · a keeper (an AI agent) is on duty · !idea <text> asks for something",
-                         L.COLORS["text2"], dur=8.0, named=False, prio=PRIO_LIGHT)
-        elif not fresh:
-            self._beacon_explained = False
+        # a new round: everyone steps off the stones (behaviour.release_votes); said once, only when someone is here to read it
+        opened = ctx.round_opened_t
+        if opened != self._round_seen:
+            if self._round_seen is not None and opened is not None and awake >= 1 and (ctx.round or {}).get("phase") != "ship":
+                self._notice(now, ROUND_OPEN_LINE, L.COLORS["text"], dur=4.0, named=False, prio=PRIO_EVENT)
+            self._round_seen = opened
         if awake == 1:
             if self._alone_since is None:
                 self._alone_since, self._alone_prompted = now, False
@@ -1524,7 +1787,6 @@ class WorldPanel(Panel):
         hud_strips, hud_boxes = self._hud_strips(sc, ctx, ld, N, now, names_on, accent, awake, size)
         for bx in hud_boxes:
             placer.reserve(*bx)
-        placer.reserve(0, h - 44, 400, h)                        # the place label's row
         self.last_hud_boxes = list(hud_boxes)
         try:
             cam.hud_boxes = [tuple(int(v) for v in bx) for bx in hud_boxes]
@@ -1548,6 +1810,7 @@ class WorldPanel(Panel):
         # count sitting on its stone); if that is not enough, all three are culled together (never `A C` without `B`,
         # noon frame 135 of the fix run); the camera's dead zone normally keeps the stones clear whenever people are at them
         stones_px: List[Tuple[str, int, int]] = []
+        stone_counts: Dict[str, str] = {}
         for letter, (wx, wy) in zip(PLATFORM_LETTERS, self._waystones(sc, T, ld)):
             pt = cam.sim_to_screen(wx, wy, size, margin_px=120.0)
             if pt is not None:
@@ -1577,6 +1840,7 @@ class WorldPanel(Panel):
             _paste(img, ct, cx - ct.size[0] // 2, cty)
             x0, x1 = cx - lt.size[0] // 2, cx + lt.size[0] // 2
             k_walk = int(walking.get(letter) or 0)
+            stone_counts[letter] = ("%d +%d" % (n, k_walk)) if k_walk else "%d" % n
             if k_walk:                                     # `0 +1`: the ack plank and the digit never disagree while a voter walks over
                 wt = text_strip("Menlo", 20, "+%d" % k_walk, L.COLORS["text2"])
                 _paste(img, wt, cx + ct.size[0] // 2 + 3, cty + 2)
@@ -1611,7 +1875,7 @@ class WorldPanel(Panel):
                     x0, x1 = min(x0, rx - total), max(x1, rx)
                     bottom = ry + LABEL_H
             stone_row[letter] = (x0, x1, bottom)
-        self._options_row(img, placer, options, counts, best_votes, letters_px, stone_row, accent, size)
+        self.last_stone_counts = stone_counts
 
         # 2. plates: the DRIFT stop's camp plate (while the camera dwells) + one rotating plate over the marks in view
         plates_drawn: List[str] = []
@@ -1794,18 +2058,13 @@ class WorldPanel(Panel):
                 arrows_drawn.append(txt)
         self.last_arrows = arrows_drawn
 
-        # 7. the place label bottom-left (4 s after a retarget), a terrain place name, never a person
-        place = self._place_label(sc, cam, T, now)
-        if place:
-            s = text_strip(CHIP_FONT, CHIP_SIZE, place, L.COLORS["text"], stroke=True)
-            _paste(img, s, GUTTER, h - GUTTER - s.size[1])
-
-        # 8. plank rows, the land line, the time dial + its two rows (top-left, over everything else in the region),
-        #    built in step 0 so the placer and the camera saw their real boxes
+        # 7. the HUD: plank rows (top-left), the vote card (top-right), over everything
+        #    else in the region; built in step 0 so the placer and the camera saw their real boxes. Then the fuse.
         for strip, (px, py) in hud_strips:
             _paste(img, strip, px, py)
+        self._draw_fuse(img, ctx, now, accent)
 
-        # 9. the honest minimap (top-right)
+        # 8. the honest minimap (bottom-right)
         self._draw_minimap(img, sc, cam, ld, T, ents, ctx, now, size)
 
         self._last_counts = (drawn_names, len(ents))
@@ -1813,51 +2072,207 @@ class WorldPanel(Panel):
 
     def _hud_strips(self, sc, ctx, ld, N, now: float, names_on: bool, accent: str, awake: int, size
                     ) -> Tuple[List[Tuple[Image.Image, Tuple[int, int]]], List[Tuple[int, int, int, int]]]:
-        """The top-left stack (plank row 1, row 2 or the land line, the time dial and its two rows) as (strip, xy)
-        pairs plus the boxes they cover: one box for the whole left stack (its real width and height this frame) and
-        the minimap's. Built before anything else is placed; pasted last."""
+        """The HUD as (strip, xy) pairs plus the boxes they cover (region px): plank row 1 (and row 2 while the
+        newcomer's sticky waits behind an ack), the vote card, the minimap's frame (the clock row is the header's). The top boxes hang
+        from y 0 so the camera treats them as its dead zone; every box is reserved in the placer before anything else
+        is placed. Built first, pasted last."""
         w, h = size
         strips: List[Tuple[Image.Image, Tuple[int, int]]] = []
-        txt, col = self._plank_text(sc, ctx, now, names_on, accent, land_mode=True)
-        strips.append((chip_img(L.strip_non_bmp(txt), col, max_w=PLANK_MAX_W), (PLANK_XY[0], PLANK_XY[1])))
+        boxes: List[Tuple[int, int, int, int]] = []
+        # the plank (the land's single voice); a blank plank is fine
+        pt = self._plank_text(sc, ctx, now, names_on, accent, land_mode=True)
+        txt = pt[0] if pt is not None else None
+        if pt is not None:
+            chip = chip_img(L.strip_non_bmp(pt[0]), pt[1], max_w=PLANK_MAX_W)
+            strips.append((chip, (PLANK_XY[0], PLANK_XY[1])))
+            boxes.append((0, 0, min(w, PLANK_XY[0] + chip.size[0] + 6), PLANK_XY[1] + chip.size[1] + 4))
         row2 = self._plank_row2(ctx, now, names_on, txt)
         if row2 is not None:
-            strips.append((chip_img(L.strip_non_bmp(row2[0]), row2[1], max_w=PLANK_MAX_W), (PLANK_XY[0], PLANK_XY[1] + PLANK_ROW2_DY)))
+            chip2 = chip_img(L.strip_non_bmp(row2[0]), row2[1], max_w=PLANK_MAX_W)
+            y2 = PLANK_XY[1] + (PLANK_ROW2_DY if pt is not None else 0)
+            strips.append((chip2, (PLANK_XY[0], y2)))
+            boxes.append((0, 0, min(w, PLANK_XY[0] + chip2.size[0] + 6), y2 + chip2.size[1] + 4))
+        if _PLANK_LOG and (txt != self.last_plank or (row2[0] if row2 is not None else None) != self.last_plank_row2):
+            _log("plank: %r | row2: %r" % (txt, row2[0] if row2 is not None else None))     # TEST HOOK (KL_PLANK_LOG=1): the copy as evidence
         self.last_plank = txt
         self.last_plank_row2 = row2[0] if row2 is not None else None
+        # the vote card (top-right; the fuse is drawn after the paste)
+        card = self._vote_card(sc, ctx, now, awake, accent)
+        strips.append((card, CARD_XY))
+        boxes.append((CARD_XY[0] - 16, 0, w, CARD_XY[1] + CARD_H + 4))
+        # the clock row: derived here (the nature model is the scene's), DRAWN by header_right (stream/panels/header.py
+        # reads PANEL.last_clock_row after this panel rendered). It left the land's bottom-right, where the camera frames
+        # the waystones, after it was pasted over the letters' counts (HUD fix pass, journal 030).
         info = None
         try:
             info = N.describe(now) if N is not None else None
         except Exception:
             info = None
-        settled = ld.settled if ld is not None else 0
-        days = ld.days if ld is not None else 0
-        awake_words = "nobody awake" if awake == 0 else ("%d awake" % awake)
-        parts = ["%d settled here" % settled, awake_words, "day %d" % max(1, days)]
-        if info:
-            parts.append(str(info.get("day_part") or ""))
-        land_line = " · ".join(p for p in parts if p)
-        if row2 is None:
-            strips.append((chip_img(land_line, L.COLORS["text2"], "Menlo", 22, max_w=PLANK_MAX_W), (LAND_LINE_XY[0], LAND_LINE_XY[1])))
-        self.last_land_line = land_line
-        if info:
-            hour_mode = str(info.get("world_day") or "real") == "hour"
-            strips.append((dial_img(float(info.get("hour") or 0.0), float(info.get("moon_phase") or 0.0), float(info.get("night") or 0.0)),
-                           (DIAL_XY[0] - 4, DIAL_XY[1] - 4)))
-            clock = "%s · %s" % (info.get("world_clock") if hour_mode else info.get("clock"), info.get("day_part"))
-            if hour_mode:
-                clock += "   1 h = 1 day"
-            row_b = " · ".join(str(x) for x in (info.get("wind"), info.get("season"), info.get("moon")) if x)
-            weather = str(info.get("weather") or "clear")
-            if weather not in ("clear", ""):
-                row_b = "%s · %s" % (row_b, weather)
-            strips.append((chip_img(clock, L.COLORS["text"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), (DIAL_TEXT_X, DIAL_XY[1])))
-            strips.append((chip_img(row_b, L.COLORS["text2"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), (DIAL_TEXT_X, DIAL_XY[1] + DIAL_ROW2_DY)))
-            self.last_dial = (clock, row_b)
-        right = max(px + st.size[0] for st, (px, py) in strips) if strips else HUD_RESERVE_LEFT[2]
-        bottom = max(py + st.size[1] for st, (px, py) in strips) if strips else HUD_RESERVE_LEFT[3]
-        left_box = (0, 0, min(w, int(right) + 6), int(bottom) + 4)
-        return strips, [left_box, (MINIMAP_XY[0] - 16, 0, w, MINIMAP_XY[1] + MINIMAP_H + 28)]
+        self.last_clock_row = self._clock_row_text(info) if info else None
+        # the minimap's frame (bottom-right): a bottom box, so the camera keeps framed feet above it too
+        boxes.append((MINIMAP_XY[0] - 8, MINIMAP_XY[1] - 8, MINIMAP_XY[0] + MINIMAP_W + 8, MINIMAP_XY[1] + MINIMAP_H + 8))
+        return strips, boxes
+
+    @staticmethod
+    def _clock_row_text(info: Dict[str, Any]) -> str:
+        """The header's muted nature row, Menlo 20 in 368 px. Real-time land (world_day "real", the live setting):
+        `midday · wind NE fresh · spring` (+ the weather word when not clear); the wall clock is NOT printed (every viewer
+        has one, and a time zone that is not theirs reads wrong). Hour mode: `14:30 · afternoon · a day here is one hour`
+        (the compressed clock is the point) + wind / weather / season while they fit. When too wide, the tail is dropped
+        item by item: season, then the weather word, then (hour mode) the wind."""
+        hour_mode = str(info.get("world_day") or "real") == "hour"
+        wind = str(info.get("wind") or "").replace(" · ", " ")            # nature says `wind NW · calm`; the row says `wind NW calm`
+        day_part = str(info.get("day_part") or "")
+        weather = str(info.get("weather") or "clear")
+        season = str(info.get("season") or "")
+        if hour_mode:
+            core = [p for p in (str(info.get("world_clock") or ""), day_part, "a day here is one hour") if p]
+            tail = [p for p in (wind, weather if weather not in ("clear", "") else "", season) if p]
+        else:
+            core = [p for p in (day_part, wind) if p]
+            tail = [p for p in (weather if weather not in ("clear", "") else "", season) if p]
+        while True:
+            txt = " · ".join(core + tail)
+            if L.text_width("Menlo", 20, txt) <= CLOCK_ROW_MAX_W or not tail:
+                return txt
+            tail.pop()
+
+    # ------------------------------------------------------------------ the vote card (the primary interaction fixture)
+    def _card_model(self, sc, ctx, now: float, awake: int) -> Dict[str, Any]:
+        """Everything the card draws, as strings and roles: header (state text, role), timer, rows (letter, title,
+        count string, leader), phase. Every count is len(pips standing) from platform_counts(), the stones' source."""
+        rnd = ctx.round or {}
+        phase = rnd.get("phase") or "open"
+        rem = ctx.round_remaining
+        counts = sc.platform_counts() or {}
+        walking = self._walking_to(sc)
+        options = {str(o.get("letter") or "").upper(): o for o in (rnd.get("options") or []) if isinstance(o, dict)}
+        ns = {k: len(counts.get(k) or []) for k in PLATFORM_LETTERS}
+        best = max(ns.values()) if ns else 0
+        leaders = [k for k, n in ns.items() if n == best and n > 0]
+        leader = leaders[0] if len(leaders) == 1 else None
+        rows = []
+        for k in PLATFORM_LETTERS:
+            title = L.strip_non_bmp(str((options.get(k) or {}).get("title") or "")).strip()
+            kw = int(walking.get(k) or 0)
+            cnt = ("%d +%d" % (ns[k], kw)) if kw else "%d" % ns[k]
+            rows.append({"letter": k, "title": title, "count": cnt, "n": ns[k], "leader": k == leader})
+        has_round = bool(options) and rem is not None and phase != "ship"
+        timer = _mss(rem) if (has_round and rem is not None and rem >= 0) else ""
+        standing = sum(ns.values())
+        if phase == "ship":
+            res = rnd.get("last_result") or {}
+            letter = str(res.get("letter") or "").upper()
+            if res.get("ok") is False:
+                header = ("that one failed · reverting", "danger")
+            elif res.get("agent_pick"):
+                who = "keepers" if self._keeper_fresh(ctx) else "land"
+                header = ("nobody voted · %s picked %s" % (who, letter or "one"), "text2")
+            else:
+                header = ("chat picked %s" % (letter or "one"), "accent")
+            timer = ""
+        elif not has_round:
+            header = ("next round soon", "text2")
+        elif standing == 0:
+            if rem is not None and rem < 30:
+                header = ("one letter decides it", "warn")
+            else:
+                header = ("type A, B or C to vote", "text2")     # names the thing to type (a stranger cannot "stand at a stone")
+        elif leader:
+            header = ("%s leads" % leader, "text")
+        else:
+            header = ("tied", "text2")
+        # the timer's colour follows the fuse: text, amber in the last 30 s, red in the last 10 s
+        timer_role = "text"
+        if timer and rem is not None:
+            timer_role = "danger" if rem < 10 else ("warn" if rem < 30 else "text")
+        return {"header": header, "timer": timer, "timer_role": timer_role, "rows": rows, "phase": phase, "has_round": has_round}
+
+    def _vote_card(self, sc, ctx, now: float, awake: int, accent: str) -> Image.Image:
+        """The 400x136 card on a 60 % chip: header (state left, timer right), three option rows; cached on its strings.
+        The fuse is drawn on the frame after the paste (it moves every frame; the card only once a second)."""
+        m = self._card_model(sc, ctx, now, awake)
+        key = (m["header"], m["timer"], m["timer_role"], tuple((r["letter"], r["title"], r["count"], r["leader"]) for r in m["rows"]), accent, m["phase"])
+        for r in m["rows"]:
+            _note_drawn(r["title"])
+        self.last_vote_card = (m["header"][0], m["timer"]) + tuple("%s %s %s" % (r["letter"], r["title"], r["count"]) for r in m["rows"])
+        self.last_card_counts = {r["letter"]: r["count"] for r in m["rows"]}
+        if self._card_img is not None and self._card_key == key:
+            return self._card_img
+        roles = dict(L.COLORS)
+        roles["accent"] = accent
+        im = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im, "RGBA")
+        d.rounded_rectangle([0, 0, CARD_W - 1, CARD_H - 1], 8, fill=tuple(list(L.hex_rgb(L.COLORS["bg"])) + [CHIP_ALPHAS[0]]),
+                            outline=L.hex_rgb(L.COLORS["hairline"]) + (255,), width=1)
+        f20, f22, fab = L.font("Menlo", 20), L.font("HN Medium", 22), L.font("AB", 28)
+        right = CARD_W - CARD_PAD_X
+        # header: the timer right-aligned in Menlo Bold 24 (the deadline is priority (4); Menlo 20 was the smallest text on
+        # screen), the state text left in Menlo 20, both must fit
+        tw = L.text_width(CARD_TIMER_FONT, CARD_TIMER_SIZE, m["timer"]) if m["timer"] else 0
+        if m["timer"]:
+            d.text((right - tw, CARD_TIMER_Y), m["timer"], font=L.font(CARD_TIMER_FONT, CARD_TIMER_SIZE),
+                   fill=roles.get(m.get("timer_role") or "text", L.COLORS["text"]))
+        htxt, hrole = m["header"]
+        hmax = right - CARD_PAD_X - (tw + 12 if tw else 0)
+        d.text((CARD_PAD_X, CARD_HEADER_Y), L.truncate("Menlo", 20, htxt, hmax), font=f20, fill=roles.get(hrole, L.COLORS["text2"]))
+        for r, y in zip(m["rows"], CARD_ROW_Y):
+            x0 = CARD_PAD_X
+            if r["leader"]:
+                d.rounded_rectangle([x0, y, x0 + CARD_CHIP - 1, y + CARD_CHIP - 1], 5, fill=accent)
+                lcol = L.COLORS["bg"]
+            else:
+                d.rounded_rectangle([x0, y, x0 + CARD_CHIP - 1, y + CARD_CHIP - 1], 5, outline=L.COLORS["text2"], width=1)
+                lcol = L.COLORS["text"]
+            bb = fab.getbbox(r["letter"])
+            d.text((x0 + (CARD_CHIP - (bb[2] - bb[0])) // 2 - bb[0], y + (CARD_CHIP - (bb[3] - bb[1])) // 2 - bb[1]), r["letter"], font=fab, fill=lcol)
+            if not m["has_round"] and not r["title"]:
+                continue
+            # the count: `0` text2 when none stand, the leader's in the accent, `2 +1` while a voter walks (the stone's string)
+            cnt = r["count"]
+            ccol = L.COLORS["text2"] if r["n"] == 0 else (accent if r["leader"] else L.COLORS["text"])
+            cw = L.text_width("Menlo", 22, cnt)
+            d.text((right - cw, y + 2), cnt, font=f22 if False else L.font("Menlo", 22), fill=ccol)
+            tmax = max(CARD_TITLE_MAX_W, right - cw - 12 - CARD_TITLE_X)
+            title = L.truncate("HN Medium", 22, r["title"], tmax) if r["title"] else ""
+            tcol = L.COLORS["text"] if r["leader"] else L.COLORS["text2"]
+            if title:
+                d.text((CARD_TITLE_X, y + 1), title, font=f22, fill=tcol)
+        self._card_img, self._card_key = im, key
+        return im
+
+    def _draw_fuse(self, img: Image.Image, ctx, now: float, accent: str) -> None:
+        """The round's fuse along the card's bottom edge: shrinks right-to-left over the round (accent / warn < 30 s /
+        danger < 10 s), full during the 5 s ship hold (danger when the ship failed), an 8 s dim sweep when no round is
+        open. Region coordinates; drawn every frame (cheap: one rectangle)."""
+        fx, fy, fw, fh = CARD_FUSE
+        x0, y0 = CARD_XY[0] + fx, CARD_XY[1] + fy
+        d = ImageDraw.Draw(img, "RGBA")
+        d.rectangle([x0, y0, x0 + fw - 1, y0 + fh - 1], fill=L.hex_rgb(L.COLORS["hairline"]) + (255,))
+        rnd = ctx.round or {}
+        phase = rnd.get("phase") or "open"
+        rem, opened, deadline = ctx.round_remaining, ctx.round_opened_t, ctx.round_deadline_t
+        if phase == "ship":
+            res = rnd.get("last_result") or {}
+            col = L.COLORS["danger"] if res.get("ok") is False else accent
+            d.rectangle([x0, y0, x0 + fw - 1, y0 + fh - 1], fill=L.hex_rgb(col) + (255,))
+            return
+        if rem is None or opened is None or deadline is None or deadline <= opened or not rnd.get("options"):
+            per = FUSE_IDLE_SWEEP_S
+            sx = int(((now % per) / per) * (fw + FUSE_IDLE_SWEEP_W)) - FUSE_IDLE_SWEEP_W
+            a0, a1 = max(0, sx), min(fw, sx + FUSE_IDLE_SWEEP_W)
+            if a1 > a0:
+                d.rectangle([x0 + a0, y0, x0 + a1 - 1, y0 + fh - 1], fill=_blend(L.COLORS["hairline"], accent, 0.45) + (255,))
+            return
+        frac = max(0.0, min(1.0, rem / float(deadline - opened)))
+        col = accent
+        if rem < 10:
+            col = L.COLORS["danger"]
+        elif rem < 30:
+            col = L.COLORS["warn"]
+        px = int(round(fw * frac))
+        if px > 0:
+            d.rectangle([x0, y0, x0 + px - 1, y0 + fh - 1], fill=L.hex_rgb(col) + (255,))
 
     def _sprite_boxes(self, ents: Sequence[Dict[str, Any]], cam, size) -> List[Tuple[int, int, int, int]]:
         """Screen boxes of everything drawn on the land that a chip must not cover: every in-view entity (a seed's tuft
@@ -2031,6 +2446,14 @@ class WorldPanel(Panel):
             self._plate_slot = None
             slot = int(now // PLATE_ROTATE_S)
         rest = [m for m in in_view if not pick or m[0] != pick[0][0]]
+        try:
+            anyone_awake = int(sc.awake_count()) > 0
+        except Exception:
+            anyone_awake = False
+        if anyone_awake:
+            # with people here, a camp plate rotates only while its owner is awake (it names THEM at their own camp);
+            # `@x's tent · night 2 · last here yesterday` over a sleeper is the least useful text for a stranger
+            rest = [m for m in rest if m[1] != "camp" or self._owner_awake(sc, m[4])]
         if rest:
             pick.append(rest[slot % len(rest)])
         for mk in pick:
@@ -2038,12 +2461,23 @@ class WorldPanel(Panel):
             strip = chip_img(text, L.COLORS["text"], CHIP_FONT, CHIP_SIZE, CHIP_ALPHAS[0], max_w=PLATE_MAX_W)
             pw, ph = strip.size
             x0 = max(2, min(w - pw - 2, int(px) - pw // 2))
-            y0 = int(py) + 4
+            y0 = max(2, min(h - ph - 2, int(py) + 4))           # whole inside the region (drop-run frame 1400 had a plate cut at the bottom edge)
             y = placer.place_either(x0, y0, pw, ph, ph + 4, 4, floor=2, ceiling=h - 2)
             if y is None:
                 continue
             _paste(img, strip, x0, y)
             drawn.append(text)
+
+    @staticmethod
+    def _owner_awake(sc, key: Optional[str]) -> bool:
+        b = getattr(sc, "behaviour", None)
+        if b is None or not key:
+            return False
+        try:
+            e = b.get(key)
+            return bool(e is not None and e.is_awake())
+        except Exception:
+            return False
 
     def _mark_list(self, sc, ld, now: float) -> List[Tuple[str, str, float, float, Optional[str], str]]:
         """(id, kind, x, y, owner, text) for every real mark with its plate text; rebuilt at most once a second (or when
@@ -2092,14 +2526,14 @@ class WorldPanel(Panel):
             if not nm:
                 continue
             t0 = iso_to_epoch(m.get("ts")) if isinstance(m.get("ts"), str) else None
-            day = max(1, int((now - t0) // 86400) + 1) if t0 is not None else 1
+            when = _days_ago_text(t0, now)                     # `today` / `yesterday` / `3 days ago` (`day N` left the frame with the header's day)
             if typ == "tree":
                 stage = ld.tree_stage(m, now)[1]
-                text = "tree · @%s · %s · day %d" % (nm, stage, day)
+                text = "tree · @%s · %s · planted %s" % (nm, stage, when)
             elif typ == "flag":
-                text = "%s · first reached by @%s · day %d" % (L.strip_non_bmp(str((m.get("extra") or {}).get("place") or "here")), nm, day)
+                text = "%s · first reached by @%s · %s" % (L.strip_non_bmp(str((m.get("extra") or {}).get("place") or "here")), nm, when)
             else:
-                text = "%s · @%s · day %d" % (typ, nm, day)
+                text = "%s · @%s · planted %s" % (typ, nm, when)
             marks.append((str(m.get("id")), typ, float(m["x"]), float(m["y"]) + 1.0, m.get("owner"), text))
         if ld.stock:
             top = [(self._shown(sc, k), n) for k, n in ld.plaque("moot", 3)]
@@ -2162,10 +2596,7 @@ class WorldPanel(Panel):
         fd = ImageDraw.Draw(frame, "RGBA")
         fd.rounded_rectangle([0, 0, MINIMAP_W + 7, MINIMAP_H + 7], 6, fill=tuple(list(L.hex_rgb(L.COLORS["bg"])) + [CHIP_ALPHAS[0]]),
                              outline=L.hex_rgb(L.COLORS["hairline"]) + (255,), width=1)
-        frame.alpha_composite(mm, (6, 6))
-        pct = int(round(100.0 * self._minimap.walked_frac))
-        cap = text_strip("Menlo", 20, "%d %% walked" % pct, L.COLORS["text2"])
-        frame.alpha_composite(cap, ((MINIMAP_W + 8 - cap.size[0]) // 2, 6 + MINIMAP_MAP[1] + 8))
+        frame.alpha_composite(mm, ((MINIMAP_W + 8 - MINIMAP_MAP[0]) // 2, (MINIMAP_H + 8 - MINIMAP_MAP[1]) // 2))
         self._mm_frame, self._mm_built = frame, self._frames
         _paste(img, frame, x0 - 4, y0 - 4)
 
@@ -2383,7 +2814,7 @@ class WorldPanel(Panel):
                 _paste(img, s, lx, ly)
 
         # 6. the plank (top-left, over everything else in the region)
-        txt, col = self._plank_text(sc, ctx, now, names_on, accent)
+        txt, col = self._plank_text(sc, ctx, now, names_on, accent) or ("", L.COLORS["text2"])
         _paste(img, plank_img(L.strip_non_bmp(txt), col), PLANK_XY[0], PLANK_XY[1])
         row2 = self._plank_row2(ctx, now, names_on, txt)
         if row2 is not None:
@@ -2405,7 +2836,8 @@ class WorldPanel(Panel):
                 "text_avg_ms": round(sum(self._text_ms) / len(self._text_ms), 2) if self._text_ms else None,
                 "text_max_ms": round(max(self._text_ms), 2) if self._text_ms else None,
                 "honesty_violations": self.honesty_violations, "name_leaks": self.name_leaks,
-                "options_row": self.last_options_row, "options_row_placed": self.last_options_row_placed,
+                "vote_card": self.last_vote_card, "card_counts": dict(self.last_card_counts), "stone_counts": dict(self.last_stone_counts),
+                "clock_row": self.last_clock_row, "plank": self.last_plank, "plank_row2": self.last_plank_row2,
                 "hud_boxes": list(self.last_hud_boxes), "sprite_boxes": self.last_sprite_boxes,
                 "labels_drawn": self._last_counts[0], "entities": self._last_counts[1], "plates_drawn": len(self.last_plates),
                 "arrows_drawn": len(self.last_arrows), "text_cache": len(_TEXT), "bubble_cache": len(_BUBBLE), "chip_cache": len(_CHIP),

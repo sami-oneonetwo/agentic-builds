@@ -76,4 +76,6 @@ class Countdown(Panel):
         return img
 
 
-register(Countdown())
+# HUD pass (journal 028): this region left stream/layout.py; the module stays on disk (its copy and tests are
+# reused by the land strip) but registers nothing. `Countdown` would be dropped by register() anyway.
+# register(Countdown())

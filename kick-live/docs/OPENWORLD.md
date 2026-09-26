@@ -112,13 +112,14 @@ not by copy.
 | **Seasons** | The real date selects one of four ground bakes (spring green with wildflowers, summer gold-green with wheat-coloured meadow, autumn straw with leaf particles near the Wood, winter frost with snow on the Fell and bare canopies); hemisphere defaults to southern from the machine timezone (`Australia/*`), overridable; the land line names the season so a mistake is visible | real date |
 | **Growth** | Planted trees grow by **real calendar days** whether or not the stream is live (sapling → young tree at day 3 → canopy at day 14); sown fields advance by real days too (sprout day 1, green day 3, gold day 7), so a returner always sees "your tree grew" or "your field is gold" | real timestamps |
 | **Real people's marks at rest** | Camps of real past chatters (a hollow, a tent, a hut or a hut with a chimney, by their real session count) with a plate on a 5 s rotation `@sami's hut · night 4 · last here yesterday 10:40`; a window lit only if the owner was awake this session, dark otherwise; a wind-bell at each camp pitched by the owner's name hash, rung by gusts; fields in the owner's colour at their real growth stage; planted trees and flowers; the cairn with its plaque; worn trails; the notice board | `world.json` rows |
-| **The camera** | DRIFT (§4.4): a slow survey at 4 cells/s (16 screen px/s) along a loop over every real mark plus three fixed natural points (the Ford, the Fell top, the Shore), pausing 20 s at each camp so the plate reads; a full lap in 8-12 min; the shadows move while it surveys; the plank reads `surveying the steading · last here: @sami yesterday 10:40` with the real last-five rotation | camera state machine |
+| **The camera** | DRIFT (§4.4): a slow survey at 4 cells/s (16 screen px/s) along a loop over every real mark plus three fixed natural points (the Ford, the Fell top, the Shore), pausing 20 s at each camp so the plate reads; a full lap in 8-12 min; the shadows move while it surveys; the plank reads `surveying · @sami's tent · last here yesterday 10:40` / `surveying · the Ford` | camera state machine |
 | **Rounds** | Three waystones on the Moot carry their letters each round and stand empty; at 0:00 the picked weather lands on the whole land with the honest `nobody voted. the keepers picked B.` | RoundEngine |
 | **Beacon** | The keepers' lantern on a post at the Moot: lit and swinging gently on a fresh heartbeat, dark and still otherwise; a lit amber dot on the minimap so a viewer knows from anywhere whether someone is tending the land | `agent.heartbeat_ts` |
 | **Audio** | Wind bed following the sim wind; river and shore beds by the camera's distance to water; camp bells on gusts; rain when it rains; a single soft bell at real sunrise and sunset; pad silent (voices = awake count = 0) | same sources |
 
-**Header at zero:** `NOBODY AWAKE · 2 SETTLED`. **The 320x180 tile at zero** is a green-and-blue land
-with moving cloud shadows, a river line and a few coloured roofs under a legible header count (§4.5).
+**Header at zero:** `SAY ANYTHING` with `a creature walks out / with your name` beside it (HUD pass,
+journal 028: the instruction, not `NOBODY AWAKE`). **The 320x180 tile at zero** is a green-and-blue
+land with moving cloud shadows, a river line and a few coloured roofs under a legible 56 px headline (§4.5).
 
 **Optional lever, off by default (WIDE COMMONS graft):** `world_day: "real" | "hour"`. On `"hour"`
 the sun runs a 60-real-minute day (36 day / 6 dusk / 12 night / 6 dawn, noon at :30) so 80 % of any
@@ -146,15 +147,20 @@ name-derived colour with its deterministic parts from `stream/world/art/`, a sof
 it, the grass around it bends outward once, its two-note motif plays, the new-builder rise plays on a
 first-ever message, `@name` fades in above it (Menlo 20, stroked, on a 60 % dark chip), the label
 carries `#N` (the real builder number) for 3 s, and the bubble shows their actual text for 6 s.
-Header ticks `NOBODY AWAKE` to `1 AWAKE`. The camera settles into FOLLOW with lead room in the
-direction the pip faces. Plank: `@name walked into Longgrass · 21:14` (real local time). If they are
+Header flips `SAY ANYTHING` to `1 AWAKE` in the same frame (the newcomer's first ack). The camera
+settles into FOLLOW with lead room in the direction the pip faces. Plank: `@name walked into
+Longgrass · 21:14` (real local time). If they are
 the only awake person, under the pip for 10 s: `you're the only one out here right now. the wind was
 already blowing.` If it is the session's first message, **first breath**: the pad's first voice fades
 in under the wind over 2 s and every camp's bell rings once in sequence, west to east (each bell is a
 real sleeper's mark acknowledging the arrival; no fake presence). A blocklisted username stands up as
 `builder #N`; a user hidden inside the hold: the tuft blows on out of frame (`the wind took that one`).
 
-**T+4 to T+10 s.** Plank: `that's you. try: go river · plant a flower · camp · fire · A/B/C`. The pip
+**T+4 to T+10 s.** Plank: `that's you, @name · try: go river · plant a flower · camp · or A, B, C`
+(by name, once, while awake ≤ 1, until their first verb; row 2 while an ack holds row 1). After each
+verb completes the plank offers the next two things for 8 s (`next: camp pitches your tent here ·
+plant a flower leaves your mark`). A short message that carries one of our words but does not parse
+gets the exact token (`to do that, type: go north`), never the typed words. The pip
 wanders in 2D, pauses, turns to face the wind now and then; the grass under its feet is pressed, so a
 faint trail follows it within ten seconds (a mark in the first minute).
 
@@ -554,46 +560,76 @@ stay and are restated there.
 
 ---
 
-## 8. Layout (1280x720): geometry unchanged, content changes
+## 8. Layout (1280x720): the HUD pass (2026-09-26, journal 028)
 
-`stream/layout.py` is untouched, which is what makes the swap a hot-reload rather than a spine
-restart. Boxes from `WORLD.md` §5 stay; what each shows changes as below.
+The owner's verdict on the first LONGGRASS frame: *"There is too much information on the screen. The
+bottom bar with the scrolling and frame rate could go completely. Review the rest and see what is
+valid and what is not. Think about how people would like to interact with this and shape it for that.
+Do people need to see all this information? What else is important here?"* Fifteen text clusters
+became seven. Priorities for a viewer, in order: (1) know in 3 s what this is and what to type,
+(2) see their own creature appear with their name, (3) be told the next two things they can do when
+they are relevant, (4) see what is being voted on and when it closes. Everything about the machine
+(fps, frame ms, version, viewer count, chat rate, oscilloscope, degrade flags) leaves the frame and
+lives in the compositor log, `state.json` and `scripts/status.sh`; every remaining fact has exactly
+one home. `stream/layout.py` changed (regions moved), so this ships as a relay-held compositor child
+restart (`scripts/deploy.sh`), not a hot-reload. Fix pass (journal 030, same deploy): the clock row
+left the land for the header's right corner after it was pasted over the waystone letters; the vote's
+states left the plank (the card is the vote's one home); the card timer grew to Menlo Bold 24; the
+minimap joined the camera's dead zone as a bottom box; a message inside its hold shows as a muted
+`name: …` in the chat log; a vote inside a newcomer's hold is acked `someone new walks to A` and again
+by name when the hold clears.
 
 ```
- x: 0                                420                 840                       1280
-+--------------------------------------------------------------------------------------+ y=0
-| HEADER  atleastonce · LONGGRASS | 3 AWAKE · 17 SETTLED   NEXT EVENT 01:23 | LIVE 3 watching |
-|====================================== countdown bar (66-72) =========================| 72
-| WORLD   plank (16,84) · land line (16,116)                          minimap (1120,88) |
-|         time dial (16,152) 64x64 + `18:07 · evening / wind E · fresh`   `4 % walked`  |
-|         the land: painted 1280x440 crop of the 960x440-cell map at 0.75x / 1x / 1.5x  |
-|         pips + labels + bubbles, camps with plates, fields, trees, cairn, waystones    |
-|         place label bottom-left 22 px (4 s after a retarget)      edge arrows on edges | 512
-| THE LAND  day 6 · 17 have walked here | KEEPER  beacon line, build line | CHAT LOG 5 lines |
-|           stone ladder / board rotation| (traceback only on failure)     | (moderation)     | 656
-| TICKER  events · honesty line · legend         | SCOPE  | chat 0.4/min 30 fps 8 ms    |
-+------------------------------------------------+--------+-----------------------------+ 720
-                                                 880      1040
+ x: 0                                                880                    1280
++----------------------------------------------------+------------------------+ y=0
+| header_center  SAY ANYTHING / 3 AWAKE  (AB 56)     | header_right           |
+|                a creature walks out / with your    |     LONGGRASS  ● LIVE  |
+|                name                                | midday · wind NE fresh |
+|                                                    |               · spring | 66
+| WORLD (0,66,1280,456)                                                       |
+|  [plank row 1 (16,78)]                       [vote card (864,78) 400x136]   |
+|  [plank row 2 while row 1 is busy]           | state text          1:27 |   |
+|                                              |[A] title               0 |   |
+|  the land: sprites, @labels, bubbles,        |[B] title               3 |   |
+|  ONE plate, edge arrows, A B C over          |[C] title            2 +1 |   |
+|  the stones with counts + names              |== fuse 392x4 ============|   |
+|                                                                             |
+|                                        [minimap 148x78 (1116,428)]          | 522
+| LAND (0,522,720,198)                         | CHAT LOG (720,522,560,198)   |
+|  2 have walked here · 1 more and the cairn.. |  6 slots Menlo 22 @ 26 px:   |
+|  AI keepers build this show live from chat's |  5 messages + the mod row;   |
+|  ideas                          [static]     |  letter chip on votes,       |
+|  keeper state                   [rotates]    |  shield chip on mod actions  |
+|  no camera, no mic, no fake viewers.[static] |                              |
+|  every name on this land is a real person in |                              |
+|  chat. the wind is just the wind.   [static] |                              |
++----------------------------------------------+------------------------------+ 720
 ```
 
-| # | Region key | Box (x, y, w, h) | Keep / change | Content |
-|---|---|---|---|---|
-| 1 | `header_left` | 0, 0, 300, 66 | copy | `atleastonce · LONGGRASS` wordmark; chat-link dot |
-| 2 | `header_center` (the thumbnail hook) | 300, 0, 620, 66 | copy | `3 AWAKE` AB 56 (`NOBODY AWAKE` AB 40); `· 17 SETTLED` Menlo 24 (was `HATCHED`); `NEXT EVENT 01:23`; during a build `keeper raising · 12:40 left` Menlo 20. Unchanged geometry because the 56 px count is what survives the tile |
-| 3 | `header_right` | 920, 0, 360, 66 | keep | LIVE dot, real `N watching` or `--`, version |
-| 4 | `countdown` | 0, 66, 1280, 6 | keep | 180 s bar |
-| 5 | **`world`** | 0, 72, 1280, 440 | **scene and text layer change** | the painted land at the camera's zoom (§4.3); **plank** at (16, 84) HN Medium 22 on a 60 % dark chip; **land line** at (16, 116) Menlo 22 `2 settled here · nobody awake · day 2 · dawn`; **time dial** at (16, 152), 64x64, sun or real-phase moon on an arc over a ground stripe, with `18:07 · evening` and `wind E · fresh` Menlo 22 to its right (and `1 h = 1 day` when `world_day` is `"hour"`); labels Menlo 20 stroked on a chip; bubbles Menlo 22 in `#11151D` with a 1 px `#1C2130` border, max 408 px, 3 lines; waystone letters AB 56 with counts Menlo 22 and up to 3 names; camp plates, field / tree / flower / stone plates and place labels HN Medium 22 at 60 % on a 5 s rotation; the cairn plaque; edge arrows; place name bottom-left for 4 s after a retarget; **minimap** top-right at (1120, 88), 148x104 with a 1 px hairline: the whole 960x440 map at 0.15 px/cell (144x66), walked land saturated and unwalked at 55 %, the camera rectangle in `#E6E8EE`, one dot per awake pip in its colour, dim squares for camps, an amber dot at the Moot when the beacon is lit, `N` at the top and `4 % walked` Menlo 20 under it. Density fallback above 40 awake unchanged |
-| 6 | `colony` → **the land** | 0, 512, 420, 144 | copy and one graphic | Line 1 HN Medium 22 over an 8 px bar: `17 have walked here · 8 more until the Coast opens` (head-count ladder 3/5/10/25/50; 3 and 5 name the cairn and raise the hearth ring, 10+ open land). Line 2 Menlo 22: `3 awake · 14 asleep · 6 camps · 2 fields gold · spring`. Line 3 Menlo 20 rotating 8 s: stone ladder `stone 13 of 20 · the Ford bridge · last by @kai`, last event, nightly board, trail naming, `!stats` card. Keep the region because the bar answers "how alive is this over time", which the tile count cannot |
-| 7 | `keeper` | 420, 512, 420, 144 | copy | `keeper on duty · beacon lit` / `no keeper on duty · notices kept for next time`; `raising: the Ford bridge · asked by @sam · 12:40 left` or `last raised: the well · v0.7.0`; tracebacks only on failure. Keep: the keepers-build-live line is the channel's differentiator and the owner never called this strip boring |
-| 8 | `chat_log` | 840, 512, 440, 144 | keep | last 5 moderated messages; letter chip on votes, shield chip on mod actions. Keep for moderation visibility on the VOD (names are the whole screen) |
-| 9 | `ticker` | 0, 656, 880, 64 | copy | events, the new honesty line (§12), legend `go · plant · camp · sow · fire · stack · feed · A/B/C · !idea`, and `a day here is one hour` only when `world_day` is `"hour"` |
-| 10 | `scope` | 880, 656, 160, 64 | keep | oscilloscope |
-| 11 | `readout` | 1040, 656, 240, 64 | copy | adds `world: clouds off` / `glow off` / `zoom pinned` on degrade and `baking spring…` while a bake thread runs |
+| # | Region key | Box (x, y, w, h) | Content |
+|---|---|---|---|
+| 1 | `header_center` (the thumbnail hook) | 0, 0, 880, 66 | Headline AB 56 at x 16: `SAY ANYTHING` at 0 awake, before boot and on a stale state (the instruction; wider than `NOBODY AWAKE`, it survives the 320x180 tile better); `3 AWAKE` once anyone is in. Right of it two Menlo 22 rows: `a creature walks out` / `with your name` (0 awake), `say anything` / `a creature walks out with your name` (awake ≥ 1), `the land is waking up…` before boot. Never a number before boot, never `-- AWAKE`. The round clock, the settled count and the raising line left this region |
+| 2 | `header_right` | 880, 0, 400, 66 | Row 1 (y 7) `LONGGRASS  ● LIVE`, right-aligned to x 1264: the dot is red when live and the chat listener is linked, amber while chat reconnects, dim with no `LIVE` word when the poll says offline. Row 2 (y 38) Menlo 20 text2, the **clock row**: `midday · wind NE fresh · spring` (+ the weather word when not clear; the wall clock is not printed on the real-time land, every viewer has one; in hour mode `14:30 · afternoon · a day here is one hour` + wind / weather / season while they fit in 368 px, the tail dropped season first). Nature declared in one muted row, in the header because the land's bottom-right is where the camera frames the waystones (journal 030: the chip sat over the letters' counts). The world panel derives the string from its nature model each frame; the header draws it. No viewer count (Kick prints it), no version, no `day N` |
+| 3 | **`world`** | 0, 66, 1280, 456 | 114 cells at 1x (152 at 0.75x, 76 at 1.5x: integer at every zoom). 480 was the spec's first choice; it measured 12.26 ms scene avg at 60 test pips / 0.75x against the 12 ms gate (440 had measured 11.15), so the stated ladder rung 456 ships (11.5-11.9 ms measured twice). **Plank** (16, 78) HN Medium 22 on a 60 % chip: the land's single voice, priority top wins: `chat is reconnecting…` (amber, sticky) > person acks newest first (hatch `@name walked into Longgrass · 23:04`; vote ack `@name walks to C · counts while standing there · closes in 1:27` (a changed letter is the same ack again; there is no separate `moved to` line); `@name walked off C · that vote is dropped · type C to stand again` (amber; also for a voter still walking to the stone who is sent elsewhere); a same-frame tie between the bridge's echo of a verb and the world's consequence goes to the consequence; refusals (amber); `to do that, type: go north` (amber); `@name's idea is on the board · the keepers read it next`; `@name is back after 2 nights · your tree grew · fed by @sami`; `!stats` `@name · camp: hut · 4 marks · 2 stones · 41 min here`; the next-two hint at awake ≤ 1) > world events (`new round · everyone steps off the stones · type A, B or C`, `the cairn is named`, `the keepers opened the Coast`) > idle: the DRIFT caption at 0 awake, a FOLLOW retarget `@kai is walking to the Ford` for 4 s, else BLANK. NOT on the plank (journal 030, one fact one home): the zero-vote warning and the ship result (the vote card's header), a raising started / landed (land strip row 3, pinned then 10 min; the camera's EVENT cut shows the moment). Row 2 (16, 118): the newcomer's sticky `that's you, @name · try: go river · plant a flower · camp · or A, B, C` while row 1 is busy (awake ≤ 1, until their first verb, 20 s seen / 60 s cap; again on `!help`). **Vote card** (864, 78) 400x136: header Menlo 20 (state left: `type A, B or C to vote` (0 standing: it names the thing to type; a stranger cannot "stand at a stone") / `B leads` / `tied` / `one letter decides it` (amber, < 30 s, 0 standing) / ship hold `chat picked B` · `nobody voted · land picked C` · `that one failed · reverting` / `next round soon`; the timer `1:27` right in **Menlo Bold 24**, text / amber < 30 s / red < 10 s with the fuse: the deadline is priority (4) and was the smallest text on screen), three rows [letter chip AB 28][title HN Medium 22][count Menlo 22 = len(pips standing), `0 +1` while a voter walks: the same string as the stone, asserted per frame], the leader's chip filled in the accent, the round's fuse (392x4) along the bottom edge (accent / amber < 30 s / red < 10 s; full during the ship hold; an 8 s sweep with no round). **Clock row**: moved to `header_right` row 2 (journal 030; it was pasted over the waystone counts when the camera framed the stones low-right). **Minimap** (1116, 428) 148x78: the whole 960x440 map at 0.15 px/cell, walked land saturated, camera rectangle, one dot per awake pip, camp squares, the amber Moot dot on a fresh keeper heartbeat; no caption; its box is a BOTTOM box in the camera's dead zone (framed feet are pushed above it, heads outrank feet). In the land: labels Menlo 20 on contrast chips (`#N` 3 s at hatch), bubbles Menlo 22 (max 408 px), ONE plate at a time, always whole inside the region (`flower · @name · planted today` / `tree · @name · sapling · planted 3 days ago` / `the Shore · first reached by @name · yesterday`; a camp plate rotates only while its owner is awake or when the DRIFT stop pins it, since `@x's tent · night 2 · last here yesterday` over a sleeper is the least useful text for a stranger), waystone letters AB 56 with counts and up to 3 names, edge arrows. Gone: the land line, the time dial, the floating options row, the bottom-left place label, the countdown strip, the clock chip |
+| 4 | `land` (was `colony` + `keeper`) | 0, 522, 720, 198 | Row 1 HN Medium 24: the ONE home of the headcount, `2 have walked here · 1 more and the cairn is named` / `17 have walked here · 8 more until the Coast opens` / `nobody has walked here yet` / amber `3 have walked here · the keepers name the cairn next session` / `3 have walked here · the keepers are naming the cairn` (no `day N`, no bar). Row 2 HN Medium 22, STATIC: `AI keepers build this show live from chat's ideas`. Row 3 HN Medium 22, the only rotating footer text: `a raising failed · reverting to the last good version` (amber, 20 s) > `raising the Ford bridge · asked by @moss_m · 12:40 left` (accent, pinned) > `just raised the Ford bridge · asked by @moss_m` (10 min) > 10 s alternation `a keeper is on duty now · type !idea <what to raise>` / `no keeper on duty · your !idea waits on the board` (the subject named: `one is on duty` asked "one what?"), with `2 sleep at their camps · last here: @atleastonce 14:19` at 0 awake. Rows 4-5 HN Medium 20 text2, STATIC every frame (asserted by the self-test): `no camera, no mic, no fake viewers.` / `every name on this land is a real person in chat. the wind is just the wind.` (§12 verbatim; wraps to a third row rather than truncating) |
+| 5 | `chat_log` | 720, 522, 560, 198 | last 5 moderated messages + the mod row (6 slots at 26 px, bottom-aligned, 528 px usable); letter chip on votes, `idea` / `theme` tags, shield chip on mod actions (the target never named); `#N` first-ever tag; a record inside its 3 s hold shows as a muted `kai_dnb: …` row (a chatter past their first hold: their name is already on their pip; the text waits) or `someone is arriving...` (a first record: nameless), so nobody types twice wondering whether it landed (journal 030); `!kill` `chat hidden by mod`; empty `chat is quiet.` Kept for the newcomer's feedback and the VOD moderation record |
 
-Why nothing moves: the header is the thumbnail hook and must not change; the three strips carry
-real records the world cannot show at tile scale; and a geometry change would need a relay-held
-child restart (journal 016) or a swap-build while a hot-reload lands the whole redesign on air. The
-mockup the owner approved put the plank, land line, time dial and minimap in exactly these corners.
+Removed regions (`layout.REMOVED_REGIONS`; a module still registering one is dropped in words, never a
+boot error): `header_left` (Kick prints the channel name; the micro `header_tagline` slot had turned
+the corner into a slogan generator), `countdown` (the fuse is the card's edge), `colony` + `keeper`
+(merged into `land`), `ticker` (a right-to-left crawl is the one element a stranger cannot read at
+will; its two required sentences, the honesty line and the keepers rule, got still homes), `scope`
+(audio is heard, not shown), `readout` (operator telemetry; the one flag that changes what a viewer
+should do, chat down, became the plank's `chat is reconnecting…` and the amber header dot).
+
+Camera: `camera.py` SCREEN (1280, 456), CROP_PX 1707x608 / 1280x456 / 853x304, HUD_TOP_PX 56,
+HUD_BOTTOM_PX 16; the per-frame dead zone is the plank rows' real boxes and the vote card (top boxes:
+heads lifted clear) plus the minimap (a bottom box: framed feet pushed above it, capped so no head
+comes back under a top box); the same boxes are reserved in the placer. Vote acks: a vote cast inside a
+newcomer's 3 s hold is acked `someone new walks to A · counts while standing there · closes in 1:27`
+in the same frame (the tuft is nameless) and again by name at the hold's end (`chat_bridge.py`
+`_pump_held_acks`). Compositor WORLD_BAND (66, 522). Copy for every
+interaction is in `stream/panels/world.py` (plank, card) and `stream/chat_bridge.py` (acks, hints).
 
 ---
 
@@ -699,7 +735,7 @@ nature rule and the mark rule are added and made mechanical:
 - **Every animate thing is a pip** created only in the chat-ingest path from a moderated record;
   the self-test asserts every frame `awake == distinct real chatters whose record cleared the 3 s hold
   in the last 20 min` (a chatter still inside the hold is a nameless tuft, not awake: the header ticks
-  at the hatch, §3.1, and reads `NOBODY AWAKE` over a first message's hold while the chat log says
+  at the hatch, §3.1, and reads `SAY ANYTHING` over a first message's hold while the chat log says
   `someone is arriving...`) and `len(pips) == distinct chatters ever minus banished`; the
   HonestyMonitor flags any moving sprite without a key, and the world panel asserts per frame that
   no string it drew carries a raw hidden, blocklisted or quarantined username.

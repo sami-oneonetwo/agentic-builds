@@ -20,7 +20,7 @@ atlas (waystones, beacon, hearth, cairn, planted trees, camp fires, settlers, na
 
 How the frame is made (7.3): 1. BakeManager.want(season, sun octant, bake_ver) -> the CURRENT ready GroundBake (a
 missing one is painted in a daemon thread; its cell-res biome fallback shows meanwhile). 2. the camera's bake-pixel
-crop (1280x440 at 1x from the 4 px/cell bake; 0.75x is a straight 1280x440 crop of a 3 px/cell bake; 1.5x is an
+crop (1280x456 at 1x from the 4 px/cell bake; 0.75x is a straight 1280x456 crop of a 3 px/cell bake; 1.5x is an
 853x293 crop BILINEAR-upsampled). 3. Nature.modulation at cell resolution, bake.apply's fixed-point multiply.
 4. glow. 5. sprites. 6. Image.fromarray. Whole-map work never runs on the frame path: bakes, region repaints after
 a mark changed, trail-threshold repaints and settler sheets (0.75 s each) run on one worker thread; the frame path
@@ -89,7 +89,7 @@ except Exception:                                                      # pragma:
 from stream.world.art import creatures, props, tiles  # noqa: E402
 
 NAME = "steading"
-SCREEN = (1280, 440)
+SCREEN = (1280, 456)          # the world region (HUD pass, journal 028: was 440; 480 missed the 12 ms scene gate)
 PPC = 4                                   # bake px per cell at 1x
 SAVE_S = 5.0
 FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "sleep", "hatch", "cairn_named")

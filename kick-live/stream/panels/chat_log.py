@@ -1,10 +1,14 @@
-"""stream/panels/chat_log.py - compact CHAT LOG (WORLD.md 5 row 8, replaces chat_pane): 840,512,440,144.
+"""stream/panels/chat_log.py - compact CHAT LOG (OPENWORLD.md 8 row 8; HUD pass 2026-09-26, journal 028): 720,522,560,198.
 
 Last 5 moderated messages past the 3 s hold (ctx.chat: ChatBridge.visible(), display_name already filtered), newest at
-the bottom, Menlo 22 at 26 px line height, one line per message (truncated with …): username in its hashed colour
-(the same hash the pip's body uses), a letter chip on votes, a shield chip row for the most recent mod action (60 s,
-from state.mod.actions; the mod's and target's names pass the world's name filter). Empty: `chat is quiet. say
-anything.` !kill: `chat hidden by mod`. Paused: an amber header line; the list freezes (the bridge freezes it).
+the bottom, Menlo 22 at 26 px line height (6 row slots: 5 messages + the mod row, which no longer displaces the oldest
+message), one line per message (truncated with …, 528 px usable): username in its hashed colour (the same hash the
+pip's body uses), a letter chip on votes, a shield chip row for the most recent mod action (60 s, from
+state.mod.actions; the target is never named). Empty: `chat is quiet.` (the header already says `say anything`; this
+was the fourth call to action on one frame). Hold (ctx.chat_held, the bridge's held_rows(): real records inside their
+3 s hold, no text): a muted `kai_dnb: …` row for a chatter already past their first hold, `someone is arriving...` for a
+first record, so a person sees the message was received before the hold clears (journal 030). !kill: `chat hidden by
+mod`. Paused: an amber header line; the list freezes (the bridge freezes it).
 
 This region exists for moderation visibility on the VOD; the show does not depend on it (chat lives in the bubbles).
 No name is ever taken from ctx.chat_raw.
@@ -22,7 +26,8 @@ from stream.state_store import iso_to_epoch
 
 LINE_H = 26
 FONT, SIZE = "Menlo", 22
-MAX_ROWS = 5
+MAX_ROWS = 5                  # message rows
+MAX_SLOTS = 6                 # 5 messages + the mod row in the sixth slot (the 198 px strip has room for 7; six keep the air)
 MOD_SHOW_S = 60.0
 _MONO_ADV: Dict[int, int] = {}
 
@@ -75,6 +80,12 @@ def _arriving() -> bool:
         return False
 
 
+def _dim(hex_col: str) -> Tuple[int, int, int]:
+    """A name colour at half strength over the panel (a row that is waiting, not a message)."""
+    a, b = L.hex_rgb(hex_col), L.hex_rgb(L.COLORS["panel"])
+    return tuple(int(round(a[i] + (b[i] - a[i]) * 0.45)) for i in range(3))
+
+
 MOD_WORDS = {"hide": "hid a user", "unhide": "unhid a user", "banish": "banished a user", "unbanish": "unbanished a user",
              "rename": "cleared a nickname", "pause": "paused chat", "resume": "resumed chat", "kill": "hid chat",
              "unkill": "showed chat", "clear": "cleared the backlog"}
@@ -107,11 +118,16 @@ class ChatLog(Panel):
         act = str(a.get("action") or "")
         return (by, MOD_WORDS.get(act, "mod action"), "")
 
+    @staticmethod
+    def _held(ctx) -> List[Optional[str]]:
+        """Filtered names (None = nameless first record) of the real messages inside their hold, oldest first."""
+        return [h.get("name") for h in (ctx.chat_held or []) if isinstance(h, dict)]
+
     def inputs(self, ctx):
         on = _names_on(ctx)
         msgs = self._msgs(ctx) if on else []
         return (tuple(str(m.get("id")) for m in msgs), on, bool(ctx.mod_paused), self._mod_row(ctx) if on else None, ctx.preset,
-                (not msgs) and _arriving())                    # the empty pane re-renders when a seed enters / clears the hold
+                tuple(self._held(ctx)) if on else (), (not msgs) and _arriving())   # re-renders as records enter / clear the hold
 
     def render(self, ctx, size):
         w, h = size
@@ -150,10 +166,20 @@ class ChatLog(Panel):
                 segs.append(("text", ": ", L.COLORS["text2"]))
                 segs.append(("text", body, L.COLORS["text"]))
             rows.append(segs)
+        # records inside their 3 s hold: `name: …` muted for a known chatter (the name is already on their pip), one
+        # `someone is arriving...` for a nameless first record; the text itself waits for the hold
+        held = self._held(ctx)
+        arriving = any(nm is None for nm in held) or _arriving()
+        for nm in held:
+            if nm:
+                name = L.strip_non_bmp(str(nm))
+                rows.append([("text", name, _dim(L.name_color(name.lower(), ctx.preset))), ("text", ": …", L.COLORS["text2"])])
+        if arriving and rows:
+            rows.append([("text", "someone is arriving...", L.COLORS["text2"])])
         if mod is not None:
             by, action, tgt = mod
             rows.append([("shield", "mod", L.COLORS["warn"]), ("text", " %s %s%s" % (by, action, (" " + tgt) if tgt else ""), L.COLORS["text2"])])
-        rows = rows[-MAX_ROWS:]
+        rows = rows[-MAX_SLOTS:]
         top = 6
         if ctx.mod_paused:
             d.text((L.PAD, 4), L.truncate("Menlo", 20, "chat paused by mod · votes still count", maxw), font=f20, fill=L.COLORS["warn"])
@@ -162,7 +188,7 @@ class ChatLog(Panel):
         if not rows:
             # a record inside its 3 s hold is a real person arriving (the scene has a nameless tuft for it): the pane
             # must not read "quiet" over a stranger's first message (QA frame 135); nothing about them is named yet
-            d.text((L.PAD, h // 2 - 13), "someone is arriving..." if _arriving() else "chat is quiet. say anything.", font=f, fill=L.COLORS["text2"])
+            d.text((L.PAD, h // 2 - 13), "someone is arriving..." if arriving else "chat is quiet.", font=f, fill=L.COLORS["text2"])
             return img
         avail_rows = max(1, (h - top - 6) // LINE_H)
         rows = rows[-avail_rows:]

@@ -46,9 +46,9 @@ from stream.world.land import MAP_W, MAP_H, EDGE_MARGIN, DEFAULT_MOOT  # noqa: E
 # ---------------------------------------------------------------------------- constants (4.3, 4.4)
 PPC = 4                                                   # bake pixels per cell at 1x
 ZOOMS = (0.75, 1.0, 1.5)
-CROP_PX = {0.75: (1707, 587), 1.0: (1280, 440), 1.5: (853, 293)}   # crop of the 4 px/cell bake per zoom
+CROP_PX = {0.75: (1707, 608), 1.0: (1280, 456), 1.5: (853, 304)}   # crop of the 4 px/cell bake per zoom (152 / 114 / 76 cells tall)
 WINDOW = {z: (CROP_PX[z][0] / float(PPC), CROP_PX[z][1] / float(PPC)) for z in ZOOMS}   # window in cells
-SCREEN = (1280, 440)
+SCREEN = (1280, 456)                                      # the world region (HUD pass, journal 028: was 440; 480 missed the 12 ms scene gate)
 MODES = ("EVENT", "MOOT", "FOLLOW", "CLOSE", "DRIFT")
 
 SPRING_TAU_S = 0.8            # time constant; omega = 2 / tau gives ~1.5 s to settle within 10 %
@@ -68,18 +68,21 @@ MOOT_LAST_S = 30.0
 MOOT_RADIUS = 120.0
 FOLLOW_MARGIN = 24.0          # cells around the group's bounding box (x)
 FOLLOW_MARGIN_Y = 12.0        # cells above / below the group inside the SAFE band (a settler stands ~10 cells tall)
-# The HUD lives in the world region: plank rows + land line + dial rows fill the top 152 px (x 0-700), the minimap the
-# top-right 176x132 px, the place label the bottom 44 px. People framed under those chips read as "HUD stacks over
-# settlers" (owner verdict, journal 023 handoff), so every people-framing mode centres its target in the SAFE band
-# between them: the desired centre is lifted by half the difference so the group sits at region y ~274, not 220.
-HUD_TOP_PX = 152
-HUD_BOTTOM_PX = 44
-HUD_LEFT_W = 700              # the top-left stack's x extent (the panel refreshes `hud_boxes` from what it actually drew)
-HUD_RIGHT_BOX = (1104, 0, 1280, 132)
+# The HUD lives in the world region (HUD pass, journal 028): ONE plank row top-left (46 px, x 0-840; a second row only
+# while a newcomer's sticky line waits), the vote card top-right (864-1264 x 12-148) and the minimap bottom-right (the
+# clock row moved to the header in the fix pass, journal 030). People framed under those chips read as "HUD stacks over settlers" (owner verdict, journal 023
+# handoff), so every people-framing mode centres its target in the SAFE band between them: the desired centre is
+# lifted by half the difference (56 - 16) / 2 = 20 px.
+HUD_TOP_PX = 56
+HUD_BOTTOM_PX = 16
+HUD_LEFT_W = 840              # the plank's x extent (the panel refreshes `hud_boxes` from what it actually drew)
+HUD_RIGHT_BOX = (848, 0, 1280, 152)
 HUD_BOXES_DEFAULT = ((0, 0, HUD_LEFT_W, HUD_TOP_PX), HUD_RIGHT_BOX)
 HEAD_CELLS = 20.0             # a settler's head top above its feet cell (creatures tier 3 drawn at 1.2x: anchor 79 px = 20 cells at 1x)
 STONE_TOP_CELLS = 36.0        # a waystone's letter + count + option row stack above the stone cell (~144 px at 1x)
 HUD_NUDGE_PAD_PX = 32.0       # the spring lags a walker by ~0.8 s (6 cells at 8 cells/s): the lift starts this early
+HUD_BOTTOM_BOX_PX = 24        # a HUD box whose bottom edge is within this of the region's bottom is a BOTTOM box (the minimap)
+HUD_BOTTOM_PAD_PX = 12.0      # framed feet stay this far above a bottom box
 WIDE_HYSTERESIS = 1.25        # to come back from 0.75x the group must fit 1x with a 25 % bigger margin
 CLUSTER_LINK = 60.0
 CLOSE_MOVE_CELLS = 40.0
@@ -301,9 +304,13 @@ class Camera(object):
     # ------------------------------------------------------------------ the safe band (HUD avoidance)
     def _hud_dead_zone(self, zoom: float) -> None:
         """Treat the HUD chips as a dead zone for people: with the target as it stands, project every framed point's
-        top (feet minus the head height; a stone minus its letter stack) and, if one would land under a top HUD box,
-        lift the target (camera centre up = sprites down) by the cells needed. Capped so the lowest feet stay inside
-        the region. A pure function of the target, so it re-applies every frame and the spring smooths it."""
+        top (feet minus the head height; a stone minus its letter stack) and, if one would land under a TOP HUD box
+        (the plank rows, the vote card), lift the target (camera centre up = sprites down) by the cells needed, capped
+        so the lowest feet stay inside the region. Then the BOTTOM boxes (the minimap, journal 030: a waystone framed
+        low-right had its letters under the bottom-right chips): a framed point's FEET that would land in one push the
+        target the other way (centre down = sprites up), capped so no framed top comes back under a top box. Heads win
+        over feet when both cannot be satisfied. A pure function of the target, so it re-applies every frame and the
+        spring smooths it."""
         pts = self._nudge_pts
         self.hud_nudge = 0.0
         if not pts:
@@ -313,29 +320,56 @@ class Camera(object):
         s = SCREEN[0] / w
         tx, ty = self._clamp_xy(self.target[0], self.target[1], z)
         x0, y0 = tx - w / 2.0, ty - h / 2.0
+        top_boxes = [b for b in self.hud_boxes if b[1] <= 0 < b[3]]
+        bottom_boxes = [b for b in self.hud_boxes if b[1] > 0 and b[3] >= SCREEN[1] - HUD_BOTTOM_BOX_PX]
         need = 0.0
         for x, y, top in pts:
             sx = (x - x0) * s
             sy_top = (y - top - y0) * s
-            for bx0, by0, bx1, by1 in self.hud_boxes:
-                if by0 > 0 or by1 <= 0:
-                    continue                                   # only the boxes hanging from the region's top edge
+            for bx0, by0, bx1, by1 in top_boxes:
                 if bx0 - 24 <= sx <= bx1 + 24 and sy_top < by1 + HUD_NUDGE_PAD_PX:
                     need = max(need, (by1 + HUD_NUDGE_PAD_PX - sy_top) / s)
-        if need <= 0.0:
+        if need > 0.0:
+            low = max(y for _, y, _ in pts)
+            room = (SCREEN[1] - HUD_BOTTOM_PX) / s - (low - y0)     # cells the lowest feet may still drop before the bottom band
+            need = min(need, max(0.0, room))
+        if need > 0.0:
+            self.hud_nudge = need
+            ty -= need
+            y0 = ty - h / 2.0
+        if not bottom_boxes:
+            if need > 0.0:
+                self.target = self._clamp_xy(tx, ty, z)
             return
-        low = max(y for _, y, _ in pts)
-        room = (SCREEN[1] - HUD_BOTTOM_PX) / s - (low - y0)     # cells the lowest feet may still drop before the bottom band
-        need = min(need, max(0.0, room))
-        if need <= 0.0:
-            return
-        self.hud_nudge = need
-        self.target = self._clamp_xy(tx, ty - need, z)
+        push = 0.0
+        for x, y, top in pts:
+            sx = (x - x0) * s
+            sy = (y - y0) * s
+            for bx0, by0, bx1, by1 in bottom_boxes:
+                if bx0 - 24 <= sx <= bx1 + 24 and sy > by0 - HUD_BOTTOM_PAD_PX:
+                    push = max(push, (sy - (by0 - HUD_BOTTOM_PAD_PX)) / s)
+        if push > 0.0:
+            # cap: no framed top may come back under a top box it is clear of now (heads outrank feet)
+            room = None
+            for x, y, top in pts:
+                sx = (x - x0) * s
+                sy_top = (y - top - y0) * s
+                for bx0, by0, bx1, by1 in top_boxes:
+                    if bx0 - 24 <= sx <= bx1 + 24:
+                        r = (sy_top - (by1 + HUD_NUDGE_PAD_PX)) / s
+                        room = r if room is None else min(room, r)
+            if room is not None:
+                push = min(push, max(0.0, room))
+        if push > 0.0:
+            self.hud_nudge -= push
+            ty += push
+        if need > 0.0 or push > 0.0:
+            self.target = self._clamp_xy(tx, ty, z)
 
     @staticmethod
     def safe_dy(zoom: float) -> float:
         """Cells the camera centre is lifted so the framed point lands in the middle of the band the HUD leaves free
-        (region y HUD_TOP_PX .. SCREEN_H - HUD_BOTTOM_PX): (152 - 44) / 2 = 54 px above the window centre."""
+        (region y HUD_TOP_PX .. SCREEN_H - HUD_BOTTOM_PX): (56 - 16) / 2 = 20 px above the window centre."""
         z = zoom if zoom in ZOOMS else 1.0
         return (HUD_TOP_PX - HUD_BOTTOM_PX) / 2.0 / (PPC * z)
 
@@ -780,14 +814,15 @@ def _self_test(verbose: bool = True) -> bool:
     s2 = pin.sim_to_screen(pin.moot[0], pin.moot[1])
     check(s2 is not None and abs(s2[0] - 640 - 0.15 * 320 * 4 * -1) < 200, "pinned: sim_to_screen returns a point (%s)" % (s2,))
 
-    # 4b. HUD dead zone: three pips spanning 34 cells vertically (fits the 1x safe band), the newest speaker at the
+    # 4b. HUD dead zone: three pips spanning 46 cells vertically (fits the 1x safe band), the newest speaker at the
     #     top walking SOUTH so the lead room (ahead of it) pulls the frame down past its head: without the dead zone its
-    #     head sits at region y ~90 under the plank rows; with it the target is lifted and no head is under the chips
+    #     head sits at region y ~40 under the plank row (HUD_TOP_PX 56 since the HUD pass); with it the target is lifted
+    #     and no head is under the chips
     hud = Camera(allow_zoom=False)
     hud.resume(None)
     t = 6000.0
     mx_, my_ = hud.moot
-    grp = [{"key": "n", "x": mx_ - 40, "y": my_ - 34, "fx": 0, "fy": 1, "walking": True, "spoke_t": t},
+    grp = [{"key": "n", "x": mx_ - 40, "y": my_ - 46, "fx": 0, "fy": 1, "walking": True, "spoke_t": t},
            {"key": "s", "x": mx_ - 30, "y": my_, "fx": 0, "fy": 1, "walking": False, "spoke_t": None},
            {"key": "e", "x": mx_ + 40, "y": my_ - 10, "fx": 1, "fy": 0, "walking": False, "spoke_t": None}]
     for i in range(int(12 * fps)):
@@ -803,6 +838,37 @@ def _self_test(verbose: bool = True) -> bool:
     check(hud.mode == "FOLLOW" and not under and hud.hud_nudge > 0.0, "hud dead zone: no followed head under the top-left chips (heads %s, nudge %.1f cells)" % (heads, hud.hud_nudge))
     feet = [hud.sim_to_screen(a["x"], a["y"]) for a in grp]
     check(all(f is not None and f[1] <= SCREEN[1] for f in feet), "hud dead zone: every framed pip's feet stay inside the region (%s)" % [None if f is None else int(f[1]) for f in feet])
+
+    # 4c. bottom dead zone (journal 030): the minimap box bottom-right; three pips whose weighted centre puts the
+    #     east one's feet inside that box at 1x; with the bottom box the target is pushed down (sprites up) until the
+    #     feet clear the box, while every head stays clear of the top boxes
+    mm = Camera(allow_zoom=False)
+    mm.resume(None)
+    mm.hud_boxes = [(0, 0, HUD_LEFT_W, HUD_TOP_PX), HUD_RIGHT_BOX, (1108, 354, 1272, 448)]
+    t = 7000.0
+    mx_, my_ = mm.moot
+    grp = [{"key": "w1", "x": mx_ - 100, "y": my_ - 8, "fx": 1, "fy": 0, "walking": False, "spoke_t": t},
+           {"key": "w2", "x": mx_ - 90, "y": my_ + 6, "fx": 1, "fy": 0, "walking": False, "spoke_t": None},
+           {"key": "e", "x": mx_ + 118, "y": my_ + 34, "fx": 0, "fy": 1, "walking": False, "spoke_t": None}]
+    bare = Camera(allow_zoom=False)                        # the same frame without the bottom box: proves the scenario bites
+    bare.resume(None)
+    min_nudge = 0.0
+    for i in range(int(12 * fps)):
+        t += dt
+        grp[0]["spoke_t"] = t
+        mm.update(t, dt, awake=grp)
+        min_nudge = min(min_nudge, mm.hud_nudge)           # negative while the bottom box pushes; 0 once the target satisfies it
+        bare.update(t, dt, awake=grp)
+    def _in_box(pt, box):
+        return pt is not None and box[0] <= pt[0] <= box[2] and box[1] <= pt[1] <= box[3]
+    feet_bare = bare.sim_to_screen(grp[2]["x"], grp[2]["y"])
+    feet_mm = mm.sim_to_screen(grp[2]["x"], grp[2]["y"])
+    heads_mm = [mm.sim_to_screen(a["x"], a["y"] - HEAD_CELLS) for a in grp]
+    under_top = [h for h in heads_mm if h is not None and ((h[0] < HUD_LEFT_W + 24 and h[1] < HUD_TOP_PX) or (h[0] > 848 - 24 and h[1] < 152))]
+    check(_in_box(feet_bare, (1108, 354, 1272, 448)), "bottom dead zone: without the minimap box the east pip's feet land in it (feet %s)" % (None if feet_bare is None else (int(feet_bare[0]), int(feet_bare[1])),))
+    check(mm.mode == "FOLLOW" and feet_mm is not None and not _in_box(feet_mm, (1108, 354, 1272, 448)) and min_nudge < 0.0,
+          "bottom dead zone: with the minimap box the feet are pushed above it (feet %s, push peaked at %.1f cells)" % (None if feet_mm is None else (int(feet_mm[0]), int(feet_mm[1])), -min_nudge))
+    check(not under_top, "bottom dead zone: no head came back under a top chip (heads %s)" % [None if h is None else (int(h[0]), int(h[1])) for h in heads_mm])
 
     # 5. persistence round trip: resume keeps the position (no jump)
     d = cam4.to_dict(t)

@@ -74,6 +74,12 @@ IMPORT_ERRORS: List[str] = []
 def register(panel: Panel) -> Panel:
     if not getattr(panel, "key", None):
         raise ValueError("panel needs a key")
+    if panel.region in getattr(L, "REMOVED_REGIONS", ()):
+        # a module still registering a region the layout dropped (HUD pass, journal 028): the panel is not drawn and the
+        # boot / hot reload goes on; no ValueError, no import error every boot
+        sys.stderr.write("panels: %s registers removed region %r; not drawn\n" % (panel.key, panel.region))
+        PANEL_REGISTRY.pop(panel.key, None)
+        return panel
     if panel.region not in L.LAYOUT:
         raise ValueError("panel %s: unknown region %r" % (panel.key, panel.region))
     PANEL_REGISTRY[panel.key] = panel
@@ -84,10 +90,11 @@ def register(panel: Panel) -> Panel:
 # "render() raised" (QA 2026-09-25: internal jargon leaked into viewer-facing text).
 PLACEHOLDER_WORDS = {
     # PIP HOLLOW regions (WORLD.md 5)
-    "world": "the cave is waking…", "colony": "colony strip restarting…", "keeper": "keeper strip restarting…",
-    "chat_log": "chat is catching up…",
-    "ticker": "ticker restarting…", "scope": "", "readout": "readout restarting…",
-    "countdown": "", "header_left": "PIP HOLLOW", "header_center": "clock restarting…", "header_right": "",
+    "world": "the land is waking…", "land": "the land strip is catching up…", "chat_log": "chat is catching up…",
+    "header_center": "say anything", "header_right": "",
+    # regions removed by the HUD pass (journal 028); kept so an old module that still registers one degrades in words
+    "colony": "colony strip restarting…", "keeper": "keeper strip restarting…",
+    "ticker": "ticker restarting…", "scope": "", "readout": "readout restarting…", "countdown": "", "header_left": "LONGGRASS",
     # legacy keys (regions removed with the pivot; kept so an old module that still registers one degrades in words)
     "chat_pane": "chat is catching up…", "chat_pinned": "chat is catching up…", "founders": "founders list is catching up…",
     "ballot": "ballot restarting…", "activity_feed": "activity feed restarting…",

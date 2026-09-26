@@ -980,8 +980,15 @@ planted today` / `tree · @name · sapling · planted 3 days ago` / `the Shore �
 `day N` without the header's day); land row 3 `a keeper is on duty now · type !idea <what to raise>` / `no keeper on
 duty · your !idea waits on the board` (`one is on duty` had no subject). Found on the way: a voter still WALKING to a
 stone who was sent elsewhere (`A`, then `go north` ten seconds later) dropped the vote silently (`behaviour._start_walk`
-emitted `leave_platform` only for a standing voter; the first drop rerun lost `@lumen_k walked off A · that vote is
-dropped · type A to stand again`); the walker's case now emits the same event, so the plank says it.
+emitted `leave_platform` only for a standing voter); the walker's case now emits the same event. And the line itself
+had stopped showing at all: the bridge's `@lumen_k walks north` echo and the world's `@lumen_k walked off A · that vote
+is dropped · type A to stand again` land in the SAME frame, and the plank's "newest person line wins" used a strict `>`,
+so the echo won and the consequence never showed (instrumented under KL_PLANK_LOG: the event arrived, `_vote_left`
+passed every guard). A same-frame tie now goes to the world's line (`_plank_text_land`, `>=`); the final drop run's
+plank log reads `someone new walks to B` -> `leave_platform lumen_k A` -> `@lumen_k walked off A · that vote is dropped ·
+type A to stand again` -> `@kai_dnb walks to B`. The tie rule then hid one vote ack (5/6): a changed letter produced
+the world's `@willow_9 moved to A` in the same frame as the bridge's `walks to A · counts while standing there`; the
+`moved to` line is gone (the same fact twice; the ack carries the walk, the rule and the deadline), acks back to 6/6.
 
 Frame budget (60 test pips, 0.75x, 300 frames unpaced, three runs; the gate is < 12 ms scene avg): 10.13 / 10.90 / 11.00
 ms, **median 10.90** (the previous pass measured 11.5-12.5 with one run at 12.51 including the warm-up spike; the

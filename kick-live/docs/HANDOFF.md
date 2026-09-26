@@ -124,3 +124,11 @@ counts while standing there · closes in m:ss`, unparsed-with-hint, vote reconci
 moved regions this ships as ONE relay-held compositor child restart (scripts/deploy.sh) after copying all changed files
 into live-snapshot-v3 together, never as a hot-reload of single panels (a panel registering a removed region is dropped,
 so a partial copy shows a black strip, not a crash). Tell the owner first. Evidence and grids: /tmp/lg-hud-build/report.
+
+## Addendum 17:55 — HUD fix pass built, not deployed (journal 030)
+
+On top of the HUD pass: stream/layout.py changed AGAIN (header_center 0,0,880,66; header_right 880,0,400,66: two rows,
+the clock row moved there from the land), so the same rule applies: ONE relay-held compositor child restart
+(scripts/deploy.sh) after copying every changed file together into live-snapshot-v3 (layout.py, compositor.py,
+chat_bridge.py, panels/header.py, panels/world.py, panels/chat_log.py, panels/colony.py, world/camera.py,
+world/behaviour.py + the rest of the 028 set). Evidence and grids: /tmp/lg-hud-fix/report. Tell the owner first.

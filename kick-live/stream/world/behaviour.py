@@ -995,7 +995,10 @@ class Behaviour(object):
         target = self.ground.nearest(target[0], target[1], 24)
         if not self.ground.ok(*target):
             return False
-        if e.state == "voting" and then != "vote":
+        if then != "vote" and e.platform is not None and (e.state == "voting" or (e.state == "walking" and e.then == "vote")):
+            # a standing voter walks off, OR a voter still on the way to a stone is sent somewhere else (`A` then `go
+            # north` ten seconds later): both drop the vote (the tally is who stands at close), and both say so on the
+            # plank through this event (journal 030: the walker's case was silent, the vote vanished without a word)
             self._ev("leave_platform", pip=e.key, platform=e.platform)
             e.platform, e.slot = None, None
         e.target = target

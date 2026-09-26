@@ -64,7 +64,7 @@ PANEL_BUDGET_MS = 28.0
 PANEL_STRIKES = 30
 PANEL_RETRY_FRAMES = 300
 STATIC_WATCHDOG_FRAMES = 30
-WORLD_BAND = (72, 512)           # the static watchdog watches the WORLD rows (art-rules 4), so the header clock cannot mask a frozen cave
+WORLD_BAND = (66, 522)           # the static watchdog watches the WORLD rows (art-rules 4), so the header clock cannot mask a frozen land
 HEADER_MIN_STD = 8.0             # self-test: luminance std of the 0-66 header band below this counts as a blank header
 HOT_RELOAD_S = 2.0               # file watch interval (wallclock)
 HOT_RELOAD_SETTLE_S = 0.3        # a file modified less than this long ago may still be half-written: next poll
@@ -542,6 +542,9 @@ class Compositor(object):
         self._frame_votes: List[Dict] = []    # accepted live votes ingested this frame (vote-to-strip latency proof)
         self.vote_acks = [0, 0]               # [acknowledged on the same frame, total]
         self.header_blank = 0                 # frames whose header band (rows 0-66) had no contrast
+        self.honesty_rows_missing = 0         # self-test: frames whose land strip did not carry the honesty line + the keepers sentence
+        self.card_mismatch = 0                # self-test: frames where a vote-card count string differed from its stone's
+        self.card_checked = 0
 
     # ------------------------------------------------------------------ slots (hot reload uses these)
     def slot_for(self, key: str) -> Optional[Slot]:
@@ -706,8 +709,9 @@ class Compositor(object):
     def _ctx(self, now: float, frame: int, audio_block=None):
         extras = dict(
             tallies=self.bridge.tallies(now), vote_count=self.bridge.vote_count(), recent_votes=self.bridge.recent_votes(5, now),
-            chat=self.bridge.visible(now, 10), notice=self.bridge.notice(now), help_until=self.bridge.help_until,
+            chat=self.bridge.visible(now, 10), chat_held=self.bridge.held_rows(now), notice=self.bridge.notice(now), help_until=self.bridge.help_until,
             stats_until=self.bridge.stats_until, chat_display=self.bridge.display, mod_paused=self.bridge.paused,
+            help_by=getattr(self.bridge, "help_by", None), stats_by=getattr(self.bridge, "stats_by", None),
             builders=self.bridge.builders, new_builders=self.bridge.new_builders, audio_block=audio_block,
             audio_level=(self.audio.level_dbfs if self.audio else None), audio_source=self.audio_source,
             compositor_live=self.counters, scene=self.counters.get("scene"),
@@ -752,20 +756,42 @@ class Compositor(object):
         return self.canvas
 
     def _world_static(self, b: bytes) -> None:
-        """Track identical WORLD-region frames (rows 72-512 of the rgb24 buffer): the header clock and the ticker move
-        every frame, so a whole-frame comparison never fires when only the cave is frozen."""
+        """Track identical WORLD-region frames (rows 66-522 of the rgb24 buffer): the header and the vote card's fuse move
+        on their own, so a whole-frame comparison never fires when only the land is frozen."""
         wb = b[L.W * 3 * WORLD_BAND[0]:L.W * 3 * WORLD_BAND[1]]
         self.same_world = self.same_world + 1 if wb == self.last_world else 0
         self.last_world = wb
         if self.same_world > self.longest_static_world:
             self.longest_static_world = self.same_world
 
+    def _hud_checks(self) -> None:
+        """Per-frame self-test assertions for the HUD pass: the land strip's inputs() key carries the keepers sentence
+        and the two honesty rows; the world panel's card counts equal its stone counts letter by letter."""
+        slot = self.slot_for("colony")
+        key = getattr(slot, "last_inputs", None) if slot is not None else None
+        ok = False
+        if isinstance(key, tuple) and len(key) >= 4 and isinstance(key[3], tuple):
+            rows = " ".join(key[3])
+            ok = ("no camera, no mic, no fake viewers." in rows and "real person" in rows and "AI keepers build this show live" in str(key[1]))
+        if not ok:
+            self.honesty_rows_missing += 1
+        wm = sys.modules.get("stream.panels.world")
+        pnl = getattr(wm, "PANEL", None) if wm is not None else None
+        if pnl is not None:
+            card = getattr(pnl, "last_card_counts", {}) or {}
+            for letter, txt in (getattr(pnl, "last_stone_counts", {}) or {}).items():
+                self.card_checked += 1
+                if card.get(letter) != txt:
+                    self.card_mismatch += 1
+
     def _log_vote_ack(self, votes: List[Dict], frame: int) -> None:
         """Prove CONCEPT 2 'name on screen within one second': the world plank (stream/panels/world.py PANEL.last_plank;
         the legacy pinned strip when no world panel is loaded) on the SAME frame the vote was ingested must read
-        `@name voted X`. The name is the bridge's name_for(): a first-time chatter inside their 3 s hold reads
-        `builder #N` by design (WORLD.md 11.1), so `voted X` is what is asserted, plus the display name when it is
-        already past the hold. Counted in self.vote_acks, one log line per vote."""
+        `@name walks to X · counts while standing there · closes in m:ss` (HUD pass, journal 028: the tally is who stands
+        at the stone at close, so the ack leads with the walk). A first-time chatter inside their 3 s hold is nameless on
+        the land, so their same-frame ack reads `someone new walks to X` (the by-name ack follows at show_t, journal
+        030); `walks to X` + `counts while standing` is what is asserted, plus the display name when it is already past
+        the hold. Counted in self.vote_acks."""
         wm = sys.modules.get("stream.panels.world")
         pnl = getattr(wm, "PANEL", None) if wm is not None else None
         txt = getattr(pnl, "last_plank", None) if pnl is not None else None
@@ -776,10 +802,10 @@ class Compositor(object):
             txt = key[0] if isinstance(key, tuple) and key else None
             where = "pinned strip"
         for m in votes:
-            want = "@%s voted %s" % (m.get("display_name"), m.get("letter"))
-            held = "voted %s" % m.get("letter")
+            want = "@%s walks to %s" % (m.get("display_name"), m.get("letter"))
+            held = "walks to %s" % m.get("letter")
             s = str(txt or "")
-            ok = bool(txt) and (want in s or (held in s and "@builder #" in s))   # several votes in one frame share the plank
+            ok = bool(txt) and "counts while standing" in s and (want in s or (held in s and ("someone new" in s or "@builder #" in s)))   # several votes in one frame share the plank
             self.vote_acks[1] += 1
             self.vote_acks[0] += 1 if ok else 0
             log("vote ack: frame %d %s -> %s reads %r (%s)" % (frame, want, where, txt, "same frame" if ok else "NOT shown"))
@@ -990,6 +1016,7 @@ class Compositor(object):
                 hdr_min = sd if hdr_min is None else min(hdr_min, sd)
                 if sd <= HEADER_MIN_STD:
                     self.header_blank += 1
+            self._hud_checks()
             img.save(os.path.join(out_dir, "frame_%04d.png" % i))
             if i % 30 == 0:
                 self._update_counters(t_start, time.perf_counter())
@@ -1005,7 +1032,15 @@ class Compositor(object):
         log("header band check: %d/%d frames non-blank (min luminance std %.1f, threshold %.0f) -> %s" % (
             n - self.header_blank, n, hdr_min if hdr_min is not None else -1.0, HEADER_MIN_STD, "PASS" if not self.header_blank else "FAIL"))
         log("vote ack check: %d/%d live votes acknowledged on the world plank in the same frame" % (self.vote_acks[0], self.vote_acks[1]))
+        # HUD pass (journal 028): the honesty line and the keepers sentence are on the land strip in EVERY frame (ADR-000),
+        # and the vote card draws the same count string as the stone for every letter drawn
+        log("land strip check: honesty line + keepers sentence present in %d/%d frames -> %s" % (
+            n - self.honesty_rows_missing, n, "PASS" if not self.honesty_rows_missing else "FAIL"))
+        log("vote card check: %d/%d letter counts equal the stone's string -> %s" % (
+            self.card_checked - self.card_mismatch, self.card_checked, "PASS" if not self.card_mismatch else "FAIL"))
         rc = rc_static
+        if self.honesty_rows_missing or self.card_mismatch:
+            rc = 1
         # WORLD.md 11: the honesty assertions run every frame inside the world panel (HonestyMonitor); the self-test
         # fails when any frame had a violation (a planted fake pip must turn this red).
         wm = sys.modules.get("stream.panels.world")

@@ -1,6 +1,6 @@
 """layout.py - single source of geometry, fonts and palette for the PIP HOLLOW compositor.
 
-Every region from docs/WORLD.md section 5 (header/footer kept from CONCEPT.md section 3) is here as LAYOUT[key] = {
+Every region from docs/OPENWORLD.md section 8 (HUD pass of 2026-09-26) is here as LAYOUT[key] = {
     "box":  (x, y, w, h)      pixel rectangle on the 1280x720 canvas
     "font": "<face name>"     one of FONT_FILES keys (AB, HN, HN Medium, HN Bold, Menlo, Menlo Bold)
     "size": <px>              primary text size for the region (never under 20)
@@ -22,34 +22,38 @@ PAD = 16                 # inner padding in every region
 MIN_TEXT_PX = 20         # nothing on screen is under 20 px
 
 # ---------------------------------------------------------------------------- regions
+# HUD pass 2026-09-26 (owner: "there is too much information on the screen"; journal 028): fifteen text clusters became
+# seven. The bottom bar (ticker / scope / readout), the countdown strip, header_left and the two footer strips under the
+# land are gone; the world grew to 456 px (114 / 152 / 76 cells at 1x / 0.75x / 1.5x: integer at every zoom; 480 measured
+# 12.26 ms scene avg against the 12 ms gate at 60 pips / 0.75x, so the spec's ladder rung applies), one `land` strip carries the
+# headcount, the keepers sentence, the keeper state and the (static) honesty line; the chat log widened. HUD fix pass (journal
+# 030): the clock row left the land for header_right (880-1280: two rows) after it was pasted over the waystone letters when
+# the camera framed the stones low-right; the world region now carries only the plank, the vote card and the minimap.
 LAYOUT: Dict[str, Dict] = {
     # header strip (the thumbnail: only this survives at 320x180)
     "header":        {"box": (0, 0, 1280, 66),   "font": "HN Medium", "size": 22, "role": "composite header strip"},
-    "header_left":   {"box": (0, 0, 300, 66),    "font": "HN Medium", "size": 22, "role": "`atleastonce` / `PIP HOLLOW` wordmark + chat-link dot"},
-    "header_center": {"box": (300, 0, 620, 66),  "font": "AB",        "size": 56, "role": "`3 AWAKE` AB 56 (`NOBODY AWAKE` AB 40) + `· 17 HATCHED` / `NEXT EVENT mm:ss` Menlo 24 (+ keeper carving line Menlo 20)"},
-    "header_right":  {"box": (920, 0, 360, 66),  "font": "Menlo",     "size": 22, "role": "version string; red LIVE dot + real `N watching` or `--`"},
-    "countdown":     {"box": (0, 66, 1280, 6),   "font": "none",      "size": 0,  "role": "full-width bar shrinking right-to-left over the 180 s round"},
-    # the world (WORLD.md 5, region 5): the 320x110 sim at 4x plus the screen-scale text layer
-    "world":         {"box": (0, 72, 1280, 440), "font": "Menlo",     "size": 22, "role": "the cave: sim 320x110 at 4x; plank HN Medium 22, pip labels Menlo 20, bubbles Menlo 22, platform letters AB 56"},
-    # the three strips under the world (WORLD.md 5, regions 6-8)
-    "colony":        {"box": (0, 512, 420, 144),   "font": "HN Medium", "size": 22, "role": "colony bar (hatched / next milestone), awake · asleep line, 8 s rotation (last event, nightly board, !stats)"},
-    "keeper":        {"box": (420, 512, 420, 144), "font": "HN Medium", "size": 22, "role": "keeper on duty / off duty; carving or last carved line; traceback lines only on failure"},
-    "chat_log":      {"box": (840, 512, 440, 144), "font": "Menlo",     "size": 22, "role": "last 5 moderated messages past the hold, 26 px lines, letter chip on votes, shield chip on mod actions"},
-    # footer
-    "ticker":        {"box": (0, 656, 880, 64),    "font": "HN Medium", "size": 24, "role": "right-to-left crawl: events / ships, honesty line, command legend"},
-    "scope":         {"box": (880, 656, 160, 64),  "font": "none",      "size": 0,  "role": "oscilloscope of this frame's 1600-sample audio block (left channel)"},
-    "readout":       {"box": (1040, 656, 240, 64), "font": "Menlo",     "size": 20, "role": "chat rate / chatters; fps · frame ms · uptime; stale/fallback flags; `world: glow off`"},
+    "header_center": {"box": (0, 0, 880, 66),    "font": "AB",        "size": 56, "role": "`SAY ANYTHING` / `3 AWAKE` AB 56 + a two-row Menlo 22 column (`a creature walks out` / `with your name`)"},
+    "header_right":  {"box": (880, 0, 400, 66),  "font": "Menlo",     "size": 22, "role": "row 1 `LONGGRASS  ● LIVE` (the dot is red when live + chat linked, amber while chat reconnects, dim when offline); row 2 Menlo 20 muted: the clock row `midday · wind NE fresh · spring` (nature declared; moved out of the land so it can never sit over the waystones)"},
+    # the world (OPENWORLD.md 8 row 5): the painted land at the camera's zoom plus the screen-scale text layer
+    "world":         {"box": (0, 66, 1280, 456), "font": "Menlo",     "size": 22, "role": "the land: plank HN Medium 22 (top-left), vote card (top-right, timer Menlo Bold 24), minimap (bottom-right), labels Menlo 20, bubbles Menlo 22, waystone letters AB 56"},
+    # the footer under the land (OPENWORLD.md 8 rows 6-8)
+    "land":          {"box": (0, 522, 720, 198), "font": "HN Medium", "size": 22, "role": "the land strip: headcount + milestone (24), `AI keepers build this show live from chat's ideas` (22, static), keeper state (22, rotates), the honesty line (20, static, two rows)"},
+    "chat_log":      {"box": (720, 522, 560, 198), "font": "Menlo",   "size": 22, "role": "last 5 moderated messages past the hold + the mod row, 26 px lines, letter chip on votes, shield chip on mod actions"},
 }
 
 # Removed with the living-world pivot (WORLD.md 5): stage_title, stage_step, stage_body, activity_feed, ballot,
-# chat_pinned, chat_pane, founders, ask_card, next_up (and the composite `stage`). Their information moved: stage ->
-# lantern + keeper strip; activity feed -> keeper line 2 + ticker; ballot -> the three stone platforms; pinned strip ->
-# the plank; chat -> bubbles + chat_log; founders -> plank `woke the Hollow` + nightly board; next up -> wall scrolls.
+# chat_pinned, chat_pane, founders, ask_card, next_up (and the composite `stage`). Removed with the HUD pass (journal
+# 026): header_left (the channel name is Kick's; the wordmark moved to header_right), countdown (the fuse is the vote
+# card's bottom edge), colony + keeper (merged into `land`), ticker / scope / readout (the bottom bar: the honesty line
+# and the keepers rule got still homes in `land`; telemetry lives in the compositor log, state.json and status.sh).
+# A panel module that still registers one of these degrades to viewer words (panels.PLACEHOLDER_WORDS); the compositor
+# drops it from the frame.
 REMOVED_REGIONS = ("stage", "stage_title", "stage_step", "stage_body", "activity_feed", "ballot", "chat_pinned",
-                   "chat_pane", "founders", "ask_card", "next_up")
+                   "chat_pane", "founders", "ask_card", "next_up",
+                   "header_left", "countdown", "colony", "keeper", "ticker", "scope", "readout")
 
 # World text-layer geometry (region-relative px inside `world`; WORLD.md 5 row 5)
-WORLD_PLANK_XY = (16, 12)        # canvas (16, 84): the plank's top-left
+WORLD_PLANK_XY = (16, 12)        # canvas (16, 78): the plank's top-left (the land's single voice)
 WORLD_BUBBLE_MAX_W = 408         # bubble box max width, 3 lines of Menlo 22
 WORLD_DENSITY_FALLBACK = 40      # above this many awake pips: labels only while speaking, sleepers stop rotating labels
 

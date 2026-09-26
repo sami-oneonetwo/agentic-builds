@@ -283,4 +283,6 @@ class KeeperPanel(Panel):
         return img
 
 
-register(KeeperPanel())
+# HUD pass (journal 028): this region left stream/layout.py; the module stays on disk (its copy and tests are
+# reused by the land strip) but registers nothing. `KeeperPanel` would be dropped by register() anyway.
+# register(KeeperPanel())
