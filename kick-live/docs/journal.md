@@ -732,3 +732,12 @@ badge, whole message == token, fresh within 120 s, de-duplicated by id, 20 s coo
 keeps kick_api/chat_listener alive so `init` can arrive; `init` double-forks supervisor.sh from live-current with the
 RESUME.md env. Self-test caught a zombie-child bug (an init-launched supervisor read as alive after a later nuke) and a
 tail-after-truncation miss; both fixed. Adversarial review (3 lenses) before it runs against run-live.
+
+Addendum to 024 (14:38): review returned 3x fix_first (7 blocking: watcher crash on malformed badges, stale/recycled
+pid files trusted, snapshot resolved at start-up, init-launched supervisor in the watcher's process group, cooldown
+swallowing an emergency nuke after init, init success declared before an encoder exists, plus the overlaps); all fixed,
+self-test grown to 59 checks (stranger pid never signalled, own process group, secrets scrubbed, symlink resolved at
+action time, nuke 0.1 s after init, init failure when run.sh dies). Launched against run-live at 14:38 with
+`env -u` for every secret (a Python-side pop does not hide the exec-time environment from `ps -E`); pid in
+run-live/pids/ops_switch.pid, log run-live/logs/ops_switch.log, visible in status.sh. Not exercised live: the first
+real nuke is the owner's.
