@@ -1237,7 +1237,8 @@ def migrate_v2_doc(old: Dict[str, Any], moot: Tuple[float, float] = LAND.DEFAULT
             q.pop(f, None)
         q.update({k: v for k, v in _v2_pip_fields(key).items() if k != "history"})
         hatched = p.get("state") not in ("seed", "hatching")
-        tier = LAND.camp_tier_for_sessions(p.get("sessions_seen") or 0)
+        _ss = p.get("sessions_seen") or 0
+        tier = LAND.camp_tier_for_sessions(len(_ss) if isinstance(_ss, (list, tuple, set, dict)) else _ss)
         if hatched and tier >= 0:                      # they did sleep here: a camp where their nights were
             x, y = LAND.hashed_camp_spot(key, moot, taken, passable, water)
             taken.append((x, y))

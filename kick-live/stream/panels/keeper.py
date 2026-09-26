@@ -36,6 +36,11 @@ from stream.state_store import iso_to_epoch
 HEARTBEAT_FRESH_S = 120.0
 FAIL_SHOW_S = 20.0
 IDEA_HINT_LAND = "!idea <text> pins a notice to the board on the Moot"
+# The owner asked in chat what the keepers are (journal 023): the strip explains itself in plain words, alternating
+# every EXPLAIN_ROTATE_S with whatever line 2 would otherwise carry (never while a raising is going up).
+EXPLAINER_LAND = "the keepers are AI agents building this show live"     # two Menlo 22 rows in the 364 px strip
+EXPLAINER_CAVE = EXPLAINER_LAND
+EXPLAIN_ROTATE_S = 8.0
 IDEA_HINT_CAVE = "!idea <text> leaves a scroll for the keepers"
 IDEA_HINT = IDEA_HINT_LAND
 ON_DUTY_LAND, OFF_DUTY_LAND = "keeper on duty · beacon lit", "no keeper on duty · notices kept for next time"
@@ -151,6 +156,15 @@ class KeeperPanel(Panel):
         return None
 
     def _line2(self, ctx) -> Tuple[str, str]:
+        """Line 2, with the plain explainer on every other EXPLAIN_ROTATE_S slot unless a build is going up."""
+        text, colour = self._line2_inner(ctx)
+        mac = ctx.macro or {}
+        if not mac.get("active") and not str(text).startswith(("raising:", "carving:")):
+            if int(float(ctx.now) // EXPLAIN_ROTATE_S) % 2 == 0:
+                return (EXPLAINER_LAND if _is_land_scene() else EXPLAINER_CAVE), L.COLORS["text"]
+        return text, colour
+
+    def _line2_inner(self, ctx) -> Tuple[str, str]:
         land = _land() is not None
         raise_w, raised_w, failed_w = ("raising", "raised", "raise") if land else ("carving", "carved", "carve")
         mac = ctx.macro or {}

@@ -123,6 +123,7 @@ MINIMAP_REBUILD_S = 2.0               # the walked/unwalked base is re-derived a
 MINIMAP_EVERY = 5                     # the composed minimap is rebuilt every N frames (7.4: amortised)
 HUD_RESERVE_LEFT = (0, 0, 700, 152)   # plank rows + land line + dial rows: labels / plates never land under them
 HUD_RESERVE_RIGHT = (1104, 0, 1280, 132)
+HUD_BOXES_FALLBACK = (HUD_RESERVE_LEFT, HUD_RESERVE_RIGHT)
 CHIP_FONT, CHIP_SIZE = "HN Medium", 22
 CHIP_PAD = 8
 CHIP_ALPHAS = (153, 204, 235, 255)    # 60 % base; a hue that misses 4.5:1 over the brightest grass gets the next one
@@ -138,7 +139,18 @@ ONLY_ONE_S = 10.0
 PLACE_LABEL_S = 4.0
 PLACE_RETARGET_CELLS = 30.0
 EDGE_INSET = 24
-WAYSTONE_LETTER_DY = 78               # the letter's bottom this far above the stone's cell
+WAYSTONE_LETTER_DY = 128              # the AB 56 strip's top this far above the stone's cell (glyph rows 21-63 of the 65 px
+                                      # strip, the Menlo 22 count under it ends at strip top + 80 = cy - 48): clears the stone's
+                                      # top and a tier-3 voter's head (86 px tall at 1.2x) on behaviour's first standing row
+                                      # (STAND_Y0 = 9 cells south -> head top cy - 43). QA night frame 599 had '2' over a face.
+LETTER_STACK_H = 80                   # strip top -> count bottom (see above); a HUD-forced shift may lower the stack until the
+                                      # count sits on the stone (cy - 2), never further; else all three letters are culled together
+OPTION_TITLE_MAX_W = 230              # each option title in the guaranteed `A harvest day · B light: gold · C fog` row
+OPTIONS_ROW_MAX_STEPS = 4
+HUT_SPRITE_W, HUT_SPRITE_H = 32 + 2 * 3 + 4, 32 + 10 + 4   # buildings._hut: T + 2*OVERHANG + 4 wide (per tile), T + ROOF_RISE + 4 tall
+HUT_SPRITE_DX, HUT_SPRITE_DY = 3 + 2, 10 + 2               # the footprint origin inside the sprite (OVERHANG + 2, ROOF_RISE + 2)
+CAMP_TO_BUILDING = {0: None, 1: 0, 2: 1, 3: 2}             # camp tier -> hut tier (bake.py); a hollow has no sprite, only its footprint
+FORBIDDEN_MIN_LEN = 3
 CAMP_FOOTPRINT = {0: (8, 6), 1: (10, 8), 2: (14, 12), 3: (14, 12)}   # cells (OPENWORLD 5.3)
 TIER_H_PX = (26, 30, 34, 42)          # standing heights at 1x (ART.md 2) for a screen box when the scene gives none
 LEGEND_LAND = ("go river · plant a flower · camp · fire   (a verb first, four words at most)",
@@ -212,6 +224,11 @@ def _make_scene():
     if prev is not None and type(prev) is cls:               # same class object: a panel-only reload keeps the colony
         sc = prev
     else:
+        if prev is not None and hasattr(prev, "save_now"):    # the scene being replaced flushes world.json first (12: camps are promises)
+            try:
+                prev.save_now()
+            except Exception:
+                pass
         try:
             sc = cls(run_dir=_run_dir(), log=lambda m: _log("scene: %s" % m))
         except Exception as e:
@@ -395,11 +412,23 @@ def when_text(ts_iso: Optional[str], now: float) -> str:
 
 # ----------------------------------------------------------------------------- cached text strips
 _TEXT: Dict[Tuple, Image.Image] = {}
+# every string the LONGGRASS text layer builds this frame (cached or not): after the layer the panel asserts none of
+# them carries a raw hidden / blocklisted / quarantined username (OPENWORLD 12 "nameless until the hold", "builder #N
+# on every surface"). The chat_log / ticker / keeper strips are covered by their own single name path.
+_DRAWN: List[str] = []
+_COLLECT = [False]
+_FORBIDDEN_RE: Dict[frozenset, Any] = {}
+
+
+def _note_drawn(text: str) -> None:
+    if _COLLECT[0]:
+        _DRAWN.append(text)
 
 
 def text_strip(font: str, size: int, text: str, colour, stroke: bool = True) -> Image.Image:
     """RGBA strip of `text` drawn at (1, 0) with a 1 px bg-coloured stroke (legible over glow). Cached per string."""
     key = (font, size, text, colour, stroke)
+    _note_drawn(text)
     im = _TEXT.get(key)
     if im is not None:
         return im
@@ -491,6 +520,7 @@ def chip_img(text: str, colour, face: str = CHIP_FONT, size: int = CHIP_SIZE, al
              max_w: Optional[int] = None, stroke: bool = False) -> Image.Image:
     """Text on a rounded 60 % dark chip (the gate mockup's plank / plate / label look). Cached per string."""
     key = (text, colour, face, size, alpha, max_w, stroke)
+    _note_drawn(text)
     im = _CHIP.get(key)
     if im is not None:
         return im
@@ -510,6 +540,34 @@ def chip_img(text: str, colour, face: str = CHIP_FONT, size: int = CHIP_SIZE, al
         for k in list(_CHIP)[:TEXT_CACHE_MAX // 2]:
             _CHIP.pop(k, None)
     _CHIP[key] = im
+    return im
+
+
+_ROW: Dict[Tuple, Image.Image] = {}
+
+
+def row_chip(segs: Sequence[Tuple[str, Any]], face: str = LABEL_FONT, size: int = LABEL_SIZE, alpha: int = CHIP_ALPHAS[1]) -> Image.Image:
+    """Several coloured text segments side by side on ONE rounded dark chip (the guaranteed A/B/C options row: the
+    letters in the carved colour, the leading option's title in the accent, the rest in text2). Cached per row."""
+    key = (tuple((str(t), str(c)) for t, c in segs), face, size, alpha)
+    im = _ROW.get(key)
+    for t, _c in segs:
+        _note_drawn(str(t))
+    if im is not None:
+        return im
+    f = L.font(face, size)
+    widths = [L.text_width(face, size, str(t)) for t, _c in segs]
+    w, h = sum(widths) + 2 * CHIP_PAD, size + 12
+    im = Image.new("RGBA", (max(1, w), h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im, "RGBA")
+    d.rounded_rectangle([0, 0, w - 1, h - 1], 6, fill=tuple(list(L.hex_rgb(L.COLORS["bg"])) + [int(alpha)]))
+    x = CHIP_PAD
+    for (t, c), tw in zip(segs, widths):
+        d.text((x, 4), str(t), font=f, fill=c, stroke_width=1, stroke_fill=L.COLORS["bg"])
+        x += tw
+    if len(_ROW) > 200:
+        _ROW.clear()
+    _ROW[key] = im
     return im
 
 
@@ -767,9 +825,21 @@ class _Placer(object):
         return None
 
 
-def _in_hud(x0: int, y0: int, x1: int, y1: int) -> bool:
-    """True when a box would sit under the fixed HUD chips (plank / land line / dial rows, the minimap)."""
-    for bx0, by0, bx1, by1 in (HUD_RESERVE_LEFT, HUD_RESERVE_RIGHT):
+def _hud_bottom_under(x0: int, y0: int, x1: int, y1: int, boxes: Sequence[Tuple[int, int, int, int]]) -> Optional[int]:
+    """The lowest bottom edge among the top-hanging HUD boxes a box overlaps, or None when it overlaps none."""
+    out = None
+    for bx0, by0, bx1, by1 in boxes:
+        if by0 > 0:
+            continue
+        if x0 < bx1 and bx0 < x1 and y0 < by1 and by0 < y1:
+            out = by1 if out is None else max(out, by1)
+    return out
+
+
+def _in_hud(x0: int, y0: int, x1: int, y1: int, boxes: Optional[Sequence[Tuple[int, int, int, int]]] = None) -> bool:
+    """True when a box would sit under the HUD chips (plank / land line / dial rows, the minimap): this frame's actual
+    chip boxes when given, else the reserve constants."""
+    for bx0, by0, bx1, by1 in (boxes if boxes else (HUD_RESERVE_LEFT, HUD_RESERVE_RIGHT)):
         if x0 < bx1 and bx0 < x1 and y0 < by1 and by0 < y1:
             return True
     return False
@@ -797,6 +867,12 @@ class WorldPanel(Panel):
     budget_ms = 24.0
 
     def __init__(self):
+        self.name_leaks = 0                           # drawn strings carrying a raw hidden / blocklisted / quarantined name (must stay 0)
+        self._leaks_logged = 0
+        self.last_options_row: Optional[str] = None   # the guaranteed A/B/C options row as drawn (None while no round is open)
+        self.last_options_row_placed = ""             # "stones" (by the letters) / "fixed" (bottom-right fallback) / ""
+        self.last_hud_boxes: List[Tuple[int, int, int, int]] = list(HUD_BOXES_FALLBACK)
+        self.last_sprite_boxes = 0
         self._notices: List[Dict[str, Any]] = []      # {start, until, text, colour, named}
         self._care: Dict[str, Tuple[str, float]] = {}
         self._hatch_tag: Dict[str, Tuple[str, float]] = {}
@@ -1275,7 +1351,13 @@ class WorldPanel(Panel):
         try:
             img = base.copy()                          # the scene keeps `base` as its last good frame: never draw on it
             if is_land(sc):
-                self._text_layer_land(img, sc, ctx, size)
+                _COLLECT[0] = True
+                del _DRAWN[:]
+                try:
+                    self._text_layer_land(img, sc, ctx, size)
+                    self._check_drawn(sc, ctx)
+                finally:
+                    _COLLECT[0] = False
             else:
                 self._text_layer_cave(img, sc, ctx, size)
         except Exception:
@@ -1411,6 +1493,14 @@ class WorldPanel(Panel):
         dense = awake > DENSITY_FALLBACK
         plates_static = bool(deg.get("plates_static")) or deg.get("plates_rotate") is False or dense
         self._consume_events(sc, ctx, now, accent, land_mode=True)
+        # the beacon's first light of a session explains itself once (journal 023: the owner asked what keepers are)
+        fresh = self._keeper_fresh(ctx)
+        if fresh and not getattr(self, "_beacon_explained", False):
+            self._beacon_explained = True
+            self._notice(now, "beacon lit · a keeper (an AI agent) is on duty · !idea <text> asks for something",
+                         L.COLORS["text2"], dur=8.0, named=False, prio=PRIO_LIGHT)
+        elif not fresh:
+            self._beacon_explained = False
         if awake == 1:
             if self._alone_since is None:
                 self._alone_since, self._alone_prompted = now, False
@@ -1427,46 +1517,72 @@ class WorldPanel(Panel):
         except Exception:
             self._camps, self._fields = [], []
         placer = _Placer()
-        placer.reserve(*HUD_RESERVE_LEFT)                        # plank rows, land line, dial rows
-        placer.reserve(*HUD_RESERVE_RIGHT)                       # minimap
+        # 0. the HUD chips are built FIRST (pasted last, over everything) so their real extent, not a constant, is what
+        #    labels / plates / letters avoid, and the camera gets the same boxes as its dead zone (journal 021 / 023:
+        #    "HUD plates stack over settlers"). Then every sprite on screen is reserved: a chip never lands on a person
+        #    or on a camp (QA frames 330 / 899: the wind row over @atleastonce's tent, camp plates on bodies).
+        hud_strips, hud_boxes = self._hud_strips(sc, ctx, ld, N, now, names_on, accent, awake, size)
+        for bx in hud_boxes:
+            placer.reserve(*bx)
         placer.reserve(0, h - 44, 400, h)                        # the place label's row
+        self.last_hud_boxes = list(hud_boxes)
+        try:
+            cam.hud_boxes = [tuple(int(v) for v in bx) for bx in hud_boxes]
+        except Exception:
+            pass
+        sprite_boxes = self._sprite_boxes(ents, cam, size)
+        for bx in sprite_boxes:
+            placer.reserve(*bx)
+        self.last_sprite_boxes = len(sprite_boxes)
 
         # 1. waystone letters, counts, standing names (culled; their boxes are reserved so nothing covers a letter)
         counts = sc.platform_counts()
+        walking = self._walking_to(sc)
         carved = L.COLORS["text"]
         best_votes = max([len(counts.get(k) or []) for k in PLATFORM_LETTERS] or [0])
         cluster_px: List[Tuple[int, int]] = []
         stone_row: Dict[str, Tuple[int, int, int]] = {}          # letter -> (x0, x1, bottom y) of the carved rows
         options = {str(o.get("letter") or "").upper(): o for o in ((ctx.round or {}).get("options") or []) if isinstance(o, dict)}
+        letters_px: Dict[str, Tuple[int, int, int]] = {}         # letter -> (cx, letter top y, letter bottom y) of the letters drawn
+        # the letters are one row: when a HUD chip would cull one of them, all three drop by the same amount (down to the
+        # count sitting on its stone); if that is not enough, all three are culled together (never `A C` without `B`,
+        # noon frame 135 of the fix run); the camera's dead zone normally keeps the stones clear whenever people are at them
+        stones_px: List[Tuple[str, int, int]] = []
         for letter, (wx, wy) in zip(PLATFORM_LETTERS, self._waystones(sc, T, ld)):
             pt = cam.sim_to_screen(wx, wy, size, margin_px=120.0)
-            if pt is None:
-                continue
-            cx, cy = int(pt[0]), int(pt[1])
+            if pt is not None:
+                stones_px.append((letter, int(pt[0]), int(pt[1])))
+        shift = 0
+        for letter, cx, cy in stones_px:
+            ly = cy - WAYSTONE_LETTER_DY
+            hb = _hud_bottom_under(cx - 27, ly - 4, cx + 63, ly + 69, hud_boxes)
+            if hb is not None:
+                shift = max(shift, hb + 4 - (ly - 4))
+        letters_ok = shift <= WAYSTONE_LETTER_DY - LETTER_STACK_H - 2
+        for letter, cx, cy in stones_px:
             keys = counts.get(letter) or []
             n = len(keys)
             if n:
                 cluster_px.append((cx, cy))
+            if not letters_ok:
+                continue                                   # the stones stand under the HUD chips: no letter is drawn beneath them
             lt = text_strip("AB", 56, letter, carved, stroke=True)
-            ly = cy - WAYSTONE_LETTER_DY
-            if _in_hud(cx - lt.size[0] // 2 - 4, ly - 4, cx + lt.size[0] // 2 + 40, ly + lt.size[1] + 4):
-                continue                                   # the stone is under the HUD chips: its letter is culled, never drawn beneath them
+            ly = cy - WAYSTONE_LETTER_DY + shift
             _paste(img, lt, cx - lt.size[0] // 2, ly)
+            letters_px[letter] = (cx, ly, ly + lt.size[1])
+            # the count sits centred UNDER its letter: the stones stand 12 cells (48 px at 1x) apart and an AB 56 glyph is
+            # 44 px wide, so a count beside the letter was hidden under the next letter (integration frame 540)
             ct = text_strip("Menlo", 22, "%d" % n, accent if n else L.COLORS["text2"])
-            _paste(img, ct, cx + lt.size[0] // 2 + 6, ly + 30)
-            x0, x1 = cx - lt.size[0] // 2, cx + lt.size[0] // 2 + 6 + ct.size[0]
-            placer.reserve(x0 - 4, ly - 4, x1 + 4, ly + lt.size[1] + 4)
-            bottom = ly + lt.size[1]
-            opt = options.get(letter) or {}
-            title = L.strip_non_bmp(str(opt.get("title") or "")).strip()
-            if title:
-                lead = n > 0 and n == best_votes
-                ts = chip_img(title, accent if lead else L.COLORS["text2"], LABEL_FONT, LABEL_SIZE, CHIP_ALPHAS[0], max_w=PLATFORM_TITLE_MAX_W)
-                tx = max(GUTTER, min(w - ts.size[0] - GUTTER, cx - ts.size[0] // 2))
-                ty = placer.place_up(tx, ly - ts.size[1] - 2, ts.size[0], ts.size[1], ts.size[1] + 2, 3, floor=2)
-                if ty is not None:                         # the three stones stand close: titles stack, never overprint
-                    _paste(img, ts, tx, ty)
-                    x0, x1 = min(x0, tx), max(x1, tx + ts.size[0])
+            cty = ly + lt.size[1] - 6
+            _paste(img, ct, cx - ct.size[0] // 2, cty)
+            x0, x1 = cx - lt.size[0] // 2, cx + lt.size[0] // 2
+            k_walk = int(walking.get(letter) or 0)
+            if k_walk:                                     # `0 +1`: the ack plank and the digit never disagree while a voter walks over
+                wt = text_strip("Menlo", 20, "+%d" % k_walk, L.COLORS["text2"])
+                _paste(img, wt, cx + ct.size[0] // 2 + 3, cty + 2)
+                x1 = max(x1, cx + ct.size[0] // 2 + 3 + wt.size[0])
+            placer.reserve(x0 - 4, ly - 4, x1 + 4, cty + ct.size[1] + 2)
+            bottom = cty + ct.size[1]
             if n and names_on:
                 shown = [nm for nm in (self._shown(sc, k) for k in keys[-3:]) if nm]
                 segs: List[Image.Image] = []
@@ -1482,13 +1598,20 @@ class WorldPanel(Panel):
                     st = text_strip(LABEL_FONT, LABEL_SIZE, "%d standing" % n, L.COLORS["text"])
                     segs, total = [st], st.size[0]
                 rx = max(GUTTER, min(w - GUTTER - total, cx - total // 2))
-                ry = bottom + 2
-                placer.reserve(rx, ry, rx + total, ry + LABEL_H)
-                for st in segs:
-                    _paste(img, st, rx, ry); rx += st.size[0]
-                x0, x1 = min(x0, rx - total), max(x1, rx)
-                bottom = ry + LABEL_H
+                # adjacent stones' name rows would overprint (48 px apart, a name is ~108 px): the placer stacks them
+                ry = placer.place_down(rx, bottom + 2, total, LABEL_H, LABEL_H + 2, 4, ceiling=h - 48)
+                if ry is None and len(segs) > 1:
+                    st = text_strip(LABEL_FONT, LABEL_SIZE, "%d standing" % n, L.COLORS["text"])
+                    segs, total = [st], st.size[0]
+                    rx = max(GUTTER, min(w - GUTTER - total, cx - total // 2))
+                    ry = placer.place_down(rx, bottom + 2, total, LABEL_H, LABEL_H + 2, 4, ceiling=h - 48)
+                if ry is not None:
+                    for st in segs:
+                        _paste(img, st, rx, ry); rx += st.size[0]
+                    x0, x1 = min(x0, rx - total), max(x1, rx)
+                    bottom = ry + LABEL_H
             stone_row[letter] = (x0, x1, bottom)
+        self._options_row(img, placer, options, counts, best_votes, letters_px, stone_row, accent, size)
 
         # 2. plates: the DRIFT stop's camp plate (while the camera dwells) + one rotating plate over the marks in view
         plates_drawn: List[str] = []
@@ -1518,9 +1641,9 @@ class WorldPanel(Panel):
                 continue
             txt = None
             if e.get("awake"):
-                if e.get("state") == "voting" and e.get("platform"):
+                if e.get("state") == "voting" and str(e.get("platform")) in stone_row:
                     label_pos[key] = (cx, top - 4)
-                    continue                               # its name is in the waystone row
+                    continue                               # its name is in the waystone row (else, letters culled: its own label)
                 if labels_on_speak and not e.get("speaking") and key not in self._label_override and key not in self._hatch_tag:
                     continue
                 if not e.get("speaking") and any(abs(cx - px) <= PLATFORM_CLUSTER_PX and abs(top - py) <= 80 for px, py in cluster_px):
@@ -1614,7 +1737,8 @@ class WorldPanel(Panel):
             _, nm, line = single
             txt = ("@%s: %s" % (nm, line)) if nm else line
             s = text_strip(BUBBLE_FONT, BUBBLE_SIZE, L.truncate(BUBBLE_FONT, BUBBLE_SIZE, txt, w - 2 * 16 - 420), L.COLORS["text"])
-            _paste(img, s, 420, h - 34)
+            sy_ = placer.place_up(420, h - 34, s.size[0], s.size[1], BUBBLE_LINE_H, 4, floor=2)   # never over a plate / label (frame 899)
+            _paste(img, s, 420, sy_ if sy_ is not None else h - 34)
 
         # 5. the only-one line (10 s) ABOVE the creature's label, through the placer
         if self._only_light and names_on:
@@ -1676,12 +1800,29 @@ class WorldPanel(Panel):
             s = text_strip(CHIP_FONT, CHIP_SIZE, place, L.COLORS["text"], stroke=True)
             _paste(img, s, GUTTER, h - GUTTER - s.size[1])
 
-        # 8. plank rows, the land line, the time dial + its two rows (top-left, over everything else in the region)
+        # 8. plank rows, the land line, the time dial + its two rows (top-left, over everything else in the region),
+        #    built in step 0 so the placer and the camera saw their real boxes
+        for strip, (px, py) in hud_strips:
+            _paste(img, strip, px, py)
+
+        # 9. the honest minimap (top-right)
+        self._draw_minimap(img, sc, cam, ld, T, ents, ctx, now, size)
+
+        self._last_counts = (drawn_names, len(ents))
+        self.last_placed = placed
+
+    def _hud_strips(self, sc, ctx, ld, N, now: float, names_on: bool, accent: str, awake: int, size
+                    ) -> Tuple[List[Tuple[Image.Image, Tuple[int, int]]], List[Tuple[int, int, int, int]]]:
+        """The top-left stack (plank row 1, row 2 or the land line, the time dial and its two rows) as (strip, xy)
+        pairs plus the boxes they cover: one box for the whole left stack (its real width and height this frame) and
+        the minimap's. Built before anything else is placed; pasted last."""
+        w, h = size
+        strips: List[Tuple[Image.Image, Tuple[int, int]]] = []
         txt, col = self._plank_text(sc, ctx, now, names_on, accent, land_mode=True)
-        _paste(img, chip_img(L.strip_non_bmp(txt), col, max_w=PLANK_MAX_W), PLANK_XY[0], PLANK_XY[1])
+        strips.append((chip_img(L.strip_non_bmp(txt), col, max_w=PLANK_MAX_W), (PLANK_XY[0], PLANK_XY[1])))
         row2 = self._plank_row2(ctx, now, names_on, txt)
         if row2 is not None:
-            _paste(img, chip_img(L.strip_non_bmp(row2[0]), row2[1], max_w=PLANK_MAX_W), PLANK_XY[0], PLANK_XY[1] + PLANK_ROW2_DY)
+            strips.append((chip_img(L.strip_non_bmp(row2[0]), row2[1], max_w=PLANK_MAX_W), (PLANK_XY[0], PLANK_XY[1] + PLANK_ROW2_DY)))
         self.last_plank = txt
         self.last_plank_row2 = row2[0] if row2 is not None else None
         info = None
@@ -1697,12 +1838,12 @@ class WorldPanel(Panel):
             parts.append(str(info.get("day_part") or ""))
         land_line = " · ".join(p for p in parts if p)
         if row2 is None:
-            _paste(img, chip_img(land_line, L.COLORS["text2"], "Menlo", 22, max_w=PLANK_MAX_W), LAND_LINE_XY[0], LAND_LINE_XY[1])
+            strips.append((chip_img(land_line, L.COLORS["text2"], "Menlo", 22, max_w=PLANK_MAX_W), (LAND_LINE_XY[0], LAND_LINE_XY[1])))
         self.last_land_line = land_line
         if info:
             hour_mode = str(info.get("world_day") or "real") == "hour"
-            _paste(img, dial_img(float(info.get("hour") or 0.0), float(info.get("moon_phase") or 0.0), float(info.get("night") or 0.0)),
-                   DIAL_XY[0] - 4, DIAL_XY[1] - 4)
+            strips.append((dial_img(float(info.get("hour") or 0.0), float(info.get("moon_phase") or 0.0), float(info.get("night") or 0.0)),
+                           (DIAL_XY[0] - 4, DIAL_XY[1] - 4)))
             clock = "%s · %s" % (info.get("world_clock") if hour_mode else info.get("clock"), info.get("day_part"))
             if hour_mode:
                 clock += "   1 h = 1 day"
@@ -1710,15 +1851,154 @@ class WorldPanel(Panel):
             weather = str(info.get("weather") or "clear")
             if weather not in ("clear", ""):
                 row_b = "%s · %s" % (row_b, weather)
-            _paste(img, chip_img(clock, L.COLORS["text"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), DIAL_TEXT_X, DIAL_XY[1])
-            _paste(img, chip_img(row_b, L.COLORS["text2"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), DIAL_TEXT_X, DIAL_XY[1] + DIAL_ROW2_DY)
+            strips.append((chip_img(clock, L.COLORS["text"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), (DIAL_TEXT_X, DIAL_XY[1])))
+            strips.append((chip_img(row_b, L.COLORS["text2"], "Menlo", 22, max_w=DIAL_TEXT_MAX_W), (DIAL_TEXT_X, DIAL_XY[1] + DIAL_ROW2_DY)))
             self.last_dial = (clock, row_b)
+        right = max(px + st.size[0] for st, (px, py) in strips) if strips else HUD_RESERVE_LEFT[2]
+        bottom = max(py + st.size[1] for st, (px, py) in strips) if strips else HUD_RESERVE_LEFT[3]
+        left_box = (0, 0, min(w, int(right) + 6), int(bottom) + 4)
+        return strips, [left_box, (MINIMAP_XY[0] - 16, 0, w, MINIMAP_XY[1] + MINIMAP_H + 28)]
 
-        # 9. the honest minimap (top-right)
-        self._draw_minimap(img, sc, cam, ld, T, ents, ctx, now, size)
+    def _sprite_boxes(self, ents: Sequence[Dict[str, Any]], cam, size) -> List[Tuple[int, int, int, int]]:
+        """Screen boxes of everything drawn on the land that a chip must not cover: every in-view entity (a seed's tuft
+        included) and every in-view camp's sprite (hut / tent) or footprint (a hollow)."""
+        w, h = size
+        out: List[Tuple[int, int, int, int]] = []
+        for e in ents:
+            bx = self._screen_box(e, cam, size)
+            if bx is None:
+                continue
+            sx, sy, sw, sh = bx
+            if sx + sw < 0 or sy + sh < 0 or sx > w or sy > h:
+                continue
+            out.append((sx - 2, sy - 2, sx + sw + 2, sy + sh + 2))
+        try:
+            z = float(cam.scale(size)) / 4.0
+        except Exception:
+            z = 1.0
+        for c in self._camps:
+            if c.get("x") is None or c.get("y") is None:
+                continue
+            tier = int(c.get("tier") or 0)
+            bt = CAMP_TO_BUILDING.get(tier, 1)
+            if bt is None:
+                hx, hy = float(c["x"]) - 4.0, float(c["y"]) - 6.0            # a hollow: the 8x6 footprint only
+                pt = cam.sim_to_screen(hx, hy, size, margin_px=200.0)
+                if pt is None:
+                    continue
+                bw, bh = 8 * 4 * z, 6 * 4 * z
+                x0, y0 = pt
+            else:
+                hx, hy = float(c["x"]) - 4.0, float(c["y"]) - 8.0            # steading._hut_footprint: one 8-cell tile
+                pt = cam.sim_to_screen(hx, hy, size, margin_px=200.0)
+                if pt is None:
+                    continue
+                tiles = 2 if bt >= 2 else 1
+                bw, bh = (HUT_SPRITE_W + 32 * (tiles - 1)) * z, HUT_SPRITE_H * z
+                x0, y0 = pt[0] - HUT_SPRITE_DX * z, pt[1] - HUT_SPRITE_DY * z
+            if x0 + bw < 0 or y0 + bh < 0 or x0 > w or y0 > h:
+                continue
+            out.append((int(x0) - 2, int(y0) - 2, int(x0 + bw) + 2, int(y0 + bh) + 2))
+        return out
 
-        self._last_counts = (drawn_names, len(ents))
-        self.last_placed = placed
+    @staticmethod
+    def _walking_to(sc) -> Dict[str, int]:
+        """Real pips walking to a waystone right now, per letter (state walking, then vote): the `+N` beside the count."""
+        out: Dict[str, int] = {}
+        b = getattr(sc, "behaviour", None)
+        if b is None:
+            return out
+        try:
+            for e in b.entities.values():
+                if e.state == "walking" and getattr(e, "then", None) == "vote" and e.platform in PLATFORM_LETTERS:
+                    out[e.platform] = out.get(e.platform, 0) + 1
+        except Exception:
+            return {}
+        return out
+
+    def _options_row(self, img, placer: _Placer, options: Dict[str, Dict[str, Any]], counts: Dict[str, List[str]], best_votes: int,
+                     letters_px: Dict[str, Tuple[int, int, int]], stone_row: Dict[str, Tuple[int, int, int]], accent: str, size) -> None:
+        """The three option titles as ONE guaranteed row (`A harvest day · B light: gold · C fog`), never dropped: above
+        the letters when the stones are in view (else below their name rows, else stacked further), and when the stones
+        are culled / off view or no free row exists, a fixed row bottom-right above the place-label band. A stranger
+        can always read what the letters do (QA: titles were invisible at 0 awake and dropped by the placer when open)."""
+        w, h = size
+        titles: List[Tuple[str, str, bool]] = []
+        for letter in PLATFORM_LETTERS:
+            opt = options.get(letter) or {}
+            title = L.strip_non_bmp(str(opt.get("title") or "")).strip()
+            if not title:
+                continue
+            n = len(counts.get(letter) or [])
+            titles.append((letter, L.truncate(LABEL_FONT, LABEL_SIZE, title, OPTION_TITLE_MAX_W), n > 0 and n == best_votes))
+        if not titles:
+            self.last_options_row, self.last_options_row_placed = None, ""
+            return
+        segs: List[Tuple[str, Any]] = []
+        for i, (letter, title, lead) in enumerate(titles):
+            if i:
+                segs.append(("  ·  ", L.COLORS["text2"]))
+            segs.append((letter + " ", accent if lead else L.COLORS["text"]))
+            segs.append((title, L.COLORS["text"] if lead else L.COLORS["text2"]))
+        strip = row_chip(segs)
+        rw, rh = strip.size
+        self.last_options_row = "".join(t for t, _c in segs)
+        y = None
+        x = None
+        if letters_px:
+            cxs = [v[0] for v in letters_px.values()]
+            top = min(v[1] for v in letters_px.values())
+            x = max(GUTTER, min(w - rw - GUTTER, (min(cxs) + max(cxs)) // 2 - rw // 2))
+            y = placer.place_up(x, top - rh - 6, rw, rh, rh + 2, OPTIONS_ROW_MAX_STEPS, floor=2)
+            if y is None and stone_row:
+                low = max(v[2] for v in stone_row.values())
+                y = placer.place_down(x, low + 6, rw, rh, rh + 2, OPTIONS_ROW_MAX_STEPS, ceiling=h - 46)
+        if y is not None and x is not None:
+            _paste(img, strip, x, y)
+            self.last_options_row_placed = "stones"
+            return
+        x = w - GUTTER - rw
+        y0 = h - 44 - rh - 4
+        y = placer.place_up(x, y0, rw, rh, rh + 2, 8, floor=2)
+        if y is None:
+            y = y0                                             # guaranteed: drawn even when nothing else made room
+            placer.reserve(x, y, x + rw, y + rh)
+        _paste(img, strip, x, y)
+        self.last_options_row_placed = "fixed"
+
+    def _check_drawn(self, sc, ctx) -> None:
+        """Honesty hardening (12): no string built by this frame's text layer carries a raw hidden, blocklisted
+        (`builder #N`) or quarantined username as a whole token. Counts into honesty_violations; logs without the name."""
+        try:
+            hidden = set(str(u).lower() for u in ((ctx.mod or {}).get("hidden_users") or []))
+            pips = (sc.world.data.get("pips") or {}) if getattr(sc, "world", None) is not None else {}
+            forb = set(hidden)
+            for k, p in pips.items():
+                dn = p.get("display_name")
+                if dn is None or str(dn).startswith("builder #"):
+                    forb.add(str(k).lower())
+            forb.update(str(k).lower() for k in ((sc.world.data.get("quarantine") or {}) if getattr(sc, "world", None) is not None else {}))
+            forb = frozenset(n for n in forb if len(n) >= FORBIDDEN_MIN_LEN)
+            if not forb or not _DRAWN:
+                return
+            rx = _FORBIDDEN_RE.get(forb)
+            if rx is None:
+                if len(_FORBIDDEN_RE) > 64:
+                    _FORBIDDEN_RE.clear()
+                rx = re.compile(r"(?<![a-z0-9_])(?:%s)(?![a-z0-9_])" % "|".join(re.escape(n) for n in sorted(forb, key=len, reverse=True)))
+                _FORBIDDEN_RE[forb] = rx
+            hits = 0
+            for t in _DRAWN:
+                if rx.search(str(t).lower()):
+                    hits += 1
+            if hits:
+                self.honesty_violations += hits
+                self.name_leaks += hits
+                self._leaks_logged += 1
+                if self._leaks_logged <= 3 or self._leaks_logged % 300 == 0:
+                    _log("HONESTY: %d drawn string(s) this frame carry a hidden / blocklisted / quarantined username (never shown)" % hits)
+        except Exception:
+            pass
 
     def _plates(self, img, sc, cam, ld, now: float, size, placer: _Placer, drawn: List[str], static: bool, preset) -> None:
         """Camp / flower / tree / field plates and the cairn plaque: HN Medium 22 on a chip, one rotating plate per 5 s
@@ -2124,7 +2404,9 @@ class WorldPanel(Panel):
                 "max_ms": round(max(self._ms), 2) if self._ms else None,
                 "text_avg_ms": round(sum(self._text_ms) / len(self._text_ms), 2) if self._text_ms else None,
                 "text_max_ms": round(max(self._text_ms), 2) if self._text_ms else None,
-                "honesty_violations": self.honesty_violations,
+                "honesty_violations": self.honesty_violations, "name_leaks": self.name_leaks,
+                "options_row": self.last_options_row, "options_row_placed": self.last_options_row_placed,
+                "hud_boxes": list(self.last_hud_boxes), "sprite_boxes": self.last_sprite_boxes,
                 "labels_drawn": self._last_counts[0], "entities": self._last_counts[1], "plates_drawn": len(self.last_plates),
                 "arrows_drawn": len(self.last_arrows), "text_cache": len(_TEXT), "bubble_cache": len(_BUBBLE), "chip_cache": len(_CHIP),
                 "camera": cam.stats() if cam is not None else None,

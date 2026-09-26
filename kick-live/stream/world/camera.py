@@ -66,7 +66,20 @@ HATCH_CLOSE_S = 3.0
 EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named")
 MOOT_LAST_S = 30.0
 MOOT_RADIUS = 120.0
-FOLLOW_MARGIN = 24.0          # cells around the group's bounding box
+FOLLOW_MARGIN = 24.0          # cells around the group's bounding box (x)
+FOLLOW_MARGIN_Y = 12.0        # cells above / below the group inside the SAFE band (a settler stands ~10 cells tall)
+# The HUD lives in the world region: plank rows + land line + dial rows fill the top 152 px (x 0-700), the minimap the
+# top-right 176x132 px, the place label the bottom 44 px. People framed under those chips read as "HUD stacks over
+# settlers" (owner verdict, journal 023 handoff), so every people-framing mode centres its target in the SAFE band
+# between them: the desired centre is lifted by half the difference so the group sits at region y ~274, not 220.
+HUD_TOP_PX = 152
+HUD_BOTTOM_PX = 44
+HUD_LEFT_W = 700              # the top-left stack's x extent (the panel refreshes `hud_boxes` from what it actually drew)
+HUD_RIGHT_BOX = (1104, 0, 1280, 132)
+HUD_BOXES_DEFAULT = ((0, 0, HUD_LEFT_W, HUD_TOP_PX), HUD_RIGHT_BOX)
+HEAD_CELLS = 20.0             # a settler's head top above its feet cell (creatures tier 3 drawn at 1.2x: anchor 79 px = 20 cells at 1x)
+STONE_TOP_CELLS = 36.0        # a waystone's letter + count + option row stack above the stone cell (~144 px at 1x)
+HUD_NUDGE_PAD_PX = 32.0       # the spring lags a walker by ~0.8 s (6 cells at 8 cells/s): the lift starts this early
 WIDE_HYSTERESIS = 1.25        # to come back from 0.75x the group must fit 1x with a 25 % bigger margin
 CLUSTER_LINK = 60.0
 CLOSE_MOVE_CELLS = 40.0
@@ -81,6 +94,15 @@ WEIGHT_SPOKE, WEIGHT_WALK, WEIGHT_SEED, WEIGHT_IDLE, SPOKE_WINDOW_S = 3.0, 2.0, 
 
 def _hyp(ax: float, ay: float, bx: float, by: float) -> float:
     return math.hypot(ax - bx, ay - by)
+
+
+def _top(a: Dict[str, Any]) -> float:
+    """Cells from a pip's feet to its head top: the scene's per-tier `top` when it gives one, else the tier-3 bound."""
+    try:
+        t = a.get("top")
+        return float(t) if t else HEAD_CELLS
+    except (TypeError, ValueError):
+        return HEAD_CELLS
 
 
 def _spring_step(x: float, v: float, target: float, dt: float, omega: float) -> Tuple[float, float]:
@@ -114,6 +136,12 @@ class Camera(object):
         self.mode = "DRIFT"
         self.target = self.moot                    # the committed spring target
         self.desired = self.moot                   # this frame's raw wish (before the dead zone)
+        # the HUD as a camera dead zone (journal 021 / 023 verdicts: chips never stack over people): boxes in region px,
+        # refreshed every frame by the world panel from the chips it actually drew; `_nudge_pts` are the points the
+        # chosen mode is framing with the height of what stands on them, `hud_nudge` the cells the target was pushed
+        self.hud_boxes: List[Tuple[int, int, int, int]] = [tuple(b) for b in HUD_BOXES_DEFAULT]
+        self._nudge_pts: List[Tuple[float, float, float]] = []
+        self.hud_nudge = 0.0
         self.target_zoom = self.zoom
         self._dz_since: Optional[float] = None
         # lead room
@@ -257,14 +285,65 @@ class Camera(object):
             if ev.get("type") in EVENT_TYPES and ev.get("x") is not None and ev.get("y") is not None:
                 self._event, self._event_t = dict(ev), now
 
+        self._nudge_pts = []
         mode, desired, want_zoom = self._choose(now, awake, seeds, moot, stops, lead_key)
         self.mode = mode
-        self.desired = self._clamp_xy(desired[0], desired[1], want_zoom if self.allow_zoom else 1.0)
+        z_eff = want_zoom if self.allow_zoom else 1.0
+        # the SAFE band: whatever the mode framed sits between the HUD chips and the place label, never under them
+        self.desired = self._clamp_xy(desired[0], desired[1] - self.safe_dy(z_eff), z_eff)
         self._apply_dead_zone(now, mode)
+        self._hud_dead_zone(z_eff)
         self._settle_zoom(now, want_zoom)
         self._move(dt)
         self.last_t = now
         return self
+
+    # ------------------------------------------------------------------ the safe band (HUD avoidance)
+    def _hud_dead_zone(self, zoom: float) -> None:
+        """Treat the HUD chips as a dead zone for people: with the target as it stands, project every framed point's
+        top (feet minus the head height; a stone minus its letter stack) and, if one would land under a top HUD box,
+        lift the target (camera centre up = sprites down) by the cells needed. Capped so the lowest feet stay inside
+        the region. A pure function of the target, so it re-applies every frame and the spring smooths it."""
+        pts = self._nudge_pts
+        self.hud_nudge = 0.0
+        if not pts:
+            return
+        z = zoom if zoom in ZOOMS else 1.0
+        w, h = self.window(z)
+        s = SCREEN[0] / w
+        tx, ty = self._clamp_xy(self.target[0], self.target[1], z)
+        x0, y0 = tx - w / 2.0, ty - h / 2.0
+        need = 0.0
+        for x, y, top in pts:
+            sx = (x - x0) * s
+            sy_top = (y - top - y0) * s
+            for bx0, by0, bx1, by1 in self.hud_boxes:
+                if by0 > 0 or by1 <= 0:
+                    continue                                   # only the boxes hanging from the region's top edge
+                if bx0 - 24 <= sx <= bx1 + 24 and sy_top < by1 + HUD_NUDGE_PAD_PX:
+                    need = max(need, (by1 + HUD_NUDGE_PAD_PX - sy_top) / s)
+        if need <= 0.0:
+            return
+        low = max(y for _, y, _ in pts)
+        room = (SCREEN[1] - HUD_BOTTOM_PX) / s - (low - y0)     # cells the lowest feet may still drop before the bottom band
+        need = min(need, max(0.0, room))
+        if need <= 0.0:
+            return
+        self.hud_nudge = need
+        self.target = self._clamp_xy(tx, ty - need, z)
+
+    @staticmethod
+    def safe_dy(zoom: float) -> float:
+        """Cells the camera centre is lifted so the framed point lands in the middle of the band the HUD leaves free
+        (region y HUD_TOP_PX .. SCREEN_H - HUD_BOTTOM_PX): (152 - 44) / 2 = 54 px above the window centre."""
+        z = zoom if zoom in ZOOMS else 1.0
+        return (HUD_TOP_PX - HUD_BOTTOM_PX) / 2.0 / (PPC * z)
+
+    @staticmethod
+    def safe_h(zoom: float) -> float:
+        """The safe band's height in cells at this zoom (the vertical room a framed group may use)."""
+        z = zoom if zoom in ZOOMS else 1.0
+        return WINDOW[z][1] - (HUD_TOP_PX + HUD_BOTTOM_PX) / float(PPC * z)
 
     # ------------------------------------------------------------------ mode ladder (4.4 table)
     def _choose(self, now, awake, seeds, moot, stops, lead_key) -> Tuple[str, Tuple[float, float], float]:
@@ -275,6 +354,11 @@ class Camera(object):
                 z = 1.0
                 if self._event.get("type") == "hatch" and len(awake) == 1 and age <= HATCH_CLOSE_S:
                     z = 1.5
+                ex, ey = float(self._event["x"]), float(self._event["y"])
+                hw, hh = WINDOW[1.0][0] / 2.0, self.safe_h(1.0) / 2.0
+                self._nudge_pts = [(ex, ey, HEAD_CELLS)]       # the event is the subject; only people who can share its frame count
+                self._nudge_pts += [(float(a["x"]), float(a["y"]), _top(a)) for a in awake
+                                    if abs(float(a["x"]) - ex) <= hw and abs(float(a["y"]) - ey) <= hh]
                 return "EVENT", (float(self._event["x"]), float(self._event["y"])), z
             self._event = None
         # 2. MOOT: last 30 s with anyone standing at a waystone, or any pip walking to one
@@ -286,17 +370,29 @@ class Camera(object):
                 pts = [(float(x), float(y)) for x, y in moot["stones"]]
                 mx = sum(p[0] for p in pts) / len(pts)
                 my = sum(p[1] for p in pts) / len(pts)
-                pts += [(float(a["x"]), float(a["y"])) for a in awake if _hyp(a["x"], a["y"], mx, my) <= MOOT_RADIUS]
+                near = [(float(a["x"]), float(a["y"])) for a in awake if _hyp(a["x"], a["y"], mx, my) <= MOOT_RADIUS]
+                self._nudge_pts = [(x, y, STONE_TOP_CELLS) for x, y in pts]
+                self._nudge_pts += [(float(a["x"]), float(a["y"]), _top(a)) for a in awake if _hyp(a["x"], a["y"], mx, my) <= MOOT_RADIUS]
+                pts += near
                 c, z = self._frame_points(pts)
                 return "MOOT", c, z
         # 3 / 4. FOLLOW / CLOSE: a real entity is required
         if awake or seeds:
+            # the waystones' letter stacks join the dead-zone points whenever anyone stands at or walks to a stone (a
+            # 180 s round has voters standing long before the MOOT window opens): their letters must not be culled
+            # under the HUD chips while people are reading them
+            stones_top: List[Tuple[float, float, float]] = []
+            if moot and moot.get("stones") and (moot.get("voters") or moot.get("walking_to_stone")):
+                stones_top = [(float(x), float(y), STONE_TOP_CELLS) for x, y in moot["stones"]]
             if len(awake) == 1 and not seeds and self._slow(awake[0], now):
                 a = awake[0]
                 lead = self._lead_room(now, a, 1.5)
+                self._nudge_pts = [(float(a["x"]), float(a["y"]), _top(a))] + stones_top
                 return "CLOSE", (float(a["x"]) + lead[0], float(a["y"]) + lead[1]), 1.5
             self._drift_stop, self._drift_pt, self._drift_arrived_t = None, None, None
-            return self._follow(now, awake, seeds, lead_key)
+            out = self._follow(now, awake, seeds, lead_key)
+            self._nudge_pts += stones_top
+            return out
         # 5. DRIFT
         return self._drift(now, stops or [])
 
@@ -327,7 +423,16 @@ class Camera(object):
         my = sum(y * w for _, y, w in group) / tw
         mover = self._newest(awake, lead_key)
         lead = self._lead_room(now, mover, z) if mover is not None else (0.0, 0.0)
-        return "FOLLOW", (mx + lead[0], my + lead[1]), z
+        cx_, cy_ = mx + lead[0], my + lead[1]
+        # every awake person who will be ON SCREEN is a dead-zone point, not only the followed cluster: when two pips
+        # stand too far apart for the safe band (zoom pinned at 1x), the unframed one still walked under the plank rows
+        # (camera run frames 1200 / 1833); the lift is capped so the followed feet stay above the bottom band
+        ww, wh = self.window(z if self.allow_zoom else 1.0)
+        self._nudge_pts = [(float(a["x"]), float(a["y"]), _top(a)) for a in awake
+                           if abs(float(a["x"]) - cx_) <= ww / 2.0 + 4 and abs(float(a["y"]) - cy_) <= wh / 2.0 + 4]
+        for x, y in seeds:
+            self._nudge_pts.append((float(x), float(y), HEAD_CELLS))
+        return "FOLLOW", (cx_, cy_), z
 
     def _newest(self, awake, lead_key) -> Optional[Dict[str, Any]]:
         if lead_key:
@@ -360,13 +465,13 @@ class Camera(object):
         if not pts:
             return (self.cx, self.cy), 1.0
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        bw, bh = (max(xs) - min(xs)) + 2 * FOLLOW_MARGIN, (max(ys) - min(ys)) + 2 * FOLLOW_MARGIN
+        bw, bh = (max(xs) - min(xs)) + 2 * FOLLOW_MARGIN, (max(ys) - min(ys)) + 2 * FOLLOW_MARGIN_Y
         c = ((max(xs) + min(xs)) / 2.0, (max(ys) + min(ys)) / 2.0)
-        w1, h1 = WINDOW[1.0]
+        w1, h1 = WINDOW[1.0][0], self.safe_h(1.0)          # the group must fit the SAFE band, not the whole window
         hyst = WIDE_HYSTERESIS if self.zoom == 0.75 else 1.0
         if bw * hyst <= w1 and bh * hyst <= h1:
             return c, 1.0
-        w0, h0 = WINDOW[0.75]
+        w0, h0 = WINDOW[0.75][0], self.safe_h(0.75)
         if bw <= w0 and bh <= h0:
             return c, 0.75
         return c, None
@@ -429,14 +534,15 @@ class Camera(object):
         ids = {s["id"] for s in stops}
         if self._drift_stop is not None and self._drift_stop.get("id") not in ids:
             self._drift_stop, self._drift_pt, self._drift_arrived_t = None, None, None
+        framed = (self.cx, self.cy + self.safe_dy(self.zoom))    # the point now sitting in the safe band's centre
         if self._drift_stop is None:
             self._drift_stop = self._pick_stop(now, stops)
-            self._drift_pt = (self.cx, self.cy)
+            self._drift_pt = framed
             self._drift_arrived_t = None
         s = self._drift_stop
         sx, sy = float(s["x"]), float(s["y"])
         if self._drift_pt is None:
-            self._drift_pt = (self.cx, self.cy)
+            self._drift_pt = framed
         px, py = self._drift_pt
         d = _hyp(px, py, sx, sy)
         step = DRIFT_SPEED * (now - self.last_t if self.last_t is not None else 1 / 30.0)
@@ -553,7 +659,7 @@ class Camera(object):
     def stats(self) -> Dict[str, Any]:
         return {"mode": self.mode, "x": round(self.cx, 1), "y": round(self.cy, 1), "zoom": self.zoom,
                 "target_zoom": self.target_zoom, "speed": round(self.speed, 2), "max_speed": round(self.max_step_speed, 2),
-                "cuts": self.cuts, "drift_stop": (self._drift_stop or {}).get("id")}
+                "cuts": self.cuts, "drift_stop": (self._drift_stop or {}).get("id"), "hud_nudge": round(self.hud_nudge, 2)}
 
 
 # ---------------------------------------------------------------------------- self-test (OPENWORLD 7.5 gate 3)
@@ -621,7 +727,11 @@ def _self_test(verbose: bool = True) -> bool:
         prev = (cam2.cx, cam2.cy)
     check(ms <= PAN_CAP + 1e-6, "moot: max speed %.2f <= cap over a 400-cell ease" % ms)
     check(cam2.mode == "MOOT", "moot: mode is MOOT (%s)" % cam2.mode)
-    check(_hyp(cam2.cx, cam2.cy, cam2.moot[0], cam2.moot[1] + 10) < 40, "moot: arrived near the waystones (%.1f cells off)" % _hyp(cam2.cx, cam2.cy, cam2.moot[0], cam2.moot[1] + 10))
+    # the waystones sit in the SAFE band: the centre is lifted by safe_dy (13.5 cells at 1x) above them
+    moot_off = _hyp(cam2.cx, cam2.cy, cam2.moot[0], cam2.moot[1] + 10 - Camera.safe_dy(cam2.zoom))
+    check(moot_off < 40, "moot: arrived near the waystones (%.1f cells off the safe-band centre)" % moot_off)
+    sy_st = cam2.sim_to_screen(stones[1][0], stones[1][1])
+    check(sy_st is not None and HUD_TOP_PX <= sy_st[1] <= SCREEN[1] - HUD_BOTTOM_PX, "moot: the middle stone is drawn inside the safe band (screen y %s, band %d-%d)" % (None if sy_st is None else int(sy_st[1]), HUD_TOP_PX, SCREEN[1] - HUD_BOTTOM_PX))
     check(all(sp <= ZOOM_REST_SPEED for _, sp in zoom_events), "moot: zoom changed only at rest (%s)" % zoom_events)
 
     # 3. DRIFT: survey over real stops, dwell, no repeat inside 10 min, continuous motion
@@ -665,8 +775,34 @@ def _self_test(verbose: bool = True) -> bool:
         t += dt
         pin.update(t, dt, awake=[{"key": "solo", "x": pin.moot[0], "y": pin.moot[1], "fx": 1, "fy": 0, "walking": False, "spoke_t": None}])
     check(pin.zoom == 1.0, "pinned: allow_zoom=False keeps 1x (%s)" % pin.zoom)
+    s_pin = pin.sim_to_screen(pin.moot[0], pin.moot[1])
+    check(s_pin is not None and HUD_TOP_PX <= s_pin[1] <= SCREEN[1] - HUD_BOTTOM_PX, "pinned: the followed pip stands inside the safe band, never under the HUD chips (screen y %s)" % (None if s_pin is None else int(s_pin[1])))
     s2 = pin.sim_to_screen(pin.moot[0], pin.moot[1])
     check(s2 is not None and abs(s2[0] - 640 - 0.15 * 320 * 4 * -1) < 200, "pinned: sim_to_screen returns a point (%s)" % (s2,))
+
+    # 4b. HUD dead zone: three pips spanning 34 cells vertically (fits the 1x safe band), the newest speaker at the
+    #     top walking SOUTH so the lead room (ahead of it) pulls the frame down past its head: without the dead zone its
+    #     head sits at region y ~90 under the plank rows; with it the target is lifted and no head is under the chips
+    hud = Camera(allow_zoom=False)
+    hud.resume(None)
+    t = 6000.0
+    mx_, my_ = hud.moot
+    grp = [{"key": "n", "x": mx_ - 40, "y": my_ - 34, "fx": 0, "fy": 1, "walking": True, "spoke_t": t},
+           {"key": "s", "x": mx_ - 30, "y": my_, "fx": 0, "fy": 1, "walking": False, "spoke_t": None},
+           {"key": "e", "x": mx_ + 40, "y": my_ - 10, "fx": 1, "fy": 0, "walking": False, "spoke_t": None}]
+    for i in range(int(12 * fps)):
+        t += dt
+        for a in grp:
+            a["spoke_t"] = t if a["key"] == "n" else a["spoke_t"]
+        hud.update(t, dt, awake=grp)
+    heads = []
+    for a in grp:
+        r = hud.sim_to_screen(a["x"], a["y"] - HEAD_CELLS)
+        heads.append((a["key"], None if r is None else (int(r[0]), int(r[1]))))
+    under = [k for k, r in heads if r is not None and r[0] < HUD_LEFT_W + 24 and r[1] < HUD_TOP_PX]
+    check(hud.mode == "FOLLOW" and not under and hud.hud_nudge > 0.0, "hud dead zone: no followed head under the top-left chips (heads %s, nudge %.1f cells)" % (heads, hud.hud_nudge))
+    feet = [hud.sim_to_screen(a["x"], a["y"]) for a in grp]
+    check(all(f is not None and f[1] <= SCREEN[1] for f in feet), "hud dead zone: every framed pip's feet stay inside the region (%s)" % [None if f is None else int(f[1]) for f in feet])
 
     # 5. persistence round trip: resume keeps the position (no jump)
     d = cam4.to_dict(t)

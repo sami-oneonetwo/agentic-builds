@@ -741,3 +741,57 @@ action time, nuke 0.1 s after init, init failure when run.sh dies). Launched aga
 `env -u` for every secret (a Python-side pop does not hide the exec-time environment from `ps -E`); pid in
 run-live/pids/ops_switch.pid, log run-live/logs/ops_switch.log, visible in status.sh. Not exercised live: the first
 real nuke is the owner's.
+
+---
+
+## 025 — 2026-09-26 15:20 — Fix pass 2 (settlement QA blockers): the letters read, the HUD is a dead zone, camps are promises
+
+Fix agent of the integrate-only workflow (journal 024 said its output lands as a second hot-reload). Five blockers from
+the stranger / art QA, all closed in the tree (RUN_DIR=/tmp/lg-fix2, nothing live touched; LONGGRASS has been on air
+from live-snapshot-v3 since 14:13):
+
+- **A/B/C titles were invisible** (0 awake: none; round open: dropped by the placer). Now ONE guaranteed row
+  `A harvest day · B light: gold · C fog` (`world.py _options_row`, `row_chip`): above the letters, else below the
+  stone rows, else a fixed row bottom-right above the place-label band; never dropped (`stats()["options_row_placed"]`).
+- **HUD plates over settlers** (owner, 021/023). Three mechanisms: (1) the world panel builds the top-left stack first
+  and reserves its REAL boxes (`_hud_strips`), pastes it last, and hands the same boxes to the camera; (2) the camera
+  treats those boxes as a **dead zone** (`camera._hud_dead_zone`): every framed point (feet minus the per-tier head
+  height the scene supplies, a waystone minus its letter stack when anyone stands at or walks to a stone, every awake
+  person on screen in FOLLOW) is projected against the target and the target is lifted by the cells needed, 32 px
+  early for the spring lag, capped so the lowest feet stay above the bottom band; (3) every in-view sprite box and camp
+  sprite / footprint is reserved in the placer before plates, labels, rows and the shared bottom line (`_sprite_boxes`).
+- **Waystone count over voters' faces**: `WAYSTONE_LETTER_DY` 78 -> 128 (the Menlo 22 count now ends at cy - 48) and
+  `behaviour.STAND_Y0` = 9 cells (a tier-3 head at 1.2x tops out at cy - 43). The letters move as one row: when a chip
+  would cull one they all drop (down to the count sitting on its stone) or all three are culled (fix-run frame 135 had
+  `A C` without `B`); a voter whose letters are culled gets its own label. `0 +1` beside the count while a voter walks.
+- **Camera FOLLOW never ran under 8 s test rounds**: `KL_SLEEP_AFTER_S` test hook (test mode, /tmp) + a 140 s plan
+  with real 180 s rounds: 4200 frames, transitions DRIFT->EVENT->FOLLOW->EVENT->DRIFT->EVENT->FOLLOW->DRIFT->EVENT->FOLLOW,
+  max per-frame jump 2.01 cells (= the 60 cells/s cap: no cut), 0 settled FOLLOW frames with nobody in view, 0 at-rest
+  frames with a framed head under a chip (163 transient frames while the spring catches a walker), honesty PASS.
+- **world.json**: a camp / mark / sleep / hatch event forces a save in the same frame (`FORCE_SAVE_EVENTS`);
+  `SteadingScene.save_now()` on compositor exit (self-test and stream) and on a hot-reload scene swap. In the noon run
+  kai_dnb's camp (built 04:35:15) is on disk at exit.
+
+Cheap suggestions taken: chat log reads `someone is arriving...` while a seed is in its hold (cache key includes it);
+`settlers_sheet.png` (canonical settlers, real pips first) replaces the cave's `pips_sheet.png` in every self-test;
+the world panel asserts per frame that no drawn string carries a raw hidden / blocklisted / quarantined username
+(`name_leaks`, counted into honesty violations; unit check 0 clean / 3 forged caught); OPENWORLD §12 now says awake ==
+chatters whose record cleared the hold. Honesty semantics tightened: `Entity.is_present()` (awake and not walking home
+to lie down) is what the header, land line and the presence rule count; wear / fires / camera still use `is_awake()`;
+the presence rule allows one wander leg (12 s) after the window closes (the behaviour finishes the leg first).
+
+Evidence (all under /tmp/lg-fix2): dawn / noon / 23:00 x 900 frames with the 36-message plan: honesty PASS x3, world
+panel avg 6.4 / 6.7 / 7.2 ms (scene 5.1 / 5.2 / 5.8); 0-awake renders x3 PASS; camera run noon 99.9 % of
+awake-settler-frames inside the safe band, 0 frames with any awake head under a HUD box; budget 60 test pips at 0.75x:
+scene avg 11.15 ms (gate < 12; integ2 10.46), panel 13.3 ms; 20 pips at 1x: scene 8.8 ms (integ2 8.26); scene
+self-test C2 8.05 ms / C3 6.79 ms isolated; night floor: 23:00 tile mean / noon mean 0.64 (gate 0.5), 96 % of the world
+band above 0.12 (gate 60 %); fake `hollowghost` gate: quarantined at boot, marks purged, 150 frames 0 violations
+(`fake_gate.log`); MODE=test HLS via relay against a copy of live-snapshot-v3: world-batch hot reload held 3 frames
+(0.1 s), two deploy.sh child restarts 20 frames each, ffmpeg pid unchanged, probe PASS 1280x720@30 3220 kbps
+(`hls_swap.log`). Grids: `report/grid.png`, `report/grid_0awake.png`, `report/tiles.png`.
+
+Known and left: at pinned 1x two people further apart than the 61-cell safe band cannot both be clear of the chips
+(the 0.75x zoom is the spec's cure, v0 pins 1x): 11 % of the camera run's frames had some unframed head under a chip;
+the harness's realtime pacing lags wall clock so `@builder #8 voted A` for a not-yet-cleared newcomer is timing drift,
+not a hold bug; `NOBODY AWAKE` at 72 px stays (spec §8, the thumbnail hook) while the plank carries the land's voice.
+Not deployed: the parent session hot-reloads it after telling the owner (memory rule).

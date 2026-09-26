@@ -226,10 +226,16 @@ round_remaining}, stops=land.survey_stops(natural), lead_key=None)`. Reads: `mod
 DRIFT), `cx, cy`, `zoom` ∈ (0.75, 1.0, 1.5), `speed`, `cuts` (must stay 0 on air), `view_rect()`, `bake_crop(ppc=4)`,
 `scale()`, `sim_to_screen(x, y) -> (sx, sy) | None`, `screen_to_sim`, `in_view`, `zoom_blend(now)`, `edge_arrows()
 -> [{key, x, y, side, sx, sy, dist}]`, `drift_stop -> {id, kind, owner, x, y} | None`, `minimap(size=(144, 66))`,
-`to_dict(now)`, `maybe_persist(land, now)`, `stats()`. `EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "camp",
-"camp_raised", "raising", "raising_ship", "land_open", "cairn_named")`. `allow_zoom=False` pins 1x (v0 preview, the
-degrade rung > 28 ms). Motion: critically damped spring (tau 0.8 s), displacement clamped to 60 cells/s, dead zone
-(> 10 cells immediate; 2-10 after 1.5 s; < 2 ignored), 12-cell edge clamp, zoom only at rest and ≥ 20 s apart.
+`to_dict(now)`, `maybe_persist(land, now)`, `stats()` (adds `hud_nudge`). `EVENT_TYPES = ("seed_land", "seed", "hatch",
+"wake", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named")`. `allow_zoom=False` pins 1x (v0
+preview, the degrade rung > 28 ms). Motion: critically damped spring (tau 0.8 s), displacement clamped to 60 cells/s,
+dead zone (> 10 cells immediate; 2-10 after 1.5 s; < 2 ignored), 12-cell edge clamp, zoom only at rest and ≥ 20 s apart.
+**HUD dead zone** (fix pass, journal 024): `camera.hud_boxes` (region px, default `((0, 0, 700, 152), (1104, 0, 1280,
+132))`, refreshed every frame by the world panel from the chips it actually drew) is a dead zone for people: after the
+dead zone commits a target, every point the mode frames (a person's feet minus `HEAD_CELLS` = 20 cells, a waystone
+minus `STONE_TOP_CELLS` = 36 cells for its letter stack, whenever anyone stands at or walks to a stone) is projected
+and the target is lifted by the cells needed so no head lands under a top chip (capped so the lowest feet stay in the
+region). In EVENT mode only people who can share the event's frame count; DRIFT has no people to protect.
 
 ### 4.5 Atlas interface (`stream/world/art/`, `docs/ART.md`)
 | module | call | notes |
@@ -344,6 +350,34 @@ any error with one stderr line.
   (camps from migration), a chatter created through `ensure_pip`, a `_test` row that must never count, a real bake
   thread for the readout flag, `!kill`, the compressed-day line, the degrade flags, widths, font sizes, hot reload.
 - `SteadingScene(sleep_after_s=60)` shortens the 20 min sleep window for a harness; `hold_s` likewise (never on air).
+- `KL_CAMERA_LOG=path` (test mode, `/tmp` run dir): the scene appends one CSV row per frame (`frame, now, mode, cx, cy,
+  zoom, speed, awake, awake_in_view, awake_in_safe, seeds, seeds_in_view, awake_under_hud, hud_nudge, framed,
+  framed_under_hud`) for the camera QA (integration 2026-09-26: whenever anyone is awake, at least one awake settler is
+  in view and inside the safe band after a 2.5 s settle; fix pass: no framed point under a top HUD chip once settled).
+- `KL_SLEEP_AFTER_S=N` (test mode, `/tmp` run dir, 5 ≤ N < 1200): pips sleep after N s of quiet so a 60 s harness sees
+  FOLLOW -> DRIFT -> FOLLOW hand-overs; logged as a TEST HOOK; never on air.
+- `KL_FORCE_ZOOM=0.75|1|1.5` (with `KL_TEST_PIPS`): pins the camera zoom for the budget gate.
+- `scene.save_now(now=None)`: forced world.json + camera flush; the compositor calls it on exit (self-test and stream)
+  and the world panel calls it on the scene being replaced by a hot-reload swap. A camp / mark / sleep / hatch event
+  also forces a save in the same frame (`FORCE_SAVE_EVENTS`), so a camp on screen is a camp on disk.
+
+## 9.1 Integration notes (2026-09-26)
+
+- **Safe band** (`camera.py`): the HUD lives inside the world region (plank rows + land line + dial rows in the top
+  152 px, the minimap top-right, the place label in the bottom 44 px). Every mode's target is lifted by
+  `Camera.safe_dy(zoom)` (54 px / (4 x zoom) cells) so the framed people sit at region y ~274, never under the chips;
+  `_frame_points` fits a group into `safe_h(zoom)` with a 12-cell vertical margin. DRIFT's survey point starts from
+  the framed point, so the hand-over FOLLOW/EVENT -> DRIFT -> EVENT never sprints (drift speed stays ~4 cells/s).
+- **Settler scale** (`steading.py`): `SETTLER_SCALE = 1.2`; the atlas renders at `SETTLER_RENDER_ZOOM = 2` (same working
+  resolution, same ~0.75 s per sheet) and the scene BOX-downsamples to 1.2 x zoom (36 / 41 / 43 / 50 px standing at 1x),
+  so outlines stay crisp. `entities()` boxes, anchors and hop lifts use the same factor (`_Sprites.factor(zoom)`).
+- **Waystones** (`panels/world.py`): the stones stand 12 cells apart, so the tally is drawn centred UNDER each AB 56
+  letter and the standing-name rows go through the placer (adjacent rows stack; `N standing` when a row cannot land).
+- **Copy**: the keeper strip alternates a plain explainer (`the keepers are AI agents building this show live`) every
+  8 s with its line 2; the plank says `beacon lit · a keeper (an AI agent) is on duty · !idea <text> asks for something`
+  once per session when the heartbeat turns fresh; `chat_bridge.classify` reads `kick colours` / `theme kick` / `make it
+  kick coloured` (<= 8 words, one preset + a theme word) as `!theme kick` and a theme word with no preset gets the plank
+  hint `type !theme kick · ember · ...` (30 s cooldown).
 
 ## 10. Hot reload note
 

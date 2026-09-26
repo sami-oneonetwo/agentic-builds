@@ -238,6 +238,15 @@ SUFFIX_MIN_LEN = 5            # "spic" must not match "spices"; "retard" may mat
 SPACED_RUN_MIN = 3            # "n i g g e r": a run of >= 3 single-letter tokens is re-joined and re-checked
 
 MOD_CMDS = {"hide", "unhide", "pause", "resume", "kill", "unkill", "clear", "banish", "unbanish", "rename"}
+# Theme phrasing (journal 023 addendum: the owner's `Change the colour to kick colours` fell through as chat). A short
+# message (<= THEME_PHRASE_MAX_TOKENS words, no URL) that names exactly ONE preset and carries a theme word is read
+# as `!theme <preset>`: `kick colours`, `theme kick`, `make it kick coloured`. A theme word with no preset gets the
+# plank hint `type !theme kick · ember · ...` (THEME_HINT_COOLDOWN_S). Longer sentences never trigger anything.
+THEME_WORDS = frozenset(("theme", "themes", "colour", "colours", "coloured", "color", "colors", "colored", "palette",
+                         "recolour", "recolor", "tint"))
+THEME_PHRASE_MAX_TOKENS = 8
+THEME_HINT_COOLDOWN_S = 30.0
+_WORD_RE = re.compile(r"[a-z]+")
 BROADCASTER_ONLY = {"kill", "unkill"}
 KINDS = ("vote", "idea", "theme", "stats", "help", "ask", "mod", "plain")
 
@@ -421,6 +430,7 @@ class ChatBridge(object):
         self._ack_notice: Optional[Tuple[str, str, float]] = None   # `@name voted A`: its own slot, so a !theme / cooldown
                                                                     # notice landing in the same batch cannot hide the ack
         self._last_theme_t: Optional[float] = None
+        self._last_theme_hint_t: Optional[float] = None
         self.help_until = 0.0
         self.stats_until = 0.0
         self._last_help_t: Optional[float] = None
@@ -572,7 +582,34 @@ class ChatBridge(object):
                 return cmd, "", None
             if cmd in MOD_CMDS:
                 return "mod", (cmd + " " + arg).strip(), None
+        preset = ChatBridge.theme_phrase(t)
+        if preset:
+            return "theme", preset, None
         return "plain", "", None
+
+    @staticmethod
+    def theme_phrase(text: str) -> Optional[str]:
+        """`kick colours` / `theme kick` / `make it kick coloured` -> "kick"; None when the message is not a theme ask
+        (no theme word, no or several presets, a URL, or more than THEME_PHRASE_MAX_TOKENS words)."""
+        t = (text or "").strip()
+        if not t or t.startswith("!") or URL_RE.search(t):
+            return None
+        if len(t.split()) > THEME_PHRASE_MAX_TOKENS:
+            return None
+        words = _WORD_RE.findall(t.lower())
+        if not any(w in THEME_WORDS for w in words):
+            return None
+        presets = sorted(set(w for w in words if w in L.PRESETS))
+        return presets[0] if len(presets) == 1 else None
+
+    @staticmethod
+    def theme_hint_due(text: str) -> bool:
+        """A short message with a theme word but no preset: the plank should say how (`type !theme kick`)."""
+        t = (text or "").strip()
+        if not t or t.startswith("!") or URL_RE.search(t) or len(t.split()) > THEME_PHRASE_MAX_TOKENS:
+            return False
+        words = _WORD_RE.findall(t.lower())
+        return any(w in THEME_WORDS for w in words) and not any(w in L.PRESETS for w in words)
 
     @staticmethod
     def parse_verb(text: str) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
@@ -929,6 +966,10 @@ class ChatBridge(object):
             pv = self.parse_verb(text)
             if pv is not None:
                 self._queue_verb(m, key, pv, t, now, history)
+            elif not history and self.theme_hint_due(text) and (
+                    self._last_theme_hint_t is None or now - self._last_theme_hint_t >= THEME_HINT_COOLDOWN_S):
+                self._last_theme_hint_t = now
+                self._set_notice("type !theme " + " · ".join(L.PRESETS.keys()), "info", now, 6.0)
 
         # -- step 8: per-user render rate 1 line / 2 s (votes already counted, ideas already classified, verbs queued)
         last = self._last_render_t.get(key)

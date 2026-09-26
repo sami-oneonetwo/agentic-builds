@@ -25,9 +25,11 @@ Every rule is a `len()` over real records, never a sample string. The rules:
   counts      awake_count / asleep_count / hatched_ever / platform_counts are len() over the entities they claim
   text        a bubble is the owner's own moderated text (seen in ctx.chat), one of the owner's own words, or a
               learned word carrying a real source; pips never generate text
-  presence    len(awake real entities) == scene.distinct_recent_chatters(ctx, now). A pip wakes on the RAW record
-              (one frame) while the reference counts the MODERATED one (hold later), so a drift is tolerated for
-              max(presence_grace_s, hold_s + 1 s) and counted separately as `presence_drift`; longer = violation
+  presence    len(PRESENT real entities) == scene.distinct_recent_chatters(ctx, now); present = awake and not on the
+              walk home to lie down (Entity.is_present). A pip wakes on the RAW record (one frame) while the reference
+              counts the MODERATED one (hold later), and a pip whose window just closed finishes its wander leg first,
+              so a drift is tolerated for max(presence_grace_s, hold_s + 1 s, PRESENCE_WANDER_GRACE_S = 12 s) and
+              counted separately as `presence_drift`; longer = violation
   scene       the scene's own _honesty_check removed something (stats()["honesty_violations"] grew)
   wear        (the land, OPENWORLD.md 12) land.take_wear_added() per frame: the wear added equals 8 x (real pips that
               entered a new cell) + the 4-neighbour spill (<= 16 x steps), and no step is ever laid while no real pip
@@ -57,6 +59,8 @@ if _ROOT not in sys.path:
 from stream.state_store import normalise_chat, run_path  # noqa: E402
 
 RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "presence", "scene", "wear", "marks")
+PRESENCE_WANDER_GRACE_S = 12.0   # a pip whose owner's window just closed finishes its wander leg (8-40 cells at 5-10 cells/s,
+                                 # <= ~8 s with detours) before it heads home; a padded count still trips the rule after this
 SEED_STATES = ("seed", "hatching")
 SLEEP_STATES = ("asleep", "burrowed")
 CHAT_RESCAN_S = 2.0
@@ -236,6 +240,7 @@ class HonestyMonitor(object):
         animate = 0
         animate_real = 0
         awake_real = 0
+        moving_real = 0
         remove: List[str] = []
         for key, e in ents.items():
             origin = getattr(e, "origin", None)
@@ -261,7 +266,9 @@ class HonestyMonitor(object):
                 continue
             animate_real += 1
             if not is_test and e.is_awake():
-                awake_real += 1
+                moving_real += 1                   # still on the land (wear, fires, camera)
+                if getattr(e, "then", None) not in ("sleep", "credits"):
+                    awake_real += 1                # present: a pip walking home to lie down is the sleep animation, not a person
             # -- hold: hatched in this process -> hatch_t - seed_t >= hold_s; a label needs a cleared hold
             if e.hatch_t is not None and e.hatch_t - e.seed_t < hold_s - eps:
                 rep.add("hold", "%s hatched %.2fs after its seed (hold %.1fs)" % (key, e.hatch_t - e.seed_t, hold_s))
@@ -340,7 +347,7 @@ class HonestyMonitor(object):
             rep.add("counts", "hatched_ever() %d != len(real hatched pips) %d" % (he, hatched_real))
         # -- counts: awake / asleep / platforms are len() over the entities they claim (test pips included, as drawn)
         live = b.entities
-        n_awake = sum(1 for e in live.values() if e.is_awake())
+        n_awake = sum(1 for e in live.values() if (e.is_present() if hasattr(e, "is_present") else e.is_awake()))
         n_asleep = sum(1 for e in live.values() if e.state in SLEEP_STATES)
         try:
             if int(scene.awake_count()) != n_awake:
@@ -366,7 +373,7 @@ class HonestyMonitor(object):
                 self.drift_frames += 1
                 if self._drift_since is None:
                     self._drift_since = t
-                elif t - self._drift_since > max(self.presence_grace_s, hold_s + 1.0):
+                elif t - self._drift_since > max(self.presence_grace_s, hold_s + 1.0, PRESENCE_WANDER_GRACE_S):
                     rep.add("presence", "awake real %d != distinct recent chatters %d for %.1fs" % (awake_real, ref, t - self._drift_since))
             else:
                 self._drift_since = None
@@ -386,7 +393,7 @@ class HonestyMonitor(object):
                     rep.add("wear", "wear added %d for %d step(s)" % (added, steps))
                 elif added > steps * (_WEAR_STEP + 4 * _WEAR_SPILL):
                     rep.add("wear", "wear added %d > %d x %d step(s) (8 + 4 x 2 spill)" % (added, _WEAR_STEP + 4 * _WEAR_SPILL, steps))
-                if steps > 0 and awake_real == 0:
+                if steps > 0 and moving_real == 0:
                     slept_now = any((ev or {}).get("type") == "sleep" for ev in (getattr(scene, "events", None) or []))
                     if not slept_now:                       # the walk home ends in the same tick as the lie-down: that step is real
                         rep.add("wear", "%d wear step(s) laid with no real awake pip" % steps)

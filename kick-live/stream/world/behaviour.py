@@ -143,6 +143,10 @@ FLASH_S = 3.0 / 30.0
 GO_DIR_CELLS = 60.0                         # `go north` walks up to this far
 STAND_ROW = 3                               # standing slots at a waystone: 3 per row, rows 2 cells further from the stone
 STAND_DX, STAND_DY = 3.0, 2.0
+STAND_Y0 = 9.0                              # first standing row this far south of the stone (36 px at 1x): the letter + count stack
+                                            # above the stone (WAYSTONE_LETTER_DY 128 -> count bottom at cy - 48) clears a tier-3
+                                            # head (drawn 86 px tall at 1.2x: top at cy + 36 - 79 = cy - 43). QA night frame 599
+                                            # had the '2' over a face at +3 cells.
 WAYSTONE_OFFSETS = ((-12.0, -4.0), (0.0, -9.0), (12.0, -4.0))   # A, B, C around the Moot green's centre
 
 DIRECTIONS: Dict[str, Tuple[float, float]] = {
@@ -195,10 +199,10 @@ def waystone_positions(moot: Vec, terrain=None) -> List[Tuple[int, int]]:
 
 
 def stand_slot(stone: Vec, i: int) -> Vec:
-    """The i-th standing slot south of a waystone: 3 per row (x = stone - 3 + 3 col), rows 2 cells further back, so
-    two real people never share a cell (the cave's slot rule in 2D)."""
+    """The i-th standing slot south of a waystone: 3 per row (x = stone - 3 + 3 col), the first row STAND_Y0 cells
+    south, rows 2 cells further back, so two real people never share a cell (the cave's slot rule in 2D)."""
     col, row = i % STAND_ROW, i // STAND_ROW
-    return (float(stone[0]) - STAND_DX + STAND_DX * col, float(stone[1]) + 3.0 + STAND_DY * row)
+    return (float(stone[0]) - STAND_DX + STAND_DX * col, float(stone[1]) + STAND_Y0 + STAND_DY * row)
 
 
 def landing_spot(key: str, moot: Vec, terrain=None, ring: int = TUFT_RING) -> Vec:
@@ -437,6 +441,12 @@ class Entity(object):
     def is_awake(self) -> bool:
         return self.state in AWAKE_STATES
 
+    def is_present(self) -> bool:
+        """Awake AND not already on the way to lie down (`then` sleep / credits): the walk home after the quiet window
+        is the sleep animation, not a present person. Header / land line / honesty presence count this; sprites, wear,
+        fires and the camera use is_awake() (the pip is still moving on the land)."""
+        return self.state in AWAKE_STATES and self.then not in ("sleep", "credits")
+
     @property
     def facing(self) -> Tuple[int, int]:
         return (self.fx, self.fy)
@@ -614,7 +624,10 @@ class Behaviour(object):
         return [e for e in self.entities.values() if e.is_awake()]
 
     def awake_count(self) -> int:
-        return sum(1 for e in self.entities.values() if e.is_awake())
+        """Present people: awake entities that are not already on their way to lie down (`then` sleep / credits). The
+        walk home after the quiet window is the sleep animation; counting it kept `N AWAKE` above the honesty
+        reference (distinct chatters in the window) for the length of the walk (fix pass, camera run frames 2187-2486)."""
+        return sum(1 for e in self.entities.values() if e.is_present())
 
     def asleep_count(self) -> int:
         return sum(1 for e in self.entities.values() if e.state in ("asleep", "burrowed"))
@@ -1225,7 +1238,8 @@ class Behaviour(object):
             self._ev("curl", pip=e.key)
         if e.carry == "berry" and t >= e.carry_until:              # the berry is eaten
             self.drop(e.key, t)
-        # 20 min of silence -> walk home and sleep (a voter leaves the stone: a sleeper cannot vote)
+        # 20 min of silence -> walk home and sleep (a voter leaves the stone: a sleeper cannot vote). A walk in progress
+        # finishes first (a wander leg is <= ~8 s: 8-40 cells at 5-10 cells/s); the honesty presence rule allows that leg.
         if not self.credits_active and e.state != "walking" and t - e.last_active_t >= self.sleep_after_s and e.then != "sleep":
             self._go_home(e, t, reason="quiet")
         if e.is_awake() and e.state != "walking" and t >= e.speak_until and t >= e.next_mutter_t and not self.credits_active:

@@ -62,6 +62,19 @@ def _shown(raw) -> Optional[str]:
         return None
 
 
+def _arriving() -> bool:
+    """True while the world scene holds a seed (a real chat record inside its hold). No name, no count: a bool."""
+    m = sys.modules.get("stream.panels.world")
+    try:
+        sc = m.scene() if (m is not None and hasattr(m, "scene")) else None
+        b = getattr(sc, "behaviour", None) if (sc is not None and getattr(sc, "booted", False)) else None
+        if b is None:
+            return False
+        return any(e.state in ("seed", "hatching") for e in b.entities.values())
+    except Exception:
+        return False
+
+
 MOD_WORDS = {"hide": "hid a user", "unhide": "unhid a user", "banish": "banished a user", "unbanish": "unbanished a user",
              "rename": "cleared a nickname", "pause": "paused chat", "resume": "resumed chat", "kill": "hid chat",
              "unkill": "showed chat", "clear": "cleared the backlog"}
@@ -97,7 +110,8 @@ class ChatLog(Panel):
     def inputs(self, ctx):
         on = _names_on(ctx)
         msgs = self._msgs(ctx) if on else []
-        return (tuple(str(m.get("id")) for m in msgs), on, bool(ctx.mod_paused), self._mod_row(ctx) if on else None, ctx.preset)
+        return (tuple(str(m.get("id")) for m in msgs), on, bool(ctx.mod_paused), self._mod_row(ctx) if on else None, ctx.preset,
+                (not msgs) and _arriving())                    # the empty pane re-renders when a seed enters / clears the hold
 
     def render(self, ctx, size):
         w, h = size
@@ -146,7 +160,9 @@ class ChatLog(Panel):
             d.line([(L.PAD, 30), (w - L.PAD, 30)], fill=L.COLORS["hairline"], width=1)
             top = 34
         if not rows:
-            d.text((L.PAD, h // 2 - 13), "chat is quiet. say anything.", font=f, fill=L.COLORS["text2"])
+            # a record inside its 3 s hold is a real person arriving (the scene has a nameless tuft for it): the pane
+            # must not read "quiet" over a stranger's first message (QA frame 135); nothing about them is named yet
+            d.text((L.PAD, h // 2 - 13), "someone is arriving..." if _arriving() else "chat is quiet. say anything.", font=f, fill=L.COLORS["text2"])
             return img
         avail_rows = max(1, (h - top - 6) // LINE_H)
         rows = rows[-avail_rows:]

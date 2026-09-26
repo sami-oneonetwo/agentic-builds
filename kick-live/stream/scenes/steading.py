@@ -92,6 +92,7 @@ NAME = "steading"
 SCREEN = (1280, 440)
 PPC = 4                                   # bake px per cell at 1x
 SAVE_S = 5.0
+FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "sleep", "hatch", "cairn_named")
 HISTORY_S = 60.0                          # a record older than this when first seen is boot/deploy history (ChatBridge.HISTORY_S)
 SEED_SINK_S = HOLD_S + 4.0
 HEARTBEAT_FRESH_S = 120.0
@@ -110,6 +111,11 @@ MOOT_LAYOUT = {                           # cell offsets from the Moot centre; t
     "hearth": (-16, 10), "cairn": (16, 10),
 }
 HOP_BODY_FRAMES = ("hop0", "hop1")            # drawn body-only over creatures.shadow() so the shadow stays on the ground
+# Settlers are drawn slightly larger than the atlas's 1x sizes (owner fix pass, journal 023 handoff: 26/30/34/42 px read
+# small on the 440 px land). The atlas renders every frame at 2x (its working resolution is the same, so a sheet costs
+# the same ~0.75 s) and the scene BOX-downsamples to SETTLER_SCALE x the camera zoom: crisp outlines, no bilinear blur.
+SETTLER_SCALE = 1.2
+SETTLER_RENDER_ZOOM = 2
 LETTERS = ("A", "B", "C")
 SPRITE_PRIO_HATCH, SPRITE_PRIO_AWAKE, SPRITE_PRIO_SLEEP, SPRITE_PRIO_REST = 0, 1, 2, 3
 WORKER_PACE_S = 0.004                     # the worker sleeps this long between settler frames (GIL courtesy)
@@ -226,10 +232,10 @@ class _Sprites(object):
             _time.sleep(WORKER_PACE_S)                    # hand the GIL back between 32 ms renders: frames breathe
             try:
                 if f in HOP_BODY_FRAMES:
-                    creatures.render(key, tier, f, 1, 1, sun, with_shadow=False)
-                    creatures.shadow(tier, f, 1, sun)
+                    creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, 1, sun, with_shadow=False)
+                    creatures.shadow(tier, f, SETTLER_RENDER_ZOOM, sun)
                 else:
-                    creatures.render(key, tier, f, 1, 1, sun)
+                    creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, 1, sun)
                 self.ready.setdefault((key, tier, f), set()).add(octant)
             finally:
                 self.queued.discard((key, tier, f, octant))
@@ -237,8 +243,20 @@ class _Sprites(object):
     def has(self, key: str, tier: int, frame: str) -> bool:
         return bool(self.ready.get((key, tier, frame)))
 
+    @staticmethod
+    def factor(zoom: float) -> float:
+        """Screen px per atlas px: the 2x render scaled to SETTLER_SCALE x the camera zoom (0.6 at 1x)."""
+        return float(zoom) * SETTLER_SCALE / float(SETTLER_RENDER_ZOOM)
+
+    @staticmethod
+    def _scaled(base: np.ndarray, k: float) -> np.ndarray:
+        w, h = max(1, int(round(base.shape[1] * k))), max(1, int(round(base.shape[0] * k)))
+        method = Image.Resampling.BOX if k < 1 else Image.Resampling.BILINEAR
+        return np.asarray(Image.fromarray(base).resize((w, h), method))
+
     def get(self, key: str, tier: int, frame: str, octant: int, facing: int, zoom: float) -> Optional[Tuple[np.ndarray, str]]:
-        """A cache hit for (key, tier, frame) at this octant (else any rendered octant, else idle0), or None."""
+        """A cache hit for (key, tier, frame) at this octant (else any rendered octant, else idle0), or None. The hit is
+        the atlas's 2x render BOX-downsampled to SETTLER_SCALE x zoom (cached per zoom); nothing is rendered here."""
         key = (key or "").lower()
         for f in (frame, "idle0"):
             octs = self.ready.get((key, tier, f))
@@ -246,15 +264,11 @@ class _Sprites(object):
                 continue
             o = octant if octant in octs else next(iter(octs))
             body_only = f in HOP_BODY_FRAMES
-            if zoom == 1.0:
-                return creatures.render(key, tier, f, 1, facing, self.sun_of(o), with_shadow=not body_only), f
             zk = (key, tier, f, o, facing, zoom)
             arr = self._zoomed.get(zk)
             if arr is None:
-                base = creatures.render(key, tier, f, 1, facing, self.sun_of(o), with_shadow=not body_only)
-                w, h = max(1, int(round(base.shape[1] * zoom))), max(1, int(round(base.shape[0] * zoom)))
-                method = Image.Resampling.BOX if zoom < 1 else Image.Resampling.BILINEAR
-                arr = np.asarray(Image.fromarray(base).resize((w, h), method))
+                base = creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, facing, self.sun_of(o), with_shadow=not body_only)
+                arr = self._scaled(base, self.factor(zoom))
                 if len(self._zoomed) > 4000:
                     self._zoomed.clear()
                 self._zoomed[zk] = arr
@@ -263,14 +277,11 @@ class _Sprites(object):
 
     def shadow(self, tier: int, frame: str, octant: int, zoom: float) -> np.ndarray:
         """The ground ellipse alone (creatures.shadow, cached by the art module) at this zoom."""
-        base = creatures.shadow(int(tier), frame, 1, self.sun_of(octant))
-        if zoom == 1.0:
-            return base
         zk = ("shadow", tier, frame, octant, zoom)
         arr = self._zoomed.get(zk)
         if arr is None:
-            w, h = max(1, int(round(base.shape[1] * zoom))), max(1, int(round(base.shape[0] * zoom)))
-            arr = np.asarray(Image.fromarray(base).resize((w, h), Image.Resampling.BOX if zoom < 1 else Image.Resampling.BILINEAR))
+            base = creatures.shadow(int(tier), frame, SETTLER_RENDER_ZOOM, self.sun_of(octant))
+            arr = self._scaled(base, self.factor(zoom))
             self._zoomed[zk] = arr
         return arr
 
@@ -379,6 +390,7 @@ class SteadingScene(object):
         self._rgba: Optional[np.ndarray] = None
         self._boot_ms = 0.0
         self._octant = 0
+        self._cam_log = None                          # TEST HOOK (KL_CAMERA_LOG, test mode only): per-frame camera rows
         self.worker = _Worker(self.log)
         self.worker.start()
         self.sprites = _Sprites(self.worker)
@@ -459,6 +471,23 @@ class SteadingScene(object):
         for key, e in self.behaviour.entities.items():
             self.sprites.request(key, e.tier, self._octant, creatures.FRAMES, SPRITE_PRIO_REST)
         self.test_pips = test_pips_allowed(self.run_dir, ctx)
+        if os.environ.get("KL_SLEEP_AFTER_S") and test_pips_allowed(self.run_dir, ctx, dict(os.environ, KL_TEST_PIPS="1")):
+            try:                                                    # TEST HOOK: a short awake window so a harness sees FOLLOW -> DRIFT -> FOLLOW
+                sa = float(os.environ["KL_SLEEP_AFTER_S"])
+                if 5.0 <= sa < self.sleep_after_s:
+                    self.sleep_after_s = sa
+                    self.behaviour.sleep_after_s = sa
+                    self.log("TEST HOOK: KL_SLEEP_AFTER_S=%.0f (pips sleep after %.0f s of quiet, not %d min)" % (sa, sa, int(SLEEP_AFTER_S // 60)))
+            except ValueError:
+                pass
+        cam_log = os.environ.get("KL_CAMERA_LOG")
+        if cam_log and test_pips_allowed(self.run_dir, ctx, dict(os.environ, KL_TEST_PIPS="1")):
+            try:                                                    # TEST HOOK: per-frame camera rows for the QA harness
+                self._cam_log = open(cam_log, "a")
+                self._cam_log.write("frame,now,mode,cx,cy,zoom,speed,awake,awake_in_view,awake_in_safe,seeds,seeds_in_view,awake_under_hud,hud_nudge,framed,framed_under_hud,des_cy,tgt_cy,min_head_sy,hud_left\n")
+                self.log("TEST HOOK: KL_CAMERA_LOG=%s" % cam_log)
+            except OSError:
+                self._cam_log = None
         if self.test_pips:
             self._spawn_test_pips(now)
             try:                                                    # TEST HOOK (with KL_TEST_PIPS only): pin a zoom for the budget gate
@@ -860,11 +889,34 @@ class SteadingScene(object):
         w.touch_session(now)
         if self.camera is not None:
             self.camera.maybe_persist(land, now)
-        if self._last_save is None or now - self._last_save >= SAVE_S:
+        # a camp or a mark is a promise ("camps are never dismantled", 12): it reaches world.json in the same frame,
+        # not at the next 5 s tick (QA: kai_dnb's camp was on screen but absent from world.json at 03:53:12)
+        if any(ev.get("type") in FORCE_SAVE_EVENTS for ev in events):
+            if w.save(now, force=True):
+                self._last_save = now
+        elif self._last_save is None or now - self._last_save >= SAVE_S:
             if w.save(now, force=False):
                 self._last_save = now
             elif self._last_save is None:
                 self._last_save = now
+
+    def save_now(self, now: Optional[float] = None) -> bool:
+        """Forced flush of world.json (+ the camera) for a compositor exit or a scene swap; never raises."""
+        if not self.booted or self.world is None:
+            return False
+        t = float(now if now is not None else (self._last_now or _time.time()))
+        try:
+            if self.camera is not None and self.land is not None:
+                self.camera._persist_t = None
+                self.camera.maybe_persist(self.land, t)
+            ok = bool(self.world.save(t, force=True))
+            if self._cam_log is not None:
+                self._cam_log.flush()
+            self.log("world.json saved on shutdown (%s)" % ("ok" if ok else "unchanged"))
+            return ok
+        except Exception:
+            self.log("save_now failed: %s" % traceback.format_exc().strip().splitlines()[-1])
+            return False
 
     # ------------------------------------------------------------------ honesty
     def _honesty_check(self, now: float) -> None:
@@ -1220,6 +1272,9 @@ class SteadingScene(object):
     def _camera(self, ctx, now: float, dt: float, ev: List[Dict[str, Any]]) -> None:
         b, cam = self.behaviour, self.camera
         inp = b.camera_inputs(now, getattr(ctx, "round_remaining", None))
+        for a in inp["awake"]:                                  # head height per tier (cells at 1x) for the camera's HUD dead zone
+            ent = b.get(a.get("key"))
+            a["top"] = self._head_cells(int(ent.tier) if ent is not None else 3)
         T = self.terrain
         natural = []
         for kind in ("ford", "fell", "shore"):
@@ -1232,6 +1287,71 @@ class SteadingScene(object):
         if self.force_zoom in CAM.ZOOMS and self.test_pips:
             cam.zoom = cam.zoom_prev = cam.target_zoom = self.force_zoom
             cam._clamp_pos()
+        if self._cam_log is not None:
+            self._camera_log(now, inp)
+
+    _HEAD_CELLS: Dict[int, float] = {}
+
+    @classmethod
+    def _head_cells(cls, tier: int) -> float:
+        """Feet -> head top in cells at 1x: the atlas anchor at the render zoom x SETTLER_SCALE / zoom / 4 px per cell."""
+        v = cls._HEAD_CELLS.get(tier)
+        if v is None:
+            try:
+                ay = creatures.anchor(max(0, min(3, tier)), SETTLER_RENDER_ZOOM)[1]
+                v = float(ay) * SETTLER_SCALE / float(SETTLER_RENDER_ZOOM) / 4.0 + 0.5
+            except Exception:
+                v = CAM.HEAD_CELLS
+            cls._HEAD_CELLS[tier] = v
+        return v
+
+    def _camera_log(self, now: float, inp: Dict[str, Any]) -> None:
+        """TEST HOOK (KL_CAMERA_LOG=path, MODE=test, run dir under /tmp): one CSV row per frame for the camera QA:
+        frame, now, mode, cx, cy, zoom, speed, awake, awake in view, awake inside the safe band, seeds, seeds in view.
+        Reads only what the frame already computed; draws nothing; never on air."""
+        cam = self.camera
+        try:
+            aw = inp.get("awake") or []
+            sd = inp.get("seeds") or []
+            in_view = sum(1 for a in aw if cam.in_view(a["x"], a["y"], 0.0))
+            safe = 0
+            for a in aw:
+                r = cam.sim_to_screen(a["x"], a["y"], self.size)
+                if r is not None and CAM.HUD_TOP_PX <= r[1] <= self.size[1] - CAM.HUD_BOTTOM_PX:
+                    safe += 1
+            sv = sum(1 for (x, y) in sd if cam.in_view(x, y, 0.0))
+            under = 0
+            for a in aw:                                            # the head box under a top HUD chip box (the owner's verdict)
+                r = cam.sim_to_screen(a["x"], a["y"], self.size)
+                if r is None:
+                    continue
+                top = r[1] - float(a.get("top") or CAM.HEAD_CELLS) * cam.scale(self.size)
+                for bx0, by0, bx1, by1 in cam.hud_boxes:
+                    if by0 <= 0 < by1 and bx0 <= r[0] <= bx1 and top < by1 and r[1] > by0:
+                        under += 1
+                        break
+            framed = list(getattr(cam, "_nudge_pts", None) or [])
+            f_under = 0
+            min_head = 9999.0
+            for x, y, top in framed:                                # the points the mode is framing (people, stones with their letters)
+                r = cam.sim_to_screen(x, y, self.size)
+                if r is None:
+                    continue
+                ty = r[1] - float(top) * cam.scale(self.size)
+                for bx0, by0, bx1, by1 in cam.hud_boxes:
+                    if by0 <= 0 < by1 and bx0 <= r[0] <= bx1 and r[1] > by0:
+                        min_head = min(min_head, ty)
+                        if ty < by1:
+                            f_under += 1
+                            break
+            left = next((b for b in cam.hud_boxes if b[0] == 0), (0, 0, 0, 0))
+            self._cam_log.write("%d,%.3f,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d,%d,%.2f,%d,%d,%.2f,%.2f,%.1f,%dx%d\n" % (
+                self.frames, now, cam.mode, cam.cx, cam.cy, cam.zoom, cam.speed, len(aw), in_view, safe, len(sd), sv, under, cam.hud_nudge,
+                len(framed), f_under, cam.desired[1], cam.target[1], min_head if min_head < 9999 else -1.0, left[2], left[3]))
+            if self.frames % 30 == 0:
+                self._cam_log.flush()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ the ground (7.3 steps 1-3)
     def _ground(self, ctx, now: float, w: int, h: int) -> np.ndarray:
@@ -1435,15 +1555,16 @@ class SteadingScene(object):
             self._blit_tuft(rgb, e, now, sx, sy, zoom, phase=1)      # sheet not ready: the tuft one more beat, never a stall
             return
         spr, used = hit
-        ax, ay = creatures.anchor(int(e.tier), 1)
+        k = self.sprites.factor(zoom)                                # atlas (2x) px -> screen px
+        ax, ay = creatures.anchor(int(e.tier), SETTLER_RENDER_ZOOM)
         lift = 0.0
         if used in HOP_BODY_FRAMES:                                  # body up the parabola, the shadow stays on the ground
             sh = self.sprites.shadow(int(e.tier), used, self._octant, zoom)
-            BK.blit(rgb, sh, int(round(sx - ax * zoom)), int(round(sy - ay * zoom)))
-            lift = -e.hop_lift(now) * creatures.height(int(e.tier), 1) * zoom
+            BK.blit(rgb, sh, int(round(sx - ax * k)), int(round(sy - ay * k)))
+            lift = -e.hop_lift(now) * creatures.height(int(e.tier), SETTLER_RENDER_ZOOM) * k
         if e.state in ("asleep", "burrowed"):
             spr = self._dimmed(spr, e.key, used, facing)
-        BK.blit(rgb, spr, int(round(sx - ax * zoom)), int(round(sy - ay * zoom + lift)))
+        BK.blit(rgb, spr, int(round(sx - ax * k)), int(round(sy - ay * k + lift)))
 
     _dim_cache: Dict[Tuple, np.ndarray] = {}
 
@@ -1563,9 +1684,10 @@ class SteadingScene(object):
                 bw, bh = TUFT_W * zoom, TUFT_H * zoom
                 ax, ay = bw / 2.0, bh - 3 * zoom
             else:
-                W, H = creatures.size(int(e.tier), 1)
-                ax_, ay_ = creatures.anchor(int(e.tier), 1)
-                bw, bh, ax, ay = W * zoom, H * zoom, ax_ * zoom, ay_ * zoom
+                k = self.sprites.factor(zoom)                      # the drawn size: SETTLER_SCALE x zoom of the 1x atlas
+                W, H = creatures.size(int(e.tier), SETTLER_RENDER_ZOOM)
+                ax_, ay_ = creatures.anchor(int(e.tier), SETTLER_RENDER_ZOOM)
+                bw, bh, ax, ay = W * k, H * k, ax_ * k, ay_ * k
             sx, sy = (x - x0) * s, (y - y0) * s
             fx, fy = self._facing_of(e)
             p = self.world.pip(e.key) or {}

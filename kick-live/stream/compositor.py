@@ -1029,15 +1029,53 @@ class Compositor(object):
                     st.get("avg_ms"), st.get("max_ms"), sc_st.get("avg_ms"), json.dumps(st.get("degrade")), json.dumps(st.get("keepers"))))
             except Exception:
                 log("honesty summary failed:\n" + traceback.format_exc())
-        try:                                            # WORLD.md 6.2: the art-review sheet rides along with every self-test
-            from stream.world import pips as _P
-            sheet = _P.sheet(os.path.join(out_dir, "pips_sheet.png"), None, None)
-            log("wrote the pip review sheet (48 sample looks x 4 tiers x 11 frames) to %s" % sheet)
+        try:                                            # ART.md 7.2: the SETTLER sheet rides along with every self-test (what is on the land)
+            sheet = self._settlers_sheet(out_dir)
+            if sheet:
+                log("wrote the settler review sheet (real pips on this land + sample names, all frames at 1x / 2x, four tiers) to %s" % sheet)
         except Exception:
-            log("pips_sheet.png failed:\n" + traceback.format_exc())
+            log("settlers_sheet.png failed:\n" + traceback.format_exc())
         log("wrote %d PNGs to %s" % (n, out_dir))
+        self._world_shutdown()
         self.bridge.flush(time.time(), force=True)
         return rc
+
+    @staticmethod
+    def _world_shutdown() -> None:
+        """A forced world.json flush on exit (12: camps are promises; the 5 s throttle must not lose the last camp)."""
+        wm = sys.modules.get("stream.panels.world")
+        try:
+            sc = wm.scene() if (wm is not None and hasattr(wm, "scene")) else None
+            if sc is not None and hasattr(sc, "save_now"):
+                sc.save_now(time.time())
+        except Exception:
+            log("world shutdown save failed:\n" + traceback.format_exc())
+
+    @staticmethod
+    def _settlers_sheet(out_dir: str) -> Optional[str]:
+        """settlers_sheet.png: the canonical settlers (stream/world/art/creatures) for the real pips of this run first,
+        padded with sample names to eight rows; the cave's pip sheet (stream.world.pips) is the rollback art, not the land's."""
+        wm = sys.modules.get("stream.panels.world")
+        sc = wm.scene() if (wm is not None and hasattr(wm, "scene")) else None
+        if sc is None or getattr(sc, "camera", None) is None:            # the cave: the old sheet still applies
+            from stream.world import pips as _P
+            return _P.sheet(os.path.join(out_dir, "pips_sheet.png"), None, None)
+        from stream.world.art import creatures as _C
+        names: List[str] = []
+        try:
+            pips = (sc.world.data.get("pips") or {}) if getattr(sc, "world", None) is not None else {}
+            names = [k for k, p in pips.items() if not p.get("_test")][:8]
+        except Exception:
+            names = []
+        for extra in ("quietnoodle", "kai_dnb", "fern_ok", "moss_m", "willow_9", "sami", "atleastonce", "rivergrass"):
+            if len(names) >= 8:
+                break
+            if extra not in names:
+                names.append(extra)
+        img = _C.sheet_image(names)
+        path = os.path.join(out_dir, "settlers_sheet.png")
+        img.save(path)
+        return path
 
     def run_stream(self, max_frames: int = 0) -> int:
         self._start_writers()
@@ -1118,6 +1156,7 @@ class Compositor(object):
         deadline = time.time() + 2.0
         while (not self.vq.empty() or not self.aq.empty()) and time.time() < deadline:
             time.sleep(0.02)
+        self._world_shutdown()
         self.bridge.flush(time.time(), force=True)
         log(self._report("exit"))
         if self.writer_error:

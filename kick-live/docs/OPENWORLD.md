@@ -697,9 +697,12 @@ nature rule and the mark rule are added and made mechanical:
   ticker honesty line: `no camera, no mic, no fake viewers. every name on this land is a real person
   in chat. the wind is just the wind.` A viewer is never led to read weather as people.
 - **Every animate thing is a pip** created only in the chat-ingest path from a moderated record;
-  the self-test asserts every frame `awake == distinct real chatters in the last 20 min` and
-  `len(pips) == distinct chatters ever minus banished`; the HonestyMonitor flags any moving sprite
-  without a key.
+  the self-test asserts every frame `awake == distinct real chatters whose record cleared the 3 s hold
+  in the last 20 min` (a chatter still inside the hold is a nameless tuft, not awake: the header ticks
+  at the hatch, §3.1, and reads `NOBODY AWAKE` over a first message's hold while the chat log says
+  `someone is arriving...`) and `len(pips) == distinct chatters ever minus banished`; the
+  HonestyMonitor flags any moving sprite without a key, and the world panel asserts per frame that
+  no string it drew carries a raw hidden, blocklisted or quarantined username.
 - **Every mark has provenance:** camp, fire, field, flower, tree, reed, stone, flag and path cell
   carry an owner key that must exist in `world.json["pips"]`; the monitor asserts every 5 s that no
   mark has an owner without a chat record; `wear` is incremented only by `Behaviour._move` under a
