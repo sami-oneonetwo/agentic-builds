@@ -461,6 +461,13 @@ class SteadingScene(object):
         self.test_pips = test_pips_allowed(self.run_dir, ctx)
         if self.test_pips:
             self._spawn_test_pips(now)
+            try:                                                    # TEST HOOK (with KL_TEST_PIPS only): pin a zoom for the budget gate
+                fz = float(os.environ.get("KL_FORCE_ZOOM") or 0)
+                if fz in CAM.ZOOMS:
+                    self.force_zoom = fz
+                    self.log("TEST HOOK: KL_FORCE_ZOOM=%.2f" % fz)
+            except ValueError:
+                pass
         if self.force_zoom is not None and not test_pips_allowed(self.run_dir, ctx, dict(os.environ, KL_TEST_PIPS="1")):
             self.force_zoom = None                                  # the hook is test-mode only
         self._marks_build(now)
@@ -791,7 +798,10 @@ class SteadingScene(object):
             key = ev.get("pip") or ev.get("key")
             e = b.get(key) if key else None
             if e is not None and (typ in ("hatch", "wake", "sleep", "seed", "seed_land", "walk", "arrive") or "x" in ev):
-                x, y = self._pos.get(e.key) or self._pos_of(e, now)
+                if typ in ("seed", "seed_land") and getattr(e, "seed_to", None) is not None:
+                    x, y = e.seed_to                                 # the LANDING spot (3.1): the camera eases there, never
+                else:                                                # to the tuft's start 150 cells upwind
+                    x, y = self._pos.get(e.key) or self._pos_of(e, now)
                 ev["x"], ev["y"] = round(x, 1), round(y, 1)          # cells (the behaviour's x was the cave's floor px)
             if typ == "hatch":
                 p = w.pip(key)
@@ -1719,7 +1729,12 @@ class SteadingScene(object):
             typ = (arg or "flower").strip().lower()
             if typ not in ("flower", "tree", "reed"):
                 return False, "plant a flower, a tree or reeds"
-            m, reason = land.add_mark(typ, x, y, actor, t)
+            # the cell under the feet is the pip's own pressed grass (one step = wear 8 = "on a trail"), so the mark goes
+            # on the nearest allowed cell within 3 (the same rule `camp` uses); the land's own reason is kept otherwise
+            mx_, my_, reason = self._mark_near(actor, x, y, typ)
+            if mx_ is None:
+                return False, reason
+            m, reason = land.add_mark(typ, mx_, my_, actor, t)
             if m is None:
                 return False, reason
             b.events.append({"type": "plant", "pip": actor, "x": m["x"], "y": m["y"], "mark": typ, "id": m["id"]})
@@ -1812,7 +1827,15 @@ class SteadingScene(object):
     def _camp_near(self, actor: str, x: float, y: float, r_max: int = 6) -> Tuple[Optional[int], Optional[int], str]:
         """The nearest cell within r_max of (x, y) where land.camp_allowed() says yes (the standing cell first, then
         rings, diagonals first so the bedroll never sits on the 4-neighbour spill). (None, None, reason) when none."""
-        land, b = self.land, self.behaviour
+        return self._near_allowed(lambda qx, qy: self.land.camp_allowed(actor, qx, qy), x, y, r_max, "you can't camp there")
+
+    def _mark_near(self, actor: str, x: float, y: float, typ: str, r_max: int = 3) -> Tuple[Optional[int], Optional[int], str]:
+        """The nearest cell within r_max of the feet where land.mark_allowed() says yes (`plant`: the standing cell is
+        the pip's own pressed grass, so the flower goes one cell beside the footsteps, like the bedroll)."""
+        return self._near_allowed(lambda qx, qy: self.land.mark_allowed(actor, qx, qy, typ), x, y, r_max, "nothing grows there")
+
+    def _near_allowed(self, allowed, x: float, y: float, r_max: int, fallback: str) -> Tuple[Optional[int], Optional[int], str]:
+        b = self.behaviour
         cx, cy = int(math.floor(x)), int(math.floor(y))
         first_reason = None
         ground = getattr(b, "ground", None)
@@ -1822,12 +1845,12 @@ class SteadingScene(object):
             for (qx, qy) in cands:
                 if ground is not None and not ground.ok(qx + 0.5, qy + 0.5):
                     continue
-                ok, reason = land.camp_allowed(actor, qx, qy)
+                ok, reason = allowed(qx, qy)
                 if ok:
                     return qx, qy, "ok"
                 if first_reason is None:
                     first_reason = reason
-        return None, None, first_reason or "you can't camp there"
+        return None, None, first_reason or fallback
 
     @staticmethod
     def _is_number(s: Any) -> bool:
@@ -2002,10 +2025,14 @@ def _self_test() -> bool:                                       # pragma: no cov
     check(len(sc.land.camps()) >= 1, "camp pitched by a real chatter -> %d camps, bake_ver %d, %d flowers" % (len(sc.land.camps()), sc.land.bake_ver, len(sc.land.marks_of_type("flower"))))
     cx_, cy_, before = camp_spot
     c0 = sc.land.camp_of(names[0])
+    # `camp` pitches on the nearest allowed cell within 6 of where the pip stands (_camp_near: the standing cell is its
+    # own pressed grass, so the bedroll goes one cell beside the footsteps); the repaint is judged over the footprint
+    # around the STANDING cell, which the real footprint overlaps by construction.
     after = sc.bakes.current.crop((cx_ - 4) * 4, (cy_ - 6) * 4, 32, 24).copy()
     changed = int(np.count_nonzero((after != before).any(axis=2))) if before is not None else -1
-    check(changed > 50 and (c0["x"], c0["y"]) == (cx_, cy_), "the hollow's 8x6-cell footprint was REPAINTED into the memmapped bake on the worker: %d of 768 px changed at camp %s (file %s, pending jobs %d)" % (
-        changed, (c0["x"], c0["y"]), sc.bakes.current.stats()["path"], sc.worker.pending()))
+    near = c0 is not None and max(abs(int(c0["x"]) - cx_), abs(int(c0["y"]) - cy_)) <= 6
+    check(changed > 50 and near, "the hollow's 8x6-cell footprint was REPAINTED into the memmapped bake on the worker: %d of 768 px changed; camp %s within 6 cells of the standing cell %s (file %s, pending jobs %d)" % (
+        changed, (c0["x"], c0["y"]) if c0 else None, (cx_, cy_), sc.bakes.current.stats()["path"], sc.worker.pending()))
     check(sc.errors == 0, "frame errors == 0 (%d)" % sc.errors)
     check(bake_wait_max < 24.0, "bake thread never blocked a frame: %d frames during the bake, max %.1f ms" % (frames_during_bake, bake_wait_max))
     arr = np.array(ms[30:])

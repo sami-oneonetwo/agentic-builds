@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -69,7 +69,9 @@ HEADER_MIN_STD = 8.0             # self-test: luminance std of the 0-66 header b
 HOT_RELOAD_S = 2.0               # file watch interval (wallclock)
 HOT_RELOAD_SETTLE_S = 0.3        # a file modified less than this long ago may still be half-written: next poll
 HOT_RELOAD_PROBATION = 30        # renders during which a raise rolls back to the previous panel + module
-TEST_ENV_HOOKS = ("KL_ROUND_S", "KL_FAULT_PANELS", "KL_SLOW_PANELS", "KL_CHANGELOG", "KL_SELFTEST_REALTIME", "KL_TEST_PIPS")
+TEST_ENV_HOOKS = ("KL_ROUND_S", "KL_FAULT_PANELS", "KL_SLOW_PANELS", "KL_CHANGELOG", "KL_SELFTEST_REALTIME", "KL_TEST_PIPS",
+                  "KL_CLOCK_SHIFT_S",      # nature.py: shifts the clock the LIGHT reads (dawn / noon / 23:00 renders), MODE=test only
+                  "KL_FORCE_ZOOM")         # steading.py: pins the camera zoom for the budget gate, with KL_TEST_PIPS only
 
 
 def log(msg: str) -> None:
@@ -214,12 +216,32 @@ class HotReloader(object):
             return
         self.last_poll = wall_now
         cur = self._scan()
+        changed: List[str] = []
         for p, sig in sorted(cur.items()):
             if self.sig.get(p) == sig:
                 continue
             if wall_now - sig[0] / 1e9 < HOT_RELOAD_SETTLE_S:
                 continue                                   # still being written; look again next poll
             self.sig[p] = sig
+            changed.append(p)
+        # A deploy drops many files in one poll (OPENWORLD.md 14: world core + scene + panels together). The world
+        # modules are re-executed as ONE batch with ONE scene/panel cascade, and a scene or panel file that cascade
+        # already re-executed (or imported fresh from disk) is not executed a second time, so the swap constructs one
+        # scene, not one per changed file.
+        world = [p for p in changed if self._modname(p)[0] == "stream.world"]
+        handled: Set[str] = set()
+        if world:
+            try:
+                handled = self._reload_world_modules(world, frame)
+            except Exception:
+                log("hot reload: unexpected error on the world batch %s:\n%s" % ([os.path.relpath(p, ROOT) for p in world], traceback.format_exc()))
+        for p in changed:
+            if p in world:
+                continue
+            modname = self._modname(p)[1]
+            if modname and modname in handled:
+                log("hot reload: %s already re-executed by this poll's world cascade; not swapped twice" % os.path.relpath(p, ROOT))
+                continue
             try:
                 self._changed(p, frame)
             except Exception:
@@ -266,7 +288,7 @@ class HotReloader(object):
         if pkg == "stream.scenes":
             self._reload_scene(modname, path, frame)
         elif pkg == "stream.world":
-            self._reload_world_module(modname, path, frame)
+            self._reload_world_modules([path], frame)
         else:
             self._reload_panel_module(modname, path, frame, [])
 
@@ -319,14 +341,18 @@ class HotReloader(object):
             log("hot reload: %s re-executed but registered no panel; nothing swapped" % modname)
             return True
         prev_mods: List[Tuple[str, object]] = [(modname, old_mod)] + list(cascade)
+        # the world scene instance parked on the panels package (stream.panels._WORLD_SCENE) before this swap: a
+        # rollback puts it back, so the restored world panel renders ITS scene, not the one the new module installed
+        prev_scene = getattr(sys.modules.get("stream.panels"), "_WORLD_SCENE", None) if old_mod is not None else None
+        prev_scene = getattr(old_mod, "SCENE", prev_scene) if prev_scene is None and old_mod is not None else prev_scene
         for k in changed:
             panel = PANEL_REGISTRY[k]
             slot = self.comp.slot_for(k)
             if slot is None:
                 slot = self.comp.add_slot(panel)
-                slot.prev = (None, prev_mods)              # rollback = drop the slot again
+                slot.prev = (None, prev_mods, prev_scene)  # rollback = drop the slot again
             else:
-                slot.prev = (slot.panel, prev_mods)
+                slot.prev = (slot.panel, prev_mods, prev_scene)
                 slot.panel = panel
                 slot.rebox()
             slot.reset()
@@ -340,36 +366,58 @@ class HotReloader(object):
         self.comp._activity(msg)
         return True
 
-    def _reload_world_module(self, modname: str, path: str, frame: int) -> None:
-        """stream/world/*.py changed (WORLD_API.md 9): execute it fresh under its name, then re-execute the scene module
-        (stream.scenes.hollow) so `from stream.world... import` rebinds, which in turn re-executes the world panel."""
-        if modname not in sys.modules:
-            log("hot reload: %s changed but was never imported; nothing to swap" % modname)
-            return
-        old_mod = sys.modules.get(modname)
-        _mod, err = self._exec_fresh(modname, path)
-        if err:
-            self.stats["rejected"] += 1
-            msg = "hot reload FAILED %s at import: %s; old module kept" % (modname, err)
-            log(msg)
-            self.comp._activity(msg)
-            return
-        self.stats["reloads"] += 1
-        self.stats["last"] = modname
-        # Every LOADED scene module that imports the world core is re-executed (the cave for the rollback week, the
-        # land for LONGGRASS; OPENWORLD.md 14); the panels that mention `stream.scenes` are rebound ONCE, after the
-        # last scene, with every re-executed module on their rollback list.
+    # leaves first, so a re-executed module binds the NEW object of everything it imports (behaviour -> terrain / land /
+    # state; bake -> terrain / nature; keepers / honesty -> behaviour / state); anything unlisted follows alphabetically
+    WORLD_ORDER = ("terrain", "nature", "state", "land", "camera", "bake", "pips", "honesty", "keepers", "behaviour")
+
+    def _reload_world_modules(self, paths: List[str], frame: int) -> Set[str]:
+        """stream/world/*.py changed (WORLD_API.md 9; several at once on a deploy, OPENWORLD.md 14): execute each
+        LOADED one fresh under its name in dependency order, then ONE cascade: every loaded scene module is re-executed
+        (the cave for the rollback week, the land for LONGGRASS) and the panels that mention `stream.scenes` are rebound
+        once, after the last scene, with every re-executed module on their rollback list. A world file that was never
+        imported (a new module) is left to the scene's own import, which reads the current file. Returns the dotted
+        names this cascade re-executed or imported fresh, so poll() does not swap them a second time."""
+        before = set(sys.modules)
+        order = {n: i for i, n in enumerate(self.WORLD_ORDER)}
+        paths = sorted(paths, key=lambda p: (order.get(os.path.splitext(os.path.basename(p))[0], len(order)), p))
+        cascade: List[Tuple[str, object]] = []
+        done: List[str] = []
+        for path in paths:
+            modname = self._modname(path)[1]
+            if not modname:
+                continue
+            if modname not in sys.modules:
+                log("hot reload: %s changed but was never imported; the scene imports it fresh" % modname)
+                continue
+            if modname not in before:
+                log("hot reload: %s was imported fresh by an earlier module of this batch; current already" % modname)
+                continue
+            old_mod = sys.modules.get(modname)
+            _mod, err = self._exec_fresh(modname, path)
+            if err:
+                self.stats["rejected"] += 1
+                msg = "hot reload FAILED %s at import: %s; old module kept" % (modname, err)
+                log(msg)
+                self.comp._activity(msg)
+                continue
+            self.stats["reloads"] += 1
+            self.stats["last"] = modname
+            cascade.append((modname, old_mod))
+            done.append(modname)
+        handled: Set[str] = set(done)
+        if not done:
+            return handled
         scenes = [("stream.scenes." + n, os.path.join(ROOT, "stream", "scenes", n + ".py")) for n in ("hollow", "steading")]
         loaded = [(m, p) for m, p in scenes if m in sys.modules and os.path.exists(p)]
         if not loaded:
-            log("hot reload: %s re-executed (no scene loaded to rebind)" % modname)
-            return
-        cascade: List[Tuple[str, object]] = [(modname, old_mod)]
+            log("hot reload: %s re-executed (no scene loaded to rebind)" % ", ".join(done))
+            return handled
         for i, (smod, spath) in enumerate(loaded):
             last = i == len(loaded) - 1
-            log("hot reload: %s re-executed; rebinding the scene %s" % (modname, smod))
+            log("hot reload: %s re-executed; rebinding the scene %s" % (", ".join(done), smod))
+            handled.add(smod)
             if last:
-                self._reload_scene(smod, spath, frame, cascade=cascade)
+                handled.update(self._reload_scene(smod, spath, frame, cascade=cascade))
             else:
                 old_scene = sys.modules.get(smod)
                 _m, err = self._exec_fresh(smod, spath)
@@ -381,8 +429,17 @@ class HotReloader(object):
                     continue
                 self.stats["reloads"] += 1
                 cascade.append((smod, old_scene))
+        # modules the cascade imported for the first time (e.g. stream.scenes.steading pulled in by the world panel) were
+        # read from the current file: a change notice for them in the same poll must not execute them again
+        handled.update(m for m in sys.modules if m not in before and m.startswith(("stream.scenes.", "stream.panels.", "stream.world.")))
+        return handled
 
-    def _reload_scene(self, modname: str, path: str, frame: int, cascade: Optional[List[Tuple[str, object]]] = None) -> None:
+    def _reload_world_module(self, modname: str, path: str, frame: int) -> None:
+        """Single-file form kept for callers; see _reload_world_modules."""
+        self._reload_world_modules([path], frame)
+
+    def _reload_scene(self, modname: str, path: str, frame: int, cascade: Optional[List[Tuple[str, object]]] = None) -> List[str]:
+        """Returns the dotted names of the panel modules it re-executed ([] when the scene failed to import)."""
         old_mod = sys.modules.get(modname)
         _mod, err = self._exec_fresh(modname, path)
         if err:
@@ -390,7 +447,7 @@ class HotReloader(object):
             msg = "hot reload FAILED %s at import: %s; old module kept" % (modname, err)
             log(msg)
             self.comp._activity(msg)
-            return
+            return []
         self.stats["reloads"] += 1
         self.stats["last"] = modname
         deps: List[Tuple[str, str]] = []
@@ -414,6 +471,7 @@ class HotReloader(object):
         self.comp._activity(msg)
         for dep_mod, dep_path in deps:
             self._reload_panel_module(dep_mod, dep_path, frame, [(modname, old_mod)] + list(cascade or []))
+        return [m for m, _ in deps]
 
 
 class Compositor(object):
@@ -751,7 +809,8 @@ class Compositor(object):
 
     def _rollback(self, slot: Slot, ctx, frame: int, why: str) -> None:
         """A hot-reloaded panel raised during probation: restore the previous panel and module objects."""
-        old_panel, mods = slot.prev
+        old_panel, mods = slot.prev[0], slot.prev[1]
+        prev_scene = slot.prev[2] if len(slot.prev) > 2 else None
         slot.prev = None
         slot.probation = 0
         for name, mod in mods:
@@ -759,6 +818,12 @@ class Compositor(object):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = mod
+                HotReloader._rebind_parent(name, mod)
+        if prev_scene is not None and slot.key == "world":
+            try:                                        # the previous world panel renders the scene it was built with
+                setattr(sys.modules["stream.panels"], "_WORLD_SCENE", prev_scene)
+            except Exception:
+                pass
         self.reloader.stats["rollbacks"] += 1
         if old_panel is None:                       # the reload had ADDED this panel: drop it again
             PANEL_REGISTRY.pop(slot.key, None)

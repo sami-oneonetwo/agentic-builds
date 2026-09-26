@@ -67,6 +67,19 @@ SHADOW_DARK = {"day": 0.80, "low": 0.78, "night": 0.90}
 
 
 # ----------------------------------------------------------------------------- clock, hemisphere, season
+def clock_shift_s(env=None) -> float:
+    """TEST HOOK: `KL_CLOCK_SHIFT_S` (seconds added to the clock the LIGHT reads: hour, tint, sun, moon, season, dial
+    text) so a harness can render dawn / noon / 23:00 frames on demand. Honoured only under MODE=test; 0 otherwise.
+    It never moves entities, chat, rounds or persistence (they read ctx.now), only the sky over the land."""
+    env = os.environ if env is None else env
+    if env.get("MODE") != "test":
+        return 0.0
+    try:
+        return float(env.get("KL_CLOCK_SHIFT_S") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def hemisphere_default() -> str:
     """'south' when the machine's timezone is Australian / NZ / southern American or African, else 'north'."""
     name = os.environ.get("TZ") or ""
@@ -435,6 +448,7 @@ class Nature:
         self.water = terrain.water | (terrain.biome == 3)                 # ford water sparkles too
         self.sand = terrain.biome == 4
         self.now = 0.0
+        self.clock_shift_s = clock_shift_s()      # TEST HOOK (MODE=test only): the light's clock, never the sim's
         self.degrade = {"clouds": True, "wind": True, "shadows": True, "sparkle": True}
         ph = np.arange(1440, dtype=np.float32) / 4.0
         self._band_lut = (1.0 - WIND_AMP * (1.0 - (0.5 * np.sin(ph * (2 * math.pi / 40.0)) + 0.5 * np.sin(ph * (2 * math.pi / 90.0) + 1.0)))).astype(np.float32)
@@ -458,11 +472,15 @@ class Nature:
         self.clouds.update(now, self.wind)
 
     # -- clock
+    def _t(self, now: Optional[float]) -> float:
+        """The clock the light reads: `now` (or the last update) plus the test-only shift (0 outside MODE=test)."""
+        return (self.now if now is None else float(now)) + self.clock_shift_s
+
     def hour(self, now: Optional[float] = None) -> float:
-        return world_hour(self.now if now is None else now, self.world_day, self.tz)
+        return world_hour(self._t(now), self.world_day, self.tz)
 
     def clock(self, now: Optional[float] = None) -> str:
-        t = local_tm(self.now if now is None else now, self.tz)
+        t = local_tm(self._t(now), self.tz)
         return "%02d:%02d" % (t.tm_hour, t.tm_min)
 
     def world_clock(self, now: Optional[float] = None) -> str:
@@ -470,17 +488,17 @@ class Nature:
         return "%02d:%02d" % (int(h) % 24, int((h % 1.0) * 60))
 
     def season(self, now: Optional[float] = None) -> float:
-        return season(self.now if now is None else now, self.hemisphere, self.tz)
+        return season(self._t(now), self.hemisphere, self.tz)
 
     def sun(self, now: Optional[float] = None) -> Tuple[float, float]:
         return sun_vector(self.hour(now))
 
     def moon(self, now: Optional[float] = None) -> float:
-        return moon_phase(self.now if now is None else now)
+        return moon_phase(self._t(now))
 
     def tint(self, now: Optional[float] = None) -> Tuple[float, float, float]:
-        n = self.now if now is None else now
-        return tint(self.hour(n), moon_illumination(moon_phase(n)))
+        n = self._t(now)
+        return tint(self.hour(n - self.clock_shift_s), moon_illumination(moon_phase(n)))
 
     def is_night(self, now: Optional[float] = None) -> bool:
         return night_amount(self.hour(now)) > 0.5
@@ -510,7 +528,7 @@ class Nature:
         x0, y0 = int(math.floor(x0f)), int(math.floor(y0f))
         T = self.T
         hour = self.hour(n)
-        moon = moon_illumination(moon_phase(n))
+        moon = moon_illumination(moon_phase(self._t(n)))
         tr, tg, tb = tint(hour, moon)
         wf = self.weather.factors(n)
         mono = np.full((h, w), wf["darken"], np.float32)

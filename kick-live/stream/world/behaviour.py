@@ -641,7 +641,10 @@ class Behaviour(object):
         """The awake / seeds / moot arguments for Camera.update(), straight from the entities (no invention)."""
         awake = [{"key": e.key, "x": e.x, "y": e.y, "fx": e.fx, "fy": e.fy, "walking": e.walking(), "spoke_t": e.spoke_t}
                  for e in self.entities.values() if e.is_awake()]
-        seeds = [(e.x, e.y) for e in self.entities.values() if e.state in ("seed", "hatching")]
+        # a tuft is framed by where it will LAND (3.1: the camera eases toward the landing spot on the green), never by
+        # its start 150 cells upwind, which would drag the frame off the people for the whole hold
+        seeds = [tuple(e.seed_to) if not e.seed_landed and e.seed_to is not None else (e.x, e.y)
+                 for e in self.entities.values() if e.state in ("seed", "hatching")]
         pc = self.platform_counts()
         voters = [k for ks in pc.values() for k in ks]
         walking_to = any(e.state == "walking" and e.then == "vote" for e in self.entities.values())
