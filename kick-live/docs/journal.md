@@ -829,3 +829,10 @@ primary interaction) and a Kick growth research sweep (categories, growth mechan
 AI streams). Found today: `!idea` is capped at 3 open per user and drops silently (owner's `improve the art style` was
 lost); i-0004/i-0005 marked shipped (delivered by Longgrass); the cap needs a plank line. Vote acks mislead when the
 voter walks off before the round closes (fix in the HUD spec). Memory: owner-mandate-continuous-improvement.md.
+
+Tick 16:24 (loop 026): not paused; all 9 processes alive. Last 40 min: viewers 1-4 (avg 1.9), live 100 %, followers 2;
+chat quiet since 15:58 (58 msgs this session). Two silent misses from the second account earlier: `say hello to
+@atleastonce` (conversational, no answer) and `wak south` (typo -> plain). Both feed the HUD/plank-hint spec (a message
+with a place/direction word but no verb gets `type: go south`). Rounds keep shipping as agent picks with 0 votes. No
+!idea pending. In flight: HUD reshape (design + judges + synthesis done, implementing), Kick research (2/5 angles done).
+Nothing deployed this tick.
