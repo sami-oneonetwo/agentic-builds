@@ -713,7 +713,11 @@ class WishPost(object):
         except Exception:
             return None
 
-    def _validate(self, row: Dict[str, Any]) -> Tuple[bool, str]:
+    def _validate(self, row: Dict[str, Any], at_placement: bool = False) -> Tuple[bool, str]:
+        """honesty.validate_registry over one row. at_placement=True is the place queue's gate for a NEW row (site: never
+        water, a trail, the Moot green, the gaps, the caps); the default re-checks a standing / rising row with the
+        ENDURING set only (provenance / type / schema): a trail worn across it later or a camp pitched beside it never
+        un-draws a placed thing (credit is forever, IDLEWORLD 2.5)."""
         try:
             from stream.world import honesty as H
             fn = getattr(H, "validate_registry", None)
@@ -722,8 +726,12 @@ class WishPost(object):
         rows = [r for r in self.placed() if r.get("id") != row.get("id")]
         if callable(fn):
             try:
-                ok, why = fn(row, land=getattr(self.scene, "land", None), terrain=getattr(self.scene, "terrain", None),
-                             ledger_ids=self._ledger_ids, banished=self._banished(), placed_rows=rows, pips=self._pips())
+                kw = dict(land=getattr(self.scene, "land", None), terrain=getattr(self.scene, "terrain", None),
+                          ledger_ids=self._ledger_ids, banished=self._banished(), placed_rows=rows, pips=self._pips())
+                try:
+                    ok, why = fn(row, at_placement=at_placement, **kw)
+                except TypeError:                                   # an older honesty.py without the flag: the full check
+                    ok, why = fn(row, **kw)
                 return bool(ok), str(why)
             except Exception as e:
                 return False, "validator raised %r" % (e,)
@@ -783,7 +791,7 @@ class WishPost(object):
                    "askers": [k for k in c.askers if k in pips or k in banished], "wish_ids": list(c.wish_ids),
                    "merge_key": c.merge_key, "x": int(xy[0]), "y": int(xy[1]), "age_idx": age,
                    "lit_rule": str(spec.get("lit_rule") or "never"), "status": "rising", "reveal_t0": float(now), "plaque": None}
-            ok, why = self._validate(row)
+            ok, why = self._validate(row, at_placement=True)
             if not ok:
                 self._queue.pop(0)
                 c.status = "open"
@@ -1600,6 +1608,28 @@ def _self_test() -> bool:
     check(all(post._validate(r)[0] for r in post.placed()), "every placed row passes honesty.validate_registry")
     structs = post.structures()
     check(not any(s["fn"] == "buildings.lantern" for s in structs), "lanterns are live sprites, never baked (%d structures)" % len(structs))
+    # regression: a trail worn across the standing lantern LATER (k walks across the site) never revokes it: the row stays
+    # in valid_rows / live sprites, the monitor's `placed` rule stays silent, provenance 0; a NEW row on that cell is refused
+    lrow = next(r for r in post.placed() if r.get("recipe") == "lantern")
+    lx, ly = int(lrow["x"]), int(lrow["y"])
+    v_before = H.mon.summary()["violations"]
+    sc.behaviour.walk_to("k", (float(lx) + 3.0, float(ly) + 1.0), H.now)          # a here settler walks across the site
+    for _ in range(60):
+        H.frame()
+    for dy_ in (-1, 0, 1):
+        sc.land.wear[ly + dy_, max(0, lx - 2):lx + 3] = 255                          # ... and the cell is a worn trail now
+    check(sc.land.is_trail(lx, ly), "the lantern's cell is a trail after the walk (wear %d)" % int(sc.land.wear_at(lx, ly)))
+    post._valid_cache.clear()
+    H.mon._placed_ok.discard(lrow["id"])
+    for _ in range(3):
+        H.frame()
+    live_ids = [d[3].get("id") for d in post.live_sprites(H.now, lambda x, y: True, 0)]
+    ok_end, why_end = post._validate(lrow)
+    ok_new, why_new = post._validate(lrow, at_placement=True)
+    check(lrow in post.valid_rows() and lrow["id"] in live_ids and lrow["status"] == "stands",
+          "the standing lantern stays valid and drawn with a trail across it (%r)" % (why_end,))
+    check(ok_end and not ok_new and "trail" in why_new, "enduring check ok, a NEW placement on that cell refused: %r" % (why_new,))
+    check(H.mon.summary()["violations"] == v_before and not sc.land.provenance_violations(), "honesty 0 through the walk-across (%d before, %d after), provenance 0" % (v_before, H.mon.summary()["violations"]))
     ek = sc.behaviour.get("k")
     glows = post.glow_sources(H.now)
     check(len(glows) == 1 and ek.is_present(H.now), "the lit lantern glows while k is here (%d sources)" % len(glows))

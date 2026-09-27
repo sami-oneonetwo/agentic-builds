@@ -130,14 +130,18 @@ def validate_copy(text: Any) -> bool:
 
 def validate_registry(row: Any, land=None, terrain=None, ledger_ids: Optional[Set[str]] = None, banished: Optional[Set[str]] = None,
                       placed_rows: Optional[Sequence[Dict[str, Any]]] = None, pips: Optional[Dict[str, Dict]] = None,
-                      caps: Optional[Dict[str, int]] = None) -> Tuple[bool, str]:
-    """(ok, reason) for one placed[] row (IDLEWORLD 5.2, 6.1): every part fn in FN_ALLOWLIST with int args in range; no
-    moves / speed / path / frames / rate field on the row or a part; colour `owner` or an ART.md palette key (an RGB
-    triple is refused); lit_rule closed (`always` refused); footprint >= 1x1; owner a real, unbanished pip who is an
-    asker (a banished owner's row must be `hidden`); every asker a pip row or a banished record; every wish_id in the
-    ledger id set (when one is given); the cell passable, dry, off the Moot green, off a trail, PLACED_GAP from other
-    placed rows, CAMP_GAP from other camps; the lifetime cap (2 + camp tier) from the placed records themselves and
-    the session / age caps when `caps` counts are given. Pure: no writes, no imports of the locked modules."""
+                      caps: Optional[Dict[str, int]] = None, at_placement: bool = True) -> Tuple[bool, str]:
+    """(ok, reason) for one placed[] row (IDLEWORLD 5.2, 6.1). ENDURING checks (every call, every frame for a standing
+    row): every part fn in FN_ALLOWLIST with int args in range; no moves / speed / path / frames / rate field on the row
+    or a part; colour `owner` or an ART.md palette key (an RGB triple is refused); lit_rule closed (`always` refused);
+    footprint >= 1x1; owner a real, unbanished pip who is an asker (a banished owner's row must be `hidden`); every
+    asker a pip row or a banished record; every wish_id in the ledger id set (when one is given); a numeric cell on the
+    map. PLACEMENT-TIME checks (`at_placement`, the default: what a NEW row must pass before its first pixel): the cell
+    passable, dry, off the Moot green, off a trail, PLACED_GAP from other placed rows, CAMP_GAP from other camps; the
+    lifetime cap (2 + camp tier) from the placed records themselves and the session / age caps when `caps` counts are
+    given. A standing row is re-checked with at_placement=False: wear laid across it later (people walk where they
+    like), a camp pitched beside it or a cap reached since never revokes a valid permanent structure (credit is
+    forever, 2.5); only provenance / type / schema can. Pure: no writes, no imports of the locked modules."""
     import math as _m
     if not isinstance(row, dict):
         return False, "row is not a dict"
@@ -231,6 +235,11 @@ def validate_registry(row: Any, land=None, terrain=None, ledger_ids: Optional[Se
     xi, yi = int(round(x)), int(round(y))
     pas = getattr(land, "passable", None) if land is not None else getattr(terrain, "passable", None)
     wat = getattr(land, "water", None) if land is not None else getattr(terrain, "water", None)
+    shape = getattr(pas, "shape", None) or getattr(wat, "shape", None)
+    if shape is not None and (yi < 0 or xi < 0 or yi >= int(shape[0]) or xi >= int(shape[1])):
+        return False, "cell (%d, %d) is off the map" % (xi, yi)
+    if not at_placement:
+        return True, "ok"                                   # a standing row: the site rules below were met when it was placed
     try:
         if pas is not None and (yi < 0 or xi < 0 or not bool(pas[yi, xi])):
             return False, "cell (%d, %d) is not passable" % (xi, yi)
@@ -881,9 +890,10 @@ class HonestyMonitor(object):
                         rep.add("idle", "%d sitting at the fire (%.0f, %.0f) (cap %d)" % (n_s, fire[0], fire[1], _FIRE_CAP))
 
     def _check_placed(self, scene, rep: Report, t: float) -> None:
-        """W6 hook (IDLEWORLD 5.2): every `stands` placed row passes validate_registry against the land, the pips, the
-        banished set and the ledger id set the scene's wish post holds (skipped when no post is attached); a row that
-        fails is reported every frame and re-validated every MARKS_EVERY_S."""
+        """W6 hook (IDLEWORLD 5.2): every `stands` placed row passes validate_registry's ENDURING checks (provenance /
+        type / schema; at_placement=False: a trail worn across it or a camp pitched beside it later never revokes a
+        standing structure) against the pips, the banished set and the ledger id set the scene's wish post holds
+        (skipped when no post is attached); a row that fails is reported every frame and re-validated every MARKS_EVERY_S."""
         w = scene.world.data.get("world") or {}
         rows = w.get("placed") or []
         if not rows:
@@ -904,7 +914,7 @@ class HonestyMonitor(object):
                 rep.add("placed", "%s: %s" % (rid, last[1]))
                 continue
             ok, why = validate_registry(row, land=getattr(scene, "land", None), terrain=getattr(scene, "terrain", None), ledger_ids=ledger,
-                                        banished=banished, placed_rows=[r for r in rows if r is not row], pips=pips)
+                                        banished=banished, placed_rows=[r for r in rows if r is not row], pips=pips, at_placement=False)
             if ok:
                 self._placed_ok.add(rid)
                 self._placed_bad.pop(rid, None)
@@ -1453,7 +1463,8 @@ def _selftest(run_dir: str) -> int:
         caught["placed (12 planted bad rows refused by validate_registry)"] = refused == len(fakes)
         # none drawn: planted as `stands` rows, the scene's post lists none of them among its structures / live sprites, and the
         # monitor's `placed` rule names them
-        planted = [dict(r) for _l, r in fakes if not _l.startswith("over cap")] + [dict(base, id="p-0919"), dict(far), dict(far2)]
+        site_ids = {"p-0916", "p-0917", "p-0918", "p-0919"}                       # placement-time refusals (site / cap), not enduring
+        planted = [dict(r) for _l, r in fakes if r["id"] not in site_ids] + [dict(far), dict(far2)]
         wblk = scene.world.data["world"]
         saved_rows = list(wblk.get("placed") or [])
         wblk["placed"] = saved_rows + planted
@@ -1463,10 +1474,33 @@ def _selftest(run_dir: str) -> int:
             ids = {p["id"] for p in planted}
             drawn = [s["id"] for s in post.structures() if s["id"] in ids] + [d[3].get("id") for d in post.live_sprites(now, lambda x, y: True, 0) if d[3].get("id") in ids]
         rep19 = run_frames(1)
-        caught["placed (none of the planted rows drawn; the monitor names them)"] = not drawn and "placed" in rep19.rules()
+        caught["placed (none of the planted type / provenance rows drawn; the monitor names them)"] = not drawn and "placed" in rep19.rules()
         print("[fake 19] planted %d stands rows -> drawn %r, monitor rules %r" % (len(planted), drawn, sorted(rep19.rules())))
         wblk["placed"] = saved_rows
         scene.land.wear[int(gy) + 12, int(gx) + 12] = 0
+        # 19b. regression: the honest lantern stands, then a trail is worn across its cell (people walk where they like): the
+        #      standing row keeps drawing, the monitor's `placed` rule stays silent (at_placement=False), provenance 0; the same
+        #      cell would now REFUSE a new placement (at_placement=True)
+        wblk["placed"] = saved_rows + [dict(base)]
+        mon._placed_ok.discard("p-0901")
+        mon._placed_bad.pop("p-0901", None)
+        if post is not None:
+            post._valid_cache.clear()
+        for dy_ in (-1, 0, 1):
+            scene.land.wear[int(gy) + dy_, max(0, int(gx) - 2):int(gx) + 3] = 255
+        rep19b = run_frames(2)
+        drawn_b = [d[3].get("id") for d in post.live_sprites(now, lambda x, y: True, 0) if d[3].get("id") == "p-0901"] if post is not None else ["p-0901"]
+        ok_end, why_end = validate_registry(base, at_placement=False, **args)
+        ok_new, why_new = validate_registry(base, at_placement=True, **args)
+        pv_b = scene.land.provenance_violations()
+        caught["placed (a trail worn across a standing lantern never revokes it; a new row there is refused)"] = (
+            "placed" not in rep19b.rules() and bool(drawn_b) and ok_end and (not ok_new) and "trail" in why_new and not pv_b)
+        print("[fake 19b] trail across p-0901 -> monitor rules %r, drawn %r, enduring %s (%s), new placement %s (%s), provenance %r" % (
+            sorted(rep19b.rules()), drawn_b, ok_end, why_end, ok_new, why_new, pv_b))
+        for dy_ in (-1, 0, 1):
+            scene.land.wear[int(gy) + dy_, max(0, int(gx) - 2):int(gx) + 3] = 0
+        wblk["placed"] = saved_rows
+        mon._placed_ok.discard("p-0901")
         scene.world.data["banished"].pop("banished-nobody", None)
         if post is not None:
             post._valid_cache.clear()
