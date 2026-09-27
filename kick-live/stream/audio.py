@@ -489,6 +489,7 @@ class AudioEngine(object):
         self._sun_night: Optional[bool] = None
         self._last_sun_bell_pos = -10 ** 9
         self._last_hammer_pos = -10 ** 9
+        self._placed_steps: Dict[str, int] = {}          # placed item id -> placed_step count (a hammer tick every second step)
         self._chords: List[Tuple[str, str, str]] = CHORDS
         self._chords_next: List[Tuple[str, str, str]] = CHORDS
         self._cache["step_grass"] = self._noise_burst(init_rng, 0.014, LVL_STEP_LAND - 4.0, taps=10, decay=7.0)
@@ -555,7 +556,8 @@ class AudioEngine(object):
                       "world_events": 0, "motifs": 0, "motif_notes": 0, "motifs_dropped": 0, "drips": 0,
                       "self_drips": 0, "steps": 0, "stings": 0, "keeper": 0, "hatches": 0, "world_blocks": 0,
                       "land_blocks": 0, "bells": 0, "gust_bells": 0, "sun_bells": 0, "hammers": 0,
-                      "steps_by": {k: 0 for k in STEP_TIMBRES}, "land_stings": 0}
+                      "steps_by": {k: 0 for k in STEP_TIMBRES}, "land_stings": 0,
+                      "wishes": 0, "placed": 0, "ages": 0}          # IDLEWORLD 2.4 (S1): paper pins, raisings, age turns
         self.land_mode = False
 
     # ================================================================================== events / triggers
@@ -1389,6 +1391,40 @@ class AudioEngine(object):
             self.stats["land_stings"] += 1
         elif typ == "pickup":
             self._land_sting("pickup", self._pip_pan(scene, key, ev.get("x")))
+        elif typ == "wish":
+            # IDLEWORLD 2.4: a paper pinned on the wish post = the pickup sting (a record the person made), panned to the post
+            pan = self._camp_pan(self._land, float(ev.get("x") or 0.0), float(ev.get("y") or 0.0)) if (self._land is not None and ev.get("x") is not None) else self._pip_pan(scene, key)
+            self._land_sting("pickup", pan)
+            self.stats["wishes"] += 1
+        elif typ == "placed":
+            self._placed_steps[str(ev.get("item") or ev.get("id") or "")] = 0     # the raising path starts: hammer on the steps
+        elif typ == "placed_step":
+            # a soft hammer tick every SECOND placed_step (the scene emits steps at <= 1 Hz, so ticks land at <= 0.5 Hz),
+            # never inside HAMMER_GAP_S of the keepers' raising hammer
+            item = str(ev.get("item") or ev.get("id") or "")
+            n = self._placed_steps.get(item, 0) + 1
+            self._placed_steps[item] = n
+            if len(self._placed_steps) > 64:
+                for k in list(self._placed_steps)[:-64]:
+                    self._placed_steps.pop(k, None)
+            if n % 2 == 0 and self._pos - self._last_hammer_pos >= int(HAMMER_GAP_S * 0.5 * self.sr):
+                self._last_hammer_pos = self._pos
+                pan = self._camp_pan(self._land, float(ev.get("x") or 0.0), float(ev.get("y") or 0.0)) if (self._land is not None and ev.get("x") is not None) else 0.0
+                self._add(self._repan(self._cache["hammer"], pan))
+                self.stats["hammers"] += 1
+        elif typ == "placed_ship":
+            # the placed thing stands: the raising chime + rumble (the same sting a keeper raising ends on)
+            self._placed_steps.pop(str(ev.get("item") or ev.get("id") or ""), None)
+            self._add(self._cache["carve"])
+            self._sweep(0.6)
+            self.stats["placed"] += 1
+            self.stats["land_stings"] += 1
+        elif typ == "age":
+            # an age turns (AGES 2.5): every camp's bell once, west to east, then the chord
+            if self._land is not None:
+                self._first_breath_bells(self._land)
+            self._events.append((self._pos + int(1.2 * self.sr), self._cache["ship_chord"]))
+            self.stats["ages"] += 1
         elif typ in ("place", "stack", "drop"):
             pan = self._pip_pan(scene, key, ev.get("x"))
             self._land_sting("stone_click" if str(ev.get("kind") or "stone") == "stone" else "pickup", pan)
@@ -1453,7 +1489,9 @@ class AudioEngine(object):
                 self.trigger("vote", semitones=self._votes_in_round)
                 self._votes_in_round += 1
         elif typ in ("leave_platform", "curl", "uncurl", "blink", "first_light", "forget", "banish", "burrowed",
-                     "credits_start", "credits_end", "seed", "world_error"):
+                     "credits_start", "credits_end", "seed", "world_error",
+                     "day_turn", "refuse", "wish_unpinned", "wish_reclass", "pinned", "errand", "return_line"):
+            # day_turn, refusals and wish re-classes make no sound (IDLEWORLD 2.4)
             if typ in ("banish", "burrowed"):
                 self._walking.pop(key, None)
         elif typ == "seed_land":
@@ -2021,7 +2059,21 @@ if __name__ == "__main__":
             if i == 500:
                 evs.append({"type": "cairn_named", "x": mx, "y": my})
             if i == 520:
-                evs.append({"type": "wake", "pip": names[1], "camp": [mx, my + 40], "away_s": 8 * 86400, "x": mx, "y": my + 40})
+                evs.append({"type": "return", "pip": names[1], "camp": [mx, my + 40], "away_s": 8 * 86400, "x": mx, "y": my + 40})
+            if i == 530:
+                evs.append({"type": "wish", "pip": names[2], "x": mx + 34, "y": my + 10, "noun": "a lantern"})    # a paper on the post
+            # the placed raising after the camera reaches the Ford (a 50 s run: `--seconds 50`), clear of the keepers' raising
+            if i == 1210:
+                evs.append({"type": "placed", "item": "p-0001", "owner": names[2], "x": mx + 30, "y": my + 46})
+            if 1210 < i <= 1210 + 30 * 6 and (i - 1210) % 30 == 0:
+                evs.append({"type": "placed_step", "item": "p-0001", "x": mx + 30, "y": my + 46})                 # <= 1 Hz
+            if i == 1210 + 30 * 7:
+                evs.append({"type": "placed_ship", "item": "p-0001", "x": mx + 30, "y": my + 46})
+            if i == 1450:
+                evs.append({"type": "age", "age": 1, "name": "the Steading"})
+            if i == 1460:
+                evs.append({"type": "day_turn"})
+                evs.append({"type": "refuse", "pip": names[0]})
             if i == 560:
                 scene.keepers.raising = {"name": "the Ford bridge", "x": ford["x"], "y": ford["y"], "progress": 0.0}
             if i == 560 + 180:
@@ -2104,6 +2156,14 @@ if __name__ == "__main__":
         assert all(sb[k] > 0 for k in STEP_TIMBRES), sb
         assert e.stats["bells"] >= 3 + 3 and e.stats["gust_bells"] >= 1, (e.stats["bells"], e.stats["gust_bells"])
         assert e.stats["hammers"] >= 2 and e.stats["sun_bells"] == 1 and e.stats["land_stings"] >= 10, e.stats
+        # IDLEWORLD 2.4 (S1): wish -> pickup sting, placed_step -> hammer on every second step (3 of 6), placed_ship ->
+        # chime, age -> bells west to east (3 camps) + chord, return after 8 days -> three bells; day_turn / refuse silent
+        if frames >= 1470:                                              # the S1 script needs `--seconds 50`
+            assert e.stats["wishes"] == 1 and e.stats["placed"] == 1 and e.stats["ages"] == 1, e.stats
+            assert e.stats["hammers"] >= 2 + 3, e.stats["hammers"]
+            assert e.stats["bells"] >= 3 + 3 + 3, e.stats["bells"]      # first breath 3 + homecoming 3 + age 3
+            print("S1 audio mapping: wishes=%d placed=%d ages=%d hammers=%d bells=%d (day_turn / refuse made no sound)" % (
+                e.stats["wishes"], e.stats["placed"], e.stats["ages"], e.stats["hammers"], e.stats["bells"]))
         assert at("river", 999) > at("river", 390) * 1.5 and at("shore", 699) > at("shore", 390) * 1.8, "water beds must rise toward water"
         assert max(v for f_, v in stage["fire"] if f_ < 780) == 0.0, "no fire may sound before a real person lit the hearth"
         assert at("fire", frames - 1) > 0.5, "the lit hearth in view must bring the crackle up"

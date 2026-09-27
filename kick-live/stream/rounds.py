@@ -47,8 +47,8 @@ Test hooks (KL_SEED, a non-180 s round, a redirected CHANGELOG) are REFUSED agai
 dir (~/.local/share/kick-live/run) so a test can never drive the live show.
 
 World events (OPENWORLD.md 11): the MENU is a list of WORLD EVENTS on LONGGRASS (weather rain/wind/fog/clear,
-expedition to the Ford/Fell/Shore/Wood, bonfire, harvest day, raising day, colony_rule, music, light, chaos; anarchy
-v1.1 not drawn yet). The tally is EMBODIED at the three waystones on the Moot: when a booted world scene is attached
+expedition to the Ford/Fell/Shore/Wood, bonfire, harvest day, hauling day, gathering at the Moot, music, light, chaos;
+anarchy v1.1 not drawn yet). The tally is EMBODIED at the three waystones on the Moot: when a booted world scene is attached
 (engine.attach_world(scene), or discovered as `.scene` on a registered panel / `SCENE` on a panel or scene module)
 the count under each letter is len(scene.platform_counts()[letter]) (the API name is kept; it reads the waystone
 slots), the pips STANDING at that waystone, keys run through display_name (builder #N on a blocklist hit), voters
@@ -71,10 +71,16 @@ line, never drawn: the board shows a land pick as muted amber). Ship effects lan
   harvest day  every gold field whose owner is HERE is harvested through land.harvest (sowers credited in the text);
                everyone here fed; an away owner's field keeps growing (AGES 9: the cards touch records only through
                here settlers)
-  raising day  micro.raising_day == "on" for one round: RoundEngine.stones_double(micro, now) tells the stack verb
-               to record two stones per stack (THE COMMONS graft)
-  colony_rule  behaviour.colony_rule (unchanged semantics in 2D)
-Timed events last one round (`<param>_until`) and then fall back to their baseline (clear / free / off); instant
+  hauling day  micro.hauling_day == "on" for one round (AGES 3 / IDLEWORLD 1.3): the engine writes
+               bridge.hauling_until = now + round_s and ChatBridge._check_verb relaxes `stack` to 20 s / 6 for the
+               window; ONE record per act (stones_double and the `x2` title are gone: a stone is a stack record)
+  gathering    AGES 3, the ONE collective card: every body on the land, here or away, is drawn to the Moot ring by the
+               land itself through Behaviour.gather_to (then=`gather`: no record, no verb, a standing voter keeps its
+               stone); the copy is `gathering at the Moot: N gathered`, N = len(bodies that set off). colony_rule
+               follow / scatter are RETIRED (Behaviour ignores them since row 1: the board shipped `follow the newest
+               voice` with 0 votes and nothing moved); `free` is the baseline, never a card; `huddle` survives only as
+               the fallback for a scene without gather_to (the cave): micro.colony_rule = huddle for one round.
+Timed events last one round (`<param>_until`) and then fall back to their baseline (clear / off); instant
 ones are recorded in micro.last_event, never as a sticky micro key. version.* and the ships.jsonl line shape are
 unchanged. Against the cave scene (hollow.py, still on disk for the rollback week) the same code degrades honestly:
 no land -> no hearth, no fields, `go` refused -> "nobody set off".
@@ -95,7 +101,7 @@ World round test (real StateStore + ChatBridge + CaveScene, 3 real chat records 
 per event, honesty asserted every frame):
     RUN_DIR=/tmp/pip-rounds $PYTHON -m stream.rounds --world-test --run-dir /tmp/pip-rounds
 Land effects test (a real schema-2 WorldState + Land + terrain + Nature under a duck-typed LONGGRASS scene: every
-MENU effect lands through the world API, arrival stones, hearth honesty, raising day):
+MENU effect lands through the world API, arrival stones, hearth honesty, hauling day, the gathering card):
     RUN_DIR=/tmp/lg-rounds $PYTHON -m stream.rounds --land-test --run-dir /tmp/lg-rounds
 """
 from __future__ import annotations
@@ -126,7 +132,7 @@ CANONICAL_RUN_DIRS = tuple(os.path.realpath(d) for d in
 
 # OPENWORLD.md 11: the parameter menu is WORLD EVENTS on LONGGRASS. One entry per state.micro key; a ship lands on the
 # whole land at once. `timed` entries last one round (round_s) and then fall back to `baseline` (weather -> clear,
-# colony_rule -> free, raising_day -> off) so a rain round never leaves fog behind. `instant` entries happen once at
+# hauling_day -> off) so a rain round never leaves fog behind. `instant` entries happen once at
 # ship time and are recorded in micro.last_event, never as a sticky micro key. Titles are the spec's waystone titles
 # (OPENWORLD.md 11 table) and what ships.jsonl / CHANGELOG / the RESULT record; `--check-titles` keeps them short.
 # anarchy (v1.1, rare) is not drawn yet.
@@ -142,12 +148,17 @@ MENU: List[Dict] = [
      "instant": True},
     {"param": "harvest_day",  "values": ["now"],                                                "title": "harvest day",
      "instant": True},
-    {"param": "raising_day",  "values": ["on"],                                                 "title": "raising day: stones x2",
+    # AGES 3: `raising day: stones x2` -> hauling day (stack 20 s / 6 for the round; one record per act). The title names
+    # the next age of the ladder once land.age_forward exists (W4); until then the Steading (age 1) is the first rung.
+    # IDLEWORLD 1.3 wrote `hauling day · stones for the Steading`: that wraps to three HN 22 lines in the 184 px title
+    # column (--check-titles), so the card says the same thing in the form that fits.
+    {"param": "hauling_day",  "values": ["on"],                                                 "title": "hauling day · the Steading's stones",
      "timed": True, "baseline": "off"},
-    {"param": "colony_rule",  "values": ["follow", "scatter", "huddle", "free"],               "title": "{v}",
-     "labels": {"follow": "follow the newest voice", "scatter": "scatter across the land",
-                "huddle": "huddle on the Moot", "free": "wander free"},
-     "timed": True, "baseline": "free"},
+    # AGES 3: the one collective card. colony_rule follow / scatter / huddle / free are gone from the ballot: Behaviour
+    # honours none of them but huddle since row 1, `free` is the baseline and never a card. Instant: the land draws every
+    # body to the Moot ring through Behaviour.gather_to (no record), then errands resume.
+    {"param": "gathering",    "values": ["now"],                                                "title": "gathering at the Moot",
+     "instant": True},
     # music: as today (audio.py reads micro.audio_tempo / state.audio.tempo, pattern)
     {"param": "audio_tempo",  "values": [72, 85, 100],                                          "title": "tempo: {v} bpm"},
     {"param": "audio_pattern", "values": ["pad_pulse", "pad_only", "pulse_hats", "half_time"], "title": "{v}",
@@ -173,7 +184,15 @@ REAL_PARAMS: List[str] = [m["param"] for m in MENU if m["param"] != CHAOS_PARAM]
 TIMED_PARAMS: Tuple[str, ...] = tuple(m["param"] for m in MENU if m.get("timed"))
 INSTANT_PARAMS: Tuple[str, ...] = tuple(m["param"] for m in MENU if m.get("instant"))
 BASELINE: Dict[str, Any] = {m["param"]: m["baseline"] for m in MENU if "baseline" in m}
-WORLD_EVENT_PARAMS = ("weather", "expedition", "bonfire", "harvest_day", "raising_day", "colony_rule")
+WORLD_EVENT_PARAMS = ("weather", "expedition", "bonfire", "harvest_day", "hauling_day", "gathering")
+# The huddle fallback (a scene without Behaviour.gather_to, e.g. the cave): the gathering card sets micro.colony_rule =
+# huddle for one round window (the scene reads micro.colony_rule every frame) and _expire_events returns it to `free`.
+COLONY_RULE_KEY, COLONY_RULE_FALLBACK, COLONY_RULE_BASELINE = "colony_rule", "huddle", "free"
+COPY_REFUSED_KEEP = 200                 # promotions whose text failed the write-time copy check (IDLEWORLD 5.1), by merge_key
+WISHES_FILE = "wishes.jsonl"            # IDLEWORLD 2.1: the append-only wish ledger, one row per moderated non-vote record
+LEDGER_IDS_KEEP = 4000                  # recent ids remembered so a re-handed record never writes a second row
+PROMO_WAIT_KEEP = 200                   # over-cap promotions waiting for a board slot (the ledger has them anyway)
+CAP_LEDGER_TEXT, CAP_PROMO_TEXT = 120, 60
 RAIN_BOOST_S = 6 * 3600.0               # OPENWORLD.md 11: a rain round advances fields and trees "a fraction" (a quarter day)
 EXPEDITION_ARRIVE_CELLS = 24.0          # a walker this close to the landmark has arrived: its cairn stone is placed
 KEEPER_FRESH_S = 120.0                  # OPENWORLD.md 10: a heartbeat younger than this = keeper on duty (beacon lit)
@@ -470,6 +489,14 @@ class RoundEngine(object):
                 self.log("WARNING: %s resolves to %s, outside run_dir %s (stale env.sh paths? set RUN_DIR before sourcing it)"
                          % (what, p, run_dir))
         self._ship_until: Optional[float] = None
+        self.wishes_path = os.path.join(run_dir, WISHES_FILE)
+        self._ledger_ids: Dict[str, bool] = {}               # ordered set of recent ledger ids (IDLEWORLD 2.1 write site)
+        self._promo_wait: List[Dict] = []                    # promotions the board caps deferred (IDLEWORLD 2.3 tier 2)
+        self._now: Optional[float] = None
+        self.ledger_rows = 0
+        self.promotions = 0
+        self.copy_refused = 0                                # promotions refused by the write-time copy check (IDLEWORLD 5.1)
+        self._copy_refused_keys: Dict[str, bool] = {}        # their merge_keys: refused once, logged once
         self._last_write: Optional[float] = None
         self._last_counters_write: Optional[float] = None
         self._last_tally_sig = None
@@ -637,12 +664,54 @@ class RoundEngine(object):
         label = (entry.get("labels") or {}).get(v, v)
         return entry["title"].format(v=label)
 
-    def _option_for(self, param: str, current: Dict, letter: str) -> Dict:
+    def _option_for(self, param: str, current: Dict, letter: str, value: Any = None, asks: int = 0) -> Dict:
         entry = MENU_BY_PARAM[param]
-        choices = [v for v in entry["values"] if v != current.get(param)] or list(entry["values"])
-        v = self._rng.choice(choices)
-        return {"letter": letter, "id": "micro.%s.%s" % (param, v), "title": self._title(entry, v),
-                "source": "menu", "votes": 0, "voters": [], "param": param, "value": v}
+        if value is None:
+            choices = [v for v in entry["values"] if v != current.get(param)] or list(entry["values"])
+            v = self._rng.choice(choices)
+        else:
+            v = value
+        title = self._title(entry, v)
+        opt = {"letter": letter, "id": "micro.%s.%s" % (param, v), "title": title,
+               "source": "menu", "votes": 0, "voters": [], "param": param, "value": v}
+        if asks > 0:
+            # IDLEWORLD 2.3 tier 2: a wished card carries its ask count in the TITLE (`fog · 3 ask`), a len() over distinct
+            # askers the scene counted; the board check compares drawn titles to board_title, so the suffix is part of it
+            opt["title"] = "%s · %d ask" % (title, int(asks))
+            opt["asks"] = int(asks)
+        return opt
+
+    def _menu_wishes(self, now: Optional[float], exclude_param: Optional[str], hidden: set) -> List[Tuple[int, str, Any]]:
+        """[(askers, param, value)] most-asked first (ties in MENU order) from scene.menu_wishes() when the scene has it
+        (W6): {(param, value): len(distinct askers in the open window)}. Never a hidden (stranger-gated) or excluded
+        param, never a value MENU does not list. [] without a booted scene or the method."""
+        if now is None:
+            return []
+        sc = self._booted_world(now)
+        fn = getattr(sc, "menu_wishes", None)
+        if not callable(fn):
+            return []
+        try:
+            asked = fn() or {}
+        except Exception as e:
+            self.log("scene.menu_wishes failed: %r" % (e,))
+            return []
+        out: List[Tuple[int, int, str, Any]] = []
+        for k, n in dict(asked).items():
+            try:
+                param, value = k
+                n = int(n)
+            except Exception:
+                continue
+            if n <= 0 or param == exclude_param or param in hidden or param not in MENU_BY_PARAM:
+                continue
+            entry = MENU_BY_PARAM[param]
+            match = next((v for v in entry["values"] if v == value or str(v) == str(value)), None)
+            if match is None:
+                continue
+            out.append((-n, MENU.index(entry), param, match))
+        out.sort(key=lambda r: (r[0], r[1]))
+        return [(-a, p, v) for a, _i, p, v in out]
 
     def _pick_idea(self, s: Dict) -> Optional[Dict]:
         ideas = [i for i in (s.get("ideas") or []) if isinstance(i, dict)
@@ -662,14 +731,16 @@ class RoundEngine(object):
         except Exception:
             return True
 
-    def draw_options(self, s: Dict, exclude_param: Optional[str] = None) -> List[Dict]:
-        """3 options: one queued instant !idea when present, the rest from MENU. Never `exclude_param`
-        (the parameter that just shipped), never STRANGER_HIDDEN while stranger_mode(s), and prefer parameters
-        that were not on the previous ballot."""
+    def draw_options(self, s: Dict, exclude_param: Optional[str] = None, now: Optional[float] = None) -> List[Dict]:
+        """3 options: one queued instant !idea when present, the most-asked menu wish when the scene reports one
+        (`fog · 3 ask`, IDLEWORLD 2.3 tier 2), the rest from MENU. Never `exclude_param` (the parameter that just
+        shipped), never STRANGER_HIDDEN while stranger_mode(s), and prefer parameters that were not on the previous
+        ballot."""
         micro = s.get("micro") or {}
         avoid = set(self._prev_ballot_params)
         hidden = set(STRANGER_HIDDEN) if self.stranger_mode(s) else set()
         pool = [m["param"] for m in MENU if m["param"] != exclude_param and m["param"] not in hidden]
+        wished = self._menu_wishes(now if now is not None else self._now, exclude_param, hidden)
         fresh = [p for p in pool if p not in avoid]
         stale = [p for p in pool if p in avoid]
         self._rng.shuffle(fresh)
@@ -688,6 +759,12 @@ class RoundEngine(object):
             options.append(opt)
             idea["status"] = "ballot"
             idea["ballots"] = int(idea.get("ballots") or 0) + 1
+        taken = {o["param"] for o in options if o.get("param")}
+        wished = [w for w in wished if w[1] not in taken]           # never two cards on one param (the idea's param is taken)
+        if wished and letters:
+            asks, wparam, wvalue = wished[0]
+            options.append(self._option_for(wparam, micro, letters.pop(), value=wvalue, asks=asks))
+            params = [p for p in params if p != wparam]
         while letters:
             if not params:
                 params = [m["param"] for m in MENU if m["param"] != exclude_param and m["param"] not in hidden]
@@ -702,7 +779,7 @@ class RoundEngine(object):
         rnd["phase"] = "open"
         rnd["opened_ts"] = epoch_to_iso(now)
         rnd["deadline_ts"] = epoch_to_iso(now + self.round_s)
-        rnd["options"] = self.draw_options(s, exclude_param)
+        rnd["options"] = self.draw_options(s, exclude_param, now)
         self._ship_until = None
         self._last_tally_sig = None
         self.bridge.reset_round(now)
@@ -889,13 +966,8 @@ class RoundEngine(object):
         keeper heartbeat is the beacon's business, not a sentence's."""
         return "nobody stood at a stone · the land chose %s" % (letter or "one")
 
-    @staticmethod
-    def stones_double(micro: Optional[Dict], now: float) -> bool:
-        """True while a `raising day` round is on: the stack verb records TWO stones per stack (land.stack twice)."""
-        if not isinstance(micro, dict) or micro.get("raising_day") != "on":
-            return False
-        u = iso_to_epoch(micro.get("raising_day_until"))
-        return u is None or now < u
+    # stones_double() is gone (AGES 3): a hauling day relaxes the stack cooldown / cap through bridge.hauling_until and
+    # every stone stays ONE land.stack record.
 
     def _send_present(self, sc, verb: str, arg: str, now: float) -> Tuple[List[str], List[str]]:
         """scene.command(verb, key, arg=...) for every HERE settler (behaviour.present(), never awake() = on the land incl.
@@ -918,29 +990,46 @@ class RoundEngine(object):
 
     _send_awake = _send_present                                   # legacy name (one release)
 
-    def _gather_away(self, sc, now: float) -> int:
-        """The gathering card (AGES 1.3): every AWAY body on the land is drawn to the Moot by the land itself through
-        Behaviour.gather_to (then=`gather`: no record, no wear, no verb); returns how many set off. A scene without
-        gather_to (a duck, the cave) gathers nobody who is away."""
-        b = sc.behaviour
-        gather = getattr(b, "gather_to", None)
+    @staticmethod
+    def _gather_target(sc) -> Optional[Tuple[Any, Tuple[float, float]]]:
+        """(Behaviour.gather_to, the Moot cell) when the scene exposes both (the row-1 Steading does; the cave has the
+        Behaviour but no Land / Moot, a bare duck has neither), else None. steading.command has no `gather` verb by design:
+        a verb is a person's and the scene refuses an away actor before any verb runs, while the gathering card moves
+        bodies like rain (AGES 1.3), so it reaches the behaviour through the scene's `.behaviour`."""
+        b = getattr(sc, "behaviour", None)
+        fn = getattr(b, "gather_to", None) if b is not None else None
         land = _land_of(sc)
-        if not callable(gather) or land is None or not getattr(land, "moot", None):
+        moot = getattr(land, "moot", None) if land is not None else None
+        if not callable(fn) or not moot:
+            return None
+        return fn, (float(moot[0]), float(moot[1]))
+
+    def _gather_bodies(self, sc, now: float, away_only: bool) -> int:
+        """Every body on the land (AGES 3, the gathering card) or only the AWAY ones (the bonfire: here settlers take the
+        `go moot` verb walk) is drawn to the Moot by the land itself through Behaviour.gather_to (then=`gather`: no record,
+        no verb, a standing voter keeps its stone); returns how many set off (a len() over real walks). A scene without
+        gather_to or a Moot gathers nobody here."""
+        tgt = self._gather_target(sc)
+        if tgt is None:
             return 0
+        gather, moot = tgt
         try:
-            on_land = list(b.awake())
+            on_land = list(sc.behaviour.awake())
         except Exception:
             return 0
         n = 0
         for e in on_land:
-            if _is_here(e, now):
+            if away_only and _is_here(e, now):
                 continue
             try:
-                if gather(e.key, (float(land.moot[0]), float(land.moot[1])), now):
+                if gather(e.key, moot, now):
                     n += 1
             except Exception:
                 continue
         return n
+
+    def _gather_away(self, sc, now: float) -> int:
+        return self._gather_bodies(sc, now, away_only=True)
 
     def _feast(self, sc, now: float, by: Optional[str]) -> int:
         """Every HERE settler fed at once through Behaviour.care_received (+ a `feed` event each: the chord and hearts).
@@ -961,8 +1050,8 @@ class RoundEngine(object):
 
     def _world_effect(self, s: Dict, param: str, value: Any, now: float, by: Optional[str]) -> Optional[str]:
         """Land a shipped event on the land through the world API only (scene.command / Behaviour / Land methods).
-        Returns plain words about what the world did, or None when nothing could land (no booted world). Weather and
-        colony_rule also reach the scene through state.micro every frame, so they work without this."""
+        Returns plain words about what the world did, or None when nothing could land (no booted world). Weather also
+        reaches the scene through state.micro every frame, so it works without this."""
         sc = self._booted_world(now)
         land = _land_of(sc)
         micro = s.setdefault("micro", {})
@@ -1063,13 +1152,38 @@ class RoundEngine(object):
                         pass
             else:
                 text = "harvest day: no field is gold yet · the fields keep growing"
-        elif param == "raising_day":
-            text = "raising day: every stone stacked counts double for %d min" % int(round(self.round_s / 60.0))
-        elif param == "colony_rule":
-            if sc is not None:
-                sc.behaviour.colony_rule = value if value in ("free", "follow", "scatter", "huddle") else "free"
-            text = {"follow": "pips follow the newest voice", "scatter": "pips spread across the land",
-                    "huddle": "pips gather on the Moot"}.get(value, "pips wander free")
+        elif param == "hauling_day":
+            # AGES 3 / IDLEWORLD 1.3: the stack verb relaxes to 20 s / 6 for the round window (ChatBridge._check_verb reads
+            # bridge.hauling_until); every stone is still ONE record. No stones_double, no x2.
+            try:
+                self.bridge.hauling_until = now + self.round_s
+            except Exception as e:
+                self.log("bridge.hauling_until failed: %r" % (e,))
+            text = "hauling day: stack stone every 20 s, six each, for %d min" % int(round(self.round_s / 60.0))
+        elif param == "gathering":
+            # AGES 3: the one collective card. Every body on the land, here or away, is drawn to the Moot ring by the land
+            # (Behaviour.gather_to: no record, no verb). The copy counts who set off, never what will happen. A scene
+            # without gather_to (the cave, a bare duck) falls back to colony_rule huddle for one round window: the scene
+            # reads micro.colony_rule every frame and every errand aims at the Moot until _expire_events frees it.
+            if sc is None:
+                return None
+            if self._gather_target(sc) is not None:
+                n = self._gather_bodies(sc, now, away_only=False)
+                text = "gathering at the Moot: %d gathered" % n
+            else:
+                micro[COLONY_RULE_KEY] = COLONY_RULE_FALLBACK
+                micro[COLONY_RULE_KEY + "_until"] = epoch_to_iso(now + self.round_s)
+                if hasattr(sc.behaviour, "colony_rule"):
+                    sc.behaviour.colony_rule = COLONY_RULE_FALLBACK
+                try:
+                    n = len(list(sc.behaviour.awake()))
+                except Exception:
+                    n = 0
+                text = "gathering at the Moot: %d on the land · every errand aims at the Moot" % n
+            try:
+                sc.behaviour.events.append({"type": "gathering", "by": by, "gathered": n})
+            except Exception:
+                pass
         else:
             return None
         if sc is not None:
@@ -1086,7 +1200,7 @@ class RoundEngine(object):
 
     def _events_due(self, micro: Dict, now: float) -> bool:
         """Cheap: a timed event expired, or an expedition is walking and the scene rendered a frame since we looked."""
-        for param in TIMED_PARAMS:
+        for param in TIMED_PARAMS + (COLONY_RULE_KEY,):
             u = self._until(micro, param)
             if u is not None and now >= u:
                 return True
@@ -1101,17 +1215,22 @@ class RoundEngine(object):
         """Timed events last one round (OPENWORLD.md 11 '3 min unless once'); afterwards the baseline returns."""
         micro = s.setdefault("micro", {})
         dirty = False
-        for param in TIMED_PARAMS:
+        hu = self._until(micro, "hauling_day")
+        if micro.get("hauling_day") == "on" and hu is not None and now < hu and getattr(self.bridge, "hauling_until", None) != hu:
+            self.bridge.hauling_until = hu                  # a compositor restart inside a hauling round keeps the window
+        for param in TIMED_PARAMS + (COLONY_RULE_KEY,):
             u = self._until(micro, param)
             if u is None or now < u:
                 continue
-            base = BASELINE.get(param)
+            base = BASELINE.get(param, COLONY_RULE_BASELINE)
             micro[param] = base
             micro.pop(param + "_until", None)
             sc = self._booted_world(now)
-            if param == "colony_rule" and sc is not None:
-                sc.behaviour.colony_rule = base
-            self._activity("world", "%s over: back to %s" % (param.replace("_", " "), base), now)
+            if param == "hauling_day":
+                self.bridge.hauling_until = None
+            if param == COLONY_RULE_KEY and sc is not None and hasattr(sc.behaviour, "colony_rule"):
+                sc.behaviour.colony_rule = base                    # the huddle fallback of a gathering card is over
+            self._activity("world", "%s over: back to %s" % ("gathering" if param == COLONY_RULE_KEY else param.replace("_", " "), base), now)
             dirty = True
         ex = micro.get("expedition")
         if isinstance(ex, dict):
@@ -1308,11 +1427,140 @@ class RoundEngine(object):
             self.log("CHANGELOG append failed: %r" % (e,))
 
     # ------------------------------------------------------------------ commands from chat
+    def _ledger_row(self, s: Dict, m: Dict, now: float) -> bool:
+        """IDLEWORLD 2.1 write site: ONE row in $RUN_DIR/wishes.jsonl for every moderated record that is not a vote, a mod
+        command or history (plain incl. verb-parsed, !idea, !theme, !ask). Append-only, one syscall, never state.json;
+        the board's caps never decide what is remembered. The id is the chat id (the dedupe key, matches chat.jsonl)."""
+        mid = m.get("id")
+        if not mid or m.get("history") or m.get("dropped"):
+            return False
+        mid = str(mid)
+        if mid in self._ledger_ids:
+            return False
+        kind = str(m.get("kind") or "plain")
+        text = (m.get("arg") if kind in ("idea", "theme", "ask") else m.get("text_clean")) or ""
+        v = m.get("verb")
+        row = {"id": mid, "ts": epoch_to_iso(float(m.get("t") or now)), "key": str(m.get("name") or "").lower(),
+               "by": str(m.get("display_name") or m.get("name") or "?"), "n": m.get("builder_n"), "kind": kind,
+               "text": str(text)[:CAP_LEDGER_TEXT], "verb": (v.get("verb") if isinstance(v, dict) else None),
+               "hint": m.get("hint"), "wish": bool(m.get("wish")), "head": m.get("head"),
+               "first_ever": bool(m.get("first_ever")), "session": (s.get("session") or {}).get("id"), "src": "live"}
+        if not self._append_jsonl(self.wishes_path, row):
+            return False
+        self._ledger_ids[mid] = True
+        self.ledger_rows += 1
+        if len(self._ledger_ids) > LEDGER_IDS_KEEP:
+            for k in list(self._ledger_ids)[: len(self._ledger_ids) - LEDGER_IDS_KEEP]:
+                self._ledger_ids.pop(k, None)
+        return True
+
+    def copy_hits(self, text: str) -> List[str]:
+        """IDLEWORLD 5.1 `validated before drawn`: a board title composed from a wish must clear the banned-copy list, the
+        day / version / clock patterns (compositor.Compositor.banned_copy_hits, the same gate the self-test applies to
+        drawn strings) and the bridge's blocklist at WRITE time. [] when clean; without the compositor module (a bare
+        harness) only the blocklist speaks."""
+        hits: List[str] = []
+        try:
+            from stream.compositor import Compositor           # lazy: compositor imports rounds at load, never the reverse
+            hits = list(Compositor.banned_copy_hits([text]))
+        except Exception:
+            pass
+        words = getattr(self.bridge, "words", None)
+        blocked = getattr(words, "blocked", None)
+        try:
+            if callable(blocked) and blocked(text):
+                hits.append("blocklist")
+        except Exception:
+            pass
+        return hits
+
+    def _drain_promotions(self, s: Dict, now: float) -> bool:
+        """IDLEWORLD 2.3 tier 2: scene.take_promotions() (W6) hands {"text", "by", "plus_by", "merge_key", "wish_ids"} rows
+        for mechanic wishes and every !idea the scene classified; each becomes ONE ideas[] row exactly as _apply_chat
+        writes a typed !idea (next_idea_id, class pending, status open) with source "wish", deduped against the rows still
+        on the board (open / queued / ballot) by merge_key, text or a shared wish id (a repeat by another person is plus
+        += 1; a cluster whose idea already shipped or closed opens a FRESH row), under the board cap of 3 open per person:
+        an over-cap promotion waits here and is retried every frame, never lost (the ledger has it). A text that fails
+        copy_hits() never lands: refused once per merge_key, logged once (5.1: a failed check draws nothing and logs one
+        line). Without the method nothing happens."""
+        sc = self._booted_world(now)
+        fn = getattr(sc, "take_promotions", None)
+        new: List[Dict] = []
+        if callable(fn):
+            try:
+                new = list(fn() or [])
+            except Exception as e:
+                self.log("scene.take_promotions failed: %r" % (e,))
+                new = []
+        if not new and not self._promo_wait:
+            return False
+        queue, self._promo_wait = self._promo_wait + new, []
+        ideas = s.setdefault("ideas", [])
+        dirty = False
+        for pr in queue:
+            if not isinstance(pr, dict):
+                continue
+            text = str(pr.get("text") or "").strip()[:CAP_PROMO_TEXT]
+            who = str(pr.get("by") or "").strip()
+            if not text or not who:
+                continue
+            mk = str(pr.get("merge_key") or text.lower())
+            plus_by = []
+            for x in pr.get("plus_by") or []:
+                x = str(x)
+                if x and x != who and x not in plus_by:
+                    plus_by.append(x)
+            wish_ids = [str(w) for w in (pr.get("wish_ids") or []) if w][:50]
+            wset = set(wish_ids)
+            dup = next((i for i in ideas if isinstance(i, dict) and i.get("status") in ("open", "queued", "ballot")
+                        and (i.get("merge_key") == mk or (i.get("text") or "").lower() == text.lower()
+                             or bool(wset & set(i.get("wish_ids") or [])))), None)
+            if dup is not None:
+                pb = dup.setdefault("plus_by", [])
+                for p in [who] + plus_by:
+                    if p != dup.get("by") and p not in pb:
+                        pb.append(p)
+                        dup["plus"] = int(dup.get("plus") or 0) + 1
+                        dirty = True
+                wids = dup.setdefault("wish_ids", [])
+                for w in wish_ids:
+                    if w not in wids and len(wids) < 50:
+                        wids.append(w)
+                        dirty = True
+                continue
+            hits = self.copy_hits(text)
+            if hits:
+                if mk not in self._copy_refused_keys:      # refused once, logged once; the ledger keeps the record
+                    self._copy_refused_keys[mk] = True
+                    if len(self._copy_refused_keys) > COPY_REFUSED_KEEP:
+                        for k_ in list(self._copy_refused_keys)[:-COPY_REFUSED_KEEP]:
+                            self._copy_refused_keys.pop(k_, None)
+                    self.copy_refused += 1
+                    self.log("promotion refused by the copy check (%s): merge_key %r" % (",".join(hits)[:60], mk))
+                continue
+            mine = [i for i in ideas if i.get("by") == who and i.get("status") in ("open", "queued", "ballot")]
+            if len(mine) >= 3:
+                self._promo_wait.append(pr)                # the board cap: waits for a slot, never lost (CONCEPT 7)
+                continue
+            ideas.append({"id": next_idea_id(ideas), "text": text, "by": who, "ts": epoch_to_iso(now), "plus": len(plus_by),
+                          "plus_by": plus_by, "class": "pending", "status": "open", "reason": None, "source": "wish",
+                          "merge_key": mk, "wish_ids": wish_ids})
+            self.promotions += 1
+            self._activity("world", "@%s's wish is on the board: %s" % (who, text), now)
+            if len(ideas) > IDEAS_KEEP:
+                del ideas[:-IDEAS_KEEP]
+            dirty = True
+        if len(self._promo_wait) > PROMO_WAIT_KEEP:
+            del self._promo_wait[:-PROMO_WAIT_KEEP]
+        return dirty
+
     def _apply_chat(self, s: Dict, chat: List[Dict], now: float) -> bool:
         dirty = False
         for m in chat or []:
             kind = m.get("kind")
             who = m.get("display_name") or m.get("name") or "chat"
+            if kind in ("plain", "idea", "theme", "ask") and not m.get("history") and not m.get("dropped"):
+                self._ledger_row(s, m, now)               # the ledger is a run-dir file, never state.json: no dirty
             if kind == "theme" and m.get("accepted") and m.get("arg") in L.PRESETS:
                 s.setdefault("theme", {}).update({"preset": m["arg"], "set_by": who, "set_ts": epoch_to_iso(now),
                                                   "cooldown_until": epoch_to_iso(now + 60)})
@@ -1333,8 +1581,11 @@ class RoundEngine(object):
                     continue
                 if recent or len(mine) >= 3:
                     continue    # 1 per user per 3 min, 3 open per user (CONCEPT 7)
-                ideas.append({"id": next_idea_id(ideas), "text": text, "by": who, "ts": epoch_to_iso(now),
-                              "plus": 0, "class": "pending", "status": "open", "reason": None})
+                row = {"id": next_idea_id(ideas), "text": text, "by": who, "ts": epoch_to_iso(now),
+                       "plus": 0, "class": "pending", "status": "open", "reason": None}
+                if m.get("id"):
+                    row["wish_ids"] = [str(m["id"])]      # the ledger id: a W6 promotion of this !idea merges on it (2.3 tier 2)
+                ideas.append(row)
                 self._activity("chat", "@%s nominated: %s" % (who, text), now)
                 if len(ideas) > IDEAS_KEEP:
                     del ideas[:-IDEAS_KEEP]
@@ -1419,8 +1670,12 @@ class RoundEngine(object):
             self.open_round(s, now, exclude_param=excl)
         micro = s.setdefault("micro", {})
         micro.pop(CHAOS_PARAM, None)
-        for p_, base in BASELINE.items():           # weather / colony_rule baselines so "a value it does not have" works
+        for p_, base in BASELINE.items():           # weather / hauling_day baselines so "a value it does not have" works
             micro.setdefault(p_, base)
+        micro.setdefault(COLONY_RULE_KEY, COLONY_RULE_BASELINE)   # the scene reads it every frame; `free` is never a card
+        if micro.get(COLONY_RULE_KEY) not in (COLONY_RULE_BASELINE, COLONY_RULE_FALLBACK):
+            micro[COLONY_RULE_KEY] = COLONY_RULE_BASELINE          # a stale follow / scatter from before AGES 3 is freed
+            micro.pop(COLONY_RULE_KEY + "_until", None)
         micro.pop("dig_site", None)                 # the cave's dig site: not a LONGGRASS event
         micro.setdefault("expedition", None)
         sess = s.setdefault("session", {})
@@ -1434,6 +1689,15 @@ class RoundEngine(object):
         """Cheap read-only check: is there anything to do this frame? Keeps the per-frame cost near zero."""
         if not self._booted or chat or self.bridge.mod_actions:
             return True
+        if self._promo_wait:
+            return True                                  # a deferred promotion retries every frame (IDLEWORLD 2.3 tier 2)
+        pp = getattr(self._booted_world(now), "promotions_pending", None)
+        if callable(pp):
+            try:
+                if pp():
+                    return True                          # the scene says a promotion waits (W6 hook; else the 5 s cadence drains it)
+            except Exception:
+                pass
         if self._last_counters_write is None or now - self._last_counters_write >= COUNTERS_EVERY_S:
             return True
         s = self.store.state
@@ -1483,6 +1747,7 @@ class RoundEngine(object):
                 self._activity("compositor", "round engine tick failed: %s" % traceback.format_exc().strip().splitlines()[-1][:150], now)
 
     def _tick(self, now: float, ctx, chat: Optional[List[Dict]]) -> None:
+        self._now = float(now)
         drift_before = self._mem is not None and bool(owned_drift(self._mem, self.store.state))
         s = self._compose(now)
         dirty = drift_before
@@ -1553,6 +1818,8 @@ class RoundEngine(object):
                 dirty = True
 
         if self._apply_chat(s, chat or [], now):
+            dirty = True
+        if self._drain_promotions(s, now):
             dirty = True
         self._last_mod_sig = (tuple(sorted(self.bridge.hidden)), bool(self.bridge.paused), bool(self.bridge.display))
 
@@ -1721,6 +1988,45 @@ def _self_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--self
     d = disk()
     ids = [i["id"] for i in d["ideas"]]
     check("idea id = max(existing)+1", ids[-1] == "i-0008" and ids[-1] not in ids[:-1], str(ids))
+
+    # --- 4b. the wish ledger (IDLEWORLD 2.1): one row per eligible record, none for a vote / history / dropped / mod
+    wp = os.path.join(run_dir, "wishes.jsonl")
+
+    def ledger():
+        try:
+            return [json.loads(ln) for ln in open(wp, encoding="utf-8") if ln.strip()]
+        except OSError:
+            return []
+    n0 = len(ledger())
+    old = msg("test_voter_5", "make it rain please")
+    old["t"] = now[0] - 3600                                          # boot history: the previous instance saw it
+    bridge._hidden.add("test_hidden_9")
+    step(2, chat=[msg("test_voter_6", "Build a castle in the field there"), msg("test_voter_6", "a lantern"),
+                  msg("test_voter_7", "B"), msg("test_voter_7", "!theme ember"), msg("test_hidden_9", "add more trees"),
+                  msg("test_voter_7", "pause bot"), old, msg("test_voter_6", "go river")])
+    step(2)
+    rows = ledger()[n0:]
+    kinds = sorted(r["kind"] for r in rows)
+    texts = {r["text"]: r for r in rows}
+    check("ledger: one row per eligible record (2 plain wishes, 1 theme, 1 verb-parsed plain, the non-mod `pause bot` as plain); "
+          "zero for the vote, the hidden user, history",
+          kinds == ["plain", "plain", "plain", "plain", "theme"] and "Build a castle in the field there" in texts and "a lantern" in texts
+          and "go river" in texts and "pause bot" in texts and "make it rain please" not in texts and "add more trees" not in texts
+          and not any(r["text"] == "B" for r in rows), "%s %s" % (kinds, sorted(texts)))
+    if "Build a castle in the field there" in texts:
+        r = texts["Build a castle in the field there"]
+        check("ledger row shape: id/ts/key/by/n/kind/text/verb/hint/wish/head/first_ever/session/src", set(r) == {
+              "id", "ts", "key", "by", "n", "kind", "text", "verb", "hint", "wish", "head", "first_ever", "session", "src"}
+              and r["wish"] is True and r["head"] == "build" and r["key"] == "test_voter_6" and r["src"] == "live" and r["verb"] is None
+              and r["session"] == disk()["session"]["id"] and r["id"].startswith("t-"), json.dumps(r))
+        check("ledger: the verb-parsed line carries verb=go and wish=False; `a lantern` is a (c) wish; the theme row's text is its arg",
+              texts["go river"]["verb"] == "go" and texts["go river"]["wish"] is False and texts["a lantern"]["wish"] is True
+              and texts["a lantern"]["head"] == "lantern" and texts["ember"]["kind"] == "theme", json.dumps([texts["go river"], texts["a lantern"]]))
+    check("ledger: the !idea above is one row too (kind idea, text = its arg)", any(r["kind"] == "idea" and r["text"] == "show the diff bigger" for r in ledger()))
+    n1 = len(ledger())
+    step(3)
+    check("ledger: no row is written twice on later frames", len(ledger()) == n1, "%d -> %d" % (n1, len(ledger())))
+    bridge._hidden.discard("test_hidden_9")
     duty = [sys.executable, os.path.join(ROOT, "agents", "duty.py"), "--run-dir", run_dir]
     r = subprocess.run(duty + ["classify", "i-0008", "macro", "--reason", "needs a new panel"], capture_output=True, text=True, timeout=20)
     check("duty classify ran", r.returncode == 0, (r.stdout + r.stderr).strip()[:120])
@@ -1989,22 +2295,26 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     # --- 0. boot: MENU is the OPENWORLD.md 11 event set, baselines in micro, world attached, embodied tally source
     step(1)           # frame 1: the engine boots (round 1 open) BEFORE the scene boots, as in compositor.render_frame
     d = disk()
-    check("menu: OPENWORLD.md 11 event set (weather / expedition / bonfire / harvest day / raising day / colony rule / music / light / chaos)",
-          set(MENU_BY_PARAM) == {"weather", "expedition", "bonfire", "harvest_day", "raising_day", "colony_rule",
-                                 "audio_tempo", "audio_pattern", "palette", "chaos"},
+    check("menu: the AGES 3 event set (weather / expedition / bonfire / harvest day / hauling day / gathering / music / light / chaos); colony_rule is no card",
+          set(MENU_BY_PARAM) == {"weather", "expedition", "bonfire", "harvest_day", "hauling_day", "gathering",
+                                 "audio_tempo", "audio_pattern", "palette", "chaos"}
+          and MENU_BY_PARAM["gathering"].get("instant") and MENU_BY_PARAM["gathering"]["values"] == ["now"],
           ",".join(sorted(MENU_BY_PARAM)))
+    check("menu: no follow / scatter / huddle / free card anywhere (Behaviour ignores follow and scatter since row 1)",
+          not any(v in ("follow", "scatter", "huddle", "free") for m in MENU for v in m["values"])
+          and not any(w in RoundEngine._title(m, v) for m in MENU for v in m["values"] for w in ("follow", "scatter", "huddle", "wander")))
     check("menu: chaos kept, never a micro key", CHAOS_PARAM in MENU_BY_PARAM and CHAOS_PARAM not in d["micro"])
-    check("boot: micro baselines weather=clear colony_rule=free raising_day=off, no dig_site, expedition None",
-          d["micro"].get("weather") == "clear" and d["micro"].get("colony_rule") == "free" and d["micro"].get("raising_day") == "off"
-          and "dig_site" not in d["micro"] and d["micro"].get("expedition") is None,
-          json.dumps({k: d["micro"].get(k) for k in ("weather", "colony_rule", "raising_day", "expedition")}))
+    check("boot: micro baselines weather=clear colony_rule=free (the scene's reader, never a card) hauling_day=off, no dig_site, no gathering key, expedition None",
+          d["micro"].get("weather") == "clear" and d["micro"].get("colony_rule") == "free" and d["micro"].get("hauling_day") == "off"
+          and "gathering" not in d["micro"] and "dig_site" not in d["micro"] and d["micro"].get("expedition") is None,
+          json.dumps({k: d["micro"].get(k) for k in ("weather", "colony_rule", "hauling_day", "expedition")}))
     check("boot: round 1 open, scene booted from an empty world (0 pips, nothing drawn)",
           d["round"]["number"] == 1 and scene.booted and scene.hatched_ever() == 0 and scene.awake_count() == 0)
     step(2)           # from the next engine tick on, the booted scene is the tally
     check("world attached: tally source is the waystones (platform_counts) from the frame after the scene boots", engine.tally_source == "platforms", engine.tally_source)
 
     # --- 1. three REAL chat records -> seeds -> hatch after the 3 s hold, names only after the hold
-    set_ballot([opt("A", "weather", "rain"), opt("B", "bonfire", "now"), opt("C", "colony_rule", "huddle")])
+    set_ballot([opt("A", "weather", "rain"), opt("B", "bonfire", "now"), opt("C", "gathering", "now")])
     say("sami", "hello land")
     say("kai", "hey there")
     say("lu", "yo")
@@ -2100,38 +2410,46 @@ def _world_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--wor
     acts = [json.loads(ln) for ln in open(os.path.join(run_dir, "activity.jsonl"), encoding="utf-8") if ln.strip()]
     check("expedition record closed after one round with an activity line", over and any(a.get("actor") == "world" and "expedition to the Ford over" in a.get("text", "") for a in acts))
 
-    # --- 6. colony_rule lands on the behaviour and resets to free after one round; raising day is a timed flag
+    # --- 6. the gathering card on the cave (a Behaviour but no Land / Moot): the huddle FALLBACK for one round, then free
     cur = rnd_no()
     if disk()["round"]["phase"] != "open":
         next_open(cur)
     else:
         cur -= 1
-    set_ballot([opt("A", "colony_rule", "follow"), opt("B", "weather", "fog"), opt("C", "audio_tempo", 100)])
+    set_ballot([opt("A", "gathering", "now"), opt("B", "weather", "fog"), opt("C", "audio_tempo", 100)])
     say("lu", "A")
     run_until(lambda: len(scene.platform_counts()["A"]) == 1, WALK_S, "lu on A")
     ship_of(cur + 1)
     step(1)
     d = disk()
     lr = d["round"]["last_result"]
-    check("ship %d: colony_rule follow won 1/1 by lu; behaviour.colony_rule == follow now" % (cur + 1),
-          lr["letter"] == "A" and lr["picked_by"] == "lu" and d["micro"]["colony_rule"] == "follow" and scene.behaviour.colony_rule == "follow" and d["micro"].get("colony_rule_until"),
-          "%s %s %s" % (lr.get("letter"), d["micro"].get("colony_rule"), scene.behaviour.colony_rule))
+    check("ship %d: gathering won 1/1 by lu; no Moot here -> colony_rule huddle fallback for the window (micro + behaviour), honest copy" % (cur + 1),
+          lr["letter"] == "A" and lr["picked_by"] == "lu" and lr["title"] == "gathering at the Moot" and d["micro"]["colony_rule"] == "huddle"
+          and scene.behaviour.colony_rule == "huddle" and d["micro"].get("colony_rule_until") and "gathering" not in d["micro"]
+          and "every errand aims at the Moot" in str(lr.get("world")) and "3 on the land" in str(lr.get("world")),
+          "%s %s %s | %s" % (lr.get("letter"), d["micro"].get("colony_rule"), scene.behaviour.colony_rule, lr.get("world")))
     run_until(lambda: disk()["micro"].get("colony_rule") == "free", ROUND_S + 2, "rule expiry")
     step(1)
     d = disk()
-    check("colony_rule back to free after one round (micro + behaviour)", d["micro"]["colony_rule"] == "free" and "colony_rule_until" not in d["micro"] and scene.behaviour.colony_rule == "free",
+    check("huddle fallback back to free after one round (micro + behaviour)", d["micro"]["colony_rule"] == "free" and "colony_rule_until" not in d["micro"] and scene.behaviour.colony_rule == "free",
           "%s %s" % (d["micro"].get("colony_rule"), scene.behaviour.colony_rule))
     cur = rnd_no()
     if disk()["round"]["phase"] != "open":
         next_open(cur)
-    set_ballot([opt("A", "raising_day", "on"), opt("B", "raising_day", "on"), opt("C", "raising_day", "on")])
+    set_ballot([opt("A", "hauling_day", "on"), opt("B", "hauling_day", "on"), opt("C", "hauling_day", "on")])
     ship_of(rnd_no())
     d = disk()
-    check("raising day: micro.raising_day == on with an until; stones_double() True now, False after the round",
-          d["micro"].get("raising_day") == "on" and d["micro"].get("raising_day_until") and RoundEngine.stones_double(d["micro"], now[0])
-          and not RoundEngine.stones_double(d["micro"], now[0] + ROUND_S + 1), json.dumps({k: d["micro"].get(k) for k in ("raising_day", "raising_day_until")}))
-    run_until(lambda: disk()["micro"].get("raising_day") == "off", ROUND_S + 2, "raising day expiry")
-    check("raising day back to off after one round", disk()["micro"].get("raising_day") == "off" and "raising_day_until" not in disk()["micro"])
+    hu = iso_to_epoch(d["micro"].get("hauling_day_until"))
+    check("hauling day: micro.hauling_day == on with an until; bridge.hauling_until == the until; no stones_double, no x2 title",
+          d["micro"].get("hauling_day") == "on" and hu is not None and bridge.hauling_until is not None and abs(bridge.hauling_until - hu) < 1.0
+          and not hasattr(RoundEngine, "stones_double") and "x2" not in " ".join(o["title"] for o in d["round"]["options"])
+          and all("x2" not in RoundEngine._title(m, v) for m in MENU for v in m["values"]),
+          json.dumps({k: d["micro"].get(k) for k in ("hauling_day", "hauling_day_until")}) + " bridge %r" % bridge.hauling_until)
+    check("hauling day: the bridge relaxes stack to 20 s / 6 while the window is open",
+          bridge._check_verb("kai", "stack", None, None, now[0], now[0]) is None and (bridge.hauling_until or 0) > now[0])
+    run_until(lambda: disk()["micro"].get("hauling_day") == "off", ROUND_S + 2, "hauling day expiry")
+    check("hauling day back to off after one round; bridge.hauling_until cleared", disk()["micro"].get("hauling_day") == "off"
+          and "hauling_day_until" not in disk()["micro"] and bridge.hauling_until is None, "bridge %r" % bridge.hauling_until)
 
     # --- 7. honesty, persistence, isolation
     scene.world.save(now[0], force=True)
@@ -2177,7 +2495,7 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
     """OPENWORLD.md 11 effects against a REAL schema-2 WorldState + Land + terrain + Nature under a duck-typed
     LONGGRASS scene (the scene module is built by another agent; this proves the engine's side of the contract):
     every effect lands only through the world API, arrival stones carry the walkers' real names, the hearth is lit
-    only by a real picker, harvest day reaps only gold fields, raising day flags stones_double. Isolated /tmp only."""
+    only by a real picker, harvest day reaps only gold fields, hauling day opens bridge.hauling_until. Isolated /tmp only."""
     import shutil
     import time as _time
     from stream.state_store import StateStore
@@ -2438,11 +2756,118 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
     lr = ship_with("harvest_day", "now", voter="kai")
     check("harvest day again: no field is gold -> honest 'keeps growing' copy, nobody fed", "no field is gold yet" in str(lr.get("world")), str(lr.get("world")))
 
-    # --- 5. raising day + colony_rule against the duck scene
-    lr = ship_with("raising_day", "on", voter="kai")
-    check("raising day: stones_double True during the window", RoundEngine.stones_double(disk()["micro"], now[0]) and disk()["micro"]["raising_day"] == "on")
-    lr = ship_with("colony_rule", "huddle", voter="lu")
-    check("colony rule: behaviour.colony_rule huddle, copy 'gather on the Moot'", scene.behaviour.colony_rule == "huddle" and "gather on the Moot" in str(lr.get("world")))
+    # --- 5. hauling day + the gathering card against the duck scene
+    lr = ship_with("hauling_day", "on", voter="kai")
+    check("hauling day: bridge.hauling_until set for the window, micro.hauling_day on, title has no x2, copy names the stack verb",
+          bridge.hauling_until is not None and bridge.hauling_until > now[0] and disk()["micro"]["hauling_day"] == "on"
+          and "x2" not in lr["title"] and lr["title"] == "hauling day · the Steading's stones" and "stack stone" in str(lr.get("world")),
+          "%r %s | %s" % (bridge.hauling_until, lr["title"], lr.get("world")))
+
+    # --- 5a. IDLEWORLD 2.3 tier 2: menu bias from scene.menu_wishes() and promotions from scene.take_promotions()
+    scene.menu_wishes = lambda: {("weather", "fog"): 3, ("weather", "rain"): 1, ("audio_pattern", "pulse_hats"): 9, ("nonsense", "x"): 4}
+    st_ = dict(disk())
+    st_["chat"] = dict(st_.get("chat") or {}, unique_chatters_15m=1)      # stranger mode: audio cards stay hidden
+    opts = engine.draw_options(st_, None, now[0])
+    fog = [o for o in opts if o.get("param") == "weather"]
+    check("draw_options draws the wished `fog · 3 ask` first (the 9-ask audio card stays behind the stranger gate; an unknown param is ignored)",
+          len(opts) == 3 and fog and fog[0]["value"] == "fog" and fog[0]["title"] == "fog · 3 ask" and fog[0]["asks"] == 3
+          and not any(o.get("param") == "audio_pattern" for o in opts) and len({o["param"] for o in opts}) == 3,
+          " | ".join("%s %s" % (o["letter"], o["title"]) for o in opts))
+    st_["chat"]["unique_chatters_15m"] = 8
+    opts2 = engine.draw_options(st_, None, now[0])
+    check("with strangers gone the 9-ask music card is the wished one", any(o["title"] == "music: add hi-hats · 9 ask" for o in opts2),
+          " | ".join(o["title"] for o in opts2))
+    st_["ideas"] = list(st_.get("ideas") or []) + [{"id": "i-0099", "text": "make it rain", "by": "lu", "ts": epoch_to_iso(now[0]), "plus": 1,
+                                                    "class": "instant", "status": "queued", "param": "weather", "value": "rain"}]
+    scene.menu_wishes = lambda: {("weather", "fog"): 3, ("expedition", "ford"): 2}
+    opts3 = engine.draw_options(st_, None, now[0])
+    check("draw_options: a wished card never shares a param with the idea card on the same ballot (weather idea -> the 2-ask expedition is the wished one, fog waits)",
+          len(opts3) == 3 and any(o.get("source") == "idea" and o.get("param") == "weather" for o in opts3)
+          and any(o["title"] == "expedition to the Ford · 2 ask" for o in opts3) and sum(1 for o in opts3 if o.get("param") == "weather") == 1
+          and len({o["param"] for o in opts3}) == 3,
+          " | ".join("%s %s" % (o["letter"], o["title"]) for o in opts3))
+    del scene.menu_wishes
+    promos = [{"text": "dig a hole", "by": "kai", "plus_by": ["lu", "sami"], "merge_key": "dig", "wish_ids": ["w-1", "w-2", "w-3"]}]
+    handed = []
+    scene.take_promotions = lambda: (handed.append(1), list(promos))[1] if len(handed) < 1 else []
+    scene.promotions_pending = lambda: len(handed) < 1
+    n_ideas = len(disk().get("ideas") or [])
+    step(12)                                                           # the engine ticks on its own cadence without chat
+    ideas_ = [i for i in disk().get("ideas") or [] if i.get("source") == "wish"]
+    check("one promotion -> one ideas[] row: source wish, plus == askers - 1 (2), plus_by, merge_key, wish_ids, class pending, status open",
+          len(ideas_) == 1 and len(disk()["ideas"]) == n_ideas + 1 and ideas_[0]["plus"] == 2 and ideas_[0]["plus_by"] == ["lu", "sami"]
+          and ideas_[0]["by"] == "kai" and ideas_[0]["text"] == "dig a hole" and ideas_[0]["class"] == "pending" and ideas_[0]["status"] == "open"
+          and ideas_[0]["merge_key"] == "dig" and ideas_[0]["wish_ids"] == ["w-1", "w-2", "w-3"] and ideas_[0]["id"].startswith("i-"),
+          json.dumps(ideas_)[:300])
+    handed.clear()
+    step(12)                                                           # replay of the same promotion
+    ideas2 = [i for i in disk().get("ideas") or [] if i.get("source") == "wish"]
+    check("replaying the same promotion adds no idea and no plus", len(ideas2) == 1 and ideas2[0]["plus"] == 2 and len(disk()["ideas"]) == n_ideas + 1,
+          json.dumps(ideas2)[:200])
+    promos[:] = [{"text": "dig a hole", "by": "jo", "plus_by": [], "merge_key": "dig", "wish_ids": ["w-4"]}]
+    handed.clear()
+    step(12)
+    ideas3 = [i for i in disk().get("ideas") or [] if i.get("source") == "wish"]
+    check("a repeat of the cluster by another person is plus += 1 on the same row (3), wish_ids grows",
+          len(ideas3) == 1 and ideas3[0]["plus"] == 3 and "jo" in ideas3[0]["plus_by"] and "w-4" in ideas3[0]["wish_ids"], json.dumps(ideas3)[:240])
+    promos[:] = [{"text": "show the diff bigger", "by": "kai", "plus_by": ["lu"], "merge_key": "show", "wish_ids": ["w-9"]}]
+    handed.clear()
+    step(12)
+    handed.clear()
+    step(12)                                                           # the same refused cluster again: logged once, never landed
+    check("a promotion whose text fails the write-time copy check (`show`, a banned token) never lands on the board; refused once, logged once",
+          not any((i.get("text") or "").startswith("show") for i in disk().get("ideas") or []) and engine.copy_refused == 1
+          and sum(1 for ln in logs if "promotion refused by the copy check" in ln) == 1 and len(disk()["ideas"]) == n_ideas + 1,
+          "copy_refused %d ideas %d" % (engine.copy_refused, len(disk()["ideas"])))
+    d_ = disk()                                                        # duty macro-done marks the cluster's idea shipped ON DISK
+    for row in d_.get("ideas") or []:                                  # (ideas[].status is an agent-owned path the engine adopts)
+        if row.get("merge_key") == "dig":
+            row["status"] = "shipped"
+    write_state_atomic(os.path.join(run_dir, "state.json"), d_)
+    step(8)
+    promos[:] = [{"text": "dig a hole", "by": "mo", "plus_by": [], "merge_key": "dig", "wish_ids": ["w-5"]}]
+    handed.clear()
+    step(12)
+    ideas4 = [i for i in disk().get("ideas") or [] if i.get("source") == "wish" and i.get("merge_key") == "dig"]
+    check("a repeat of a cluster whose idea already shipped opens a FRESH open row (plus 0, by mo); the shipped row keeps plus 3",
+          len(ideas4) == 2 and [i["status"] for i in ideas4] == ["shipped", "open"] and ideas4[0]["plus"] == 3 and ideas4[1]["plus"] == 0
+          and ideas4[1]["by"] == "mo" and ideas4[1]["wish_ids"] == ["w-5"] and ideas4[1]["id"] != ideas4[0]["id"],
+          json.dumps(ideas4)[:300])
+    del scene.take_promotions
+    del scene.promotions_pending
+    # the gathering card (AGES 3): every body on the land is drawn to the Moot by the land (gather_to), never a verb walk
+    scene.behaviour.gathers = []
+    walks0 = list(scene.behaviour.walks)
+    lr = ship_with("gathering", "now", voter="lu")
+    d = disk()
+    check("gathering card: all 3 drawn by gather_to (no `go` walk), copy `gathering at the Moot: 3 gathered`, colony_rule stays free, no micro key",
+          sorted(scene.behaviour.gathers) == sorted(names) and scene.behaviour.walks == walks0 and lr["title"] == "gathering at the Moot"
+          and str(lr.get("world")) == "gathering at the Moot: 3 gathered" and scene.behaviour.colony_rule == "free"
+          and d["micro"].get("colony_rule") == "free" and "colony_rule_until" not in d["micro"] and "gathering" not in d["micro"]
+          and d["micro"].get("last_event", {}).get("param") == "gathering"
+          and any(e.get("type") == "gathering" and e.get("gathered") == 3 for e in events),
+          "gathers %s walks %s | %s | micro %s" % (scene.behaviour.gathers, scene.behaviour.walks, lr.get("world"),
+                                                  json.dumps({k: d["micro"].get(k) for k in ("colony_rule", "colony_rule_until", "last_event")})))
+    scene.behaviour.gather_to = None                                   # a scene without gather_to: the huddle fallback
+    scene.behaviour.gathers = []
+    lr = ship_with("gathering", "now", voter="kai")
+    d = disk()
+    check("gathering without gather_to: colony_rule huddle for one round window (micro + until + behaviour), honest copy `3 on the land`, nobody walked",
+          d["micro"].get("colony_rule") == "huddle" and d["micro"].get("colony_rule_until") and scene.behaviour.colony_rule == "huddle"
+          and str(lr.get("world")) == "gathering at the Moot: 3 on the land · every errand aims at the Moot"
+          and scene.behaviour.gathers == [] and scene.behaviour.walks == walks0,
+          "%s | %s" % (json.dumps({k: d["micro"].get(k) for k in ("colony_rule", "colony_rule_until")}), lr.get("world")))
+    guard = int((ROUND_S + HOLD_S + 3) * FPS)
+    while disk()["micro"].get("colony_rule") != "free" and guard > 0:
+        step(1)
+        guard -= 1
+    d = disk()
+    check("huddle fallback over after one round: micro colony_rule free, until gone, behaviour free, activity line `gathering over`",
+          d["micro"].get("colony_rule") == "free" and "colony_rule_until" not in d["micro"] and scene.behaviour.colony_rule == "free"
+          and any("gathering over: back to free" in a.get("text", "") for a in
+                  (json.loads(ln) for ln in open(os.path.join(run_dir, "activity.jsonl"), encoding="utf-8") if ln.strip())),
+          json.dumps({k: d["micro"].get(k) for k in ("colony_rule", "colony_rule_until")}))
+    del scene.behaviour.gather_to
 
     # --- 5b. AWAY bodies (AGES 1.1 / 4.1): lu's person is quiet past present_s -> never sent on an expedition, never a stone,
     #         drawn to the bonfire by the land (gather_to, no verb), never fed; harvest day skips an away owner's field
@@ -2485,6 +2910,11 @@ def _land_test(run_dir: str) -> int:   # pragma: no cover - exercised by `--land
     scene.behaviour.entities["lu"].here = False
     scene.behaviour.walks = []
     scene.behaviour.gathers = []
+    lr = ship_with("gathering", "now", voter="sami")
+    check("gathering with lu AWAY: the land draws all 3 (the away body like rain, no record), no verb walk, `3 gathered`",
+          sorted(scene.behaviour.gathers) == sorted(names) and scene.behaviour.walks == [] and "gathering at the Moot: 3 gathered" == str(lr.get("world")),
+          "gathers %s walks %s | %s" % (scene.behaviour.gathers, scene.behaviour.walks, lr.get("world")))
+    scene.behaviour.gathers = []
     n_feed0 = sum(1 for e in events if e.get("type") == "feed" and e.get("feast"))
     lr = ship_with("bonfire", "now", voter="sami")
     step(1)
@@ -2521,14 +2951,22 @@ def check_titles(max_w: int = 184, max_lines: int = 2) -> int:
     """Every MENU title (each value) must wrap into <= max_lines HN 22 lines inside the ballot card's title column
     (264 px card - 68 px letter column - 12 px pad = 184 px) with nothing truncated. Returns the failure count."""
     fails = 0
+    n = 0
+    # the wished form `<title> · N ask` (IDLEWORLD 2.3 tier 2) is a drawn title too: every value a menu wish can name
+    # (registry.MENU_WORDS: the weather values, audio_pattern pulse_hats, bonfire now) must fit with a three-digit count
+    wishable = {"weather": None, "audio_pattern": ("pulse_hats",), "bonfire": None}
     for m in MENU:
         for v in m["values"]:
-            t = RoundEngine._title(m, v)
-            lines = L.wrap("HN", 22, t, max_w, max_lines=max_lines)
-            bad = len(lines) > max_lines or "…" in " ".join(lines) or any(L.text_width("HN", 22, ln) > max_w for ln in lines)
-            fails += 1 if bad else 0
-            print("%s %-15s %-10s %-34s -> %s" % ("FAIL" if bad else " ok ", m["param"], str(v), t, " | ".join(lines)))
-    print("%d title(s) do not fit %d px x %d lines" % (fails, max_w, max_lines) if fails else "ALL %d TITLES FIT" % sum(len(m["values"]) for m in MENU))
+            forms = [RoundEngine._title(m, v)]
+            if m["param"] in wishable and (wishable[m["param"]] is None or v in wishable[m["param"]]):
+                forms.append("%s · 100 ask" % forms[0])
+            for t in forms:
+                n += 1
+                lines = L.wrap("HN", 22, t, max_w, max_lines=max_lines)
+                bad = len(lines) > max_lines or "…" in " ".join(lines) or any(L.text_width("HN", 22, ln) > max_w for ln in lines)
+                fails += 1 if bad else 0
+                print("%s %-15s %-10s %-38s -> %s" % ("FAIL" if bad else " ok ", m["param"], str(v), t, " | ".join(lines)))
+    print("%d title(s) do not fit %d px x %d lines" % (fails, max_w, max_lines) if fails else "ALL %d TITLES FIT (incl. the ` · N ask` forms)" % n)
     return fails
 
 

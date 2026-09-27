@@ -11,10 +11,14 @@ Anchor convention: the ground point of every prop is (W // 2, H - 4) -> use anch
     spr = props.tree(age=2, variant=0, wind=1, season=1.0, sun=(-0.6, -0.8))   # age 0 sapling .. 3 old
     spr = props.campfire(phase=2, lit=True)                                     # 4 flame phases + embers
     spr = props.beacon(phase=1, lit=True, colour=(229, 82, 183))                # the settlement's tall fire basket
+    spr = props.post(papers=3)                                                  # the wish post with 0..5 cream papers pinned
     glow = props.glow(radius=46, colour=(255, 186, 96), strength=0.42)          # additive RGBA disc for lit things
     ax, ay = props.anchor(spr)
 
 Cached per argument tuple. numpy + pillow only, Python 3.9.
+
+Review sheet (the module uses relative imports, so it runs only as a module, never as a script path):
+    PYTHONPATH=. python -m stream.world.art.props        # writes /tmp/props_kit.png
 """
 from __future__ import annotations
 
@@ -193,6 +197,41 @@ def cairn(n: int, sun: Tuple[float, float] = DEFAULT_SUN) -> np.ndarray:
     return d.out_rgba()
 
 
+PAPER = (246, 238, 214)          # cream paper (a person's open ask pinned on the wish post)
+PAPER_SHADE = (214, 202, 170)
+PAPER_INK = (108, 92, 70)         # the pencil line on a paper (a mark, never a letter)
+
+
+@_cached
+def post(papers: int, sun: Tuple[float, float] = DEFAULT_SUN) -> np.ndarray:
+    """The wish post (IDLEWORLD 2.4): a wooden post with 0..5 cream paper squares pinned to it. `papers` is a len() over
+    PEOPLE with an open paper, clamped to 0..5 (100 wishes draw as one sprite with five papers; 0 open papers is a BARE
+    post, because a paper is a record and nothing may draw one that no row backs; the cairn's 1..5 clamp is not the
+    precedent, a cairn is only drawn once a stone exists). Readable at 320x180: the papers are 6x6 cells of near-white on
+    a dark post, each with one pencil line. No letters, no glyphs: a paper is a mark that a record exists, never a word."""
+    sun = _sun_bucket(sun)
+    n = max(0, min(5, int(papers)))
+    d = _D(20, 40)
+    base_y = d.h - 4
+    _shadow(d, 10, base_y, 6, 2.4, sun, 90)
+    d.ellipse(10, base_y - 1, 3.2, 1.4, FLAT["dirt_dark"])                            # trodden earth at the foot
+    d.line([(10, base_y - 1), (10, 6)], OUTLINE, 4.4)                                # the post
+    d.line([(10, base_y - 1), (10, 6)], FLAT["trunk"], 2.4)
+    d.line([(10 - sun[0] * 0.6, base_y - 2), (10 - sun[0] * 0.6, 7)], _scale(FLAT["trunk"], 0.75), 0.8)
+    d.rect(6.5, 5, 13.5, 8, _scale(FLAT["trunk"], 0.9), OUTLINE, 0.7, r=0.5)         # the cap board
+    # papers: pinned alternately left / right of the post, top-down, each 6x6 with a nail and one pencil line
+    slots = ((4.5, 10), (11.5, 14), (4.5, 19), (11.5, 24), (4.5, 28))
+    for i in range(n):
+        px, py = slots[i]
+        tilt = (0.6, -0.4, 0.5, -0.6, 0.3)[i]
+        d.poly([(px + tilt, py), (px + 6, py - tilt * 0.5), (px + 6 - tilt * 0.4, py + 6), (px - tilt * 0.3, py + 6 + tilt * 0.4)],
+               PAPER, OUTLINE, 0.7)
+        d.line([(px + 1.2, py + 5.2), (px + 5.2, py + 5.2 - tilt * 0.3)], PAPER_SHADE, 0.8)   # the curl at the foot
+        d.line([(px + 1.4, py + 2.4), (px + 4.6, py + 2.4)], PAPER_INK, 0.7)                 # the pencil line
+        d.ellipse(px + 3 + tilt * 0.4, py + 0.9, 0.7, 0.7, FLAT["rock_dark"])                  # the nail
+    return d.out_rgba()
+
+
 @_cached
 def waystone(colour: Tuple[int, int, int], variant: int = 0, sun: Tuple[float, float] = DEFAULT_SUN) -> np.ndarray:
     """A standing stone with a carved mark in a settler's colour: marks a claim, a path fork, a named place."""
@@ -310,7 +349,7 @@ def cloud_shadow(w: int = 340, h: int = 190, strength: float = 0.17) -> np.ndarr
 
 
 def kit_image(season: float = 1.0, sun=DEFAULT_SUN):
-    """Review sheet: trees by age x wind, bushes, flowers, stones, cairn 1-5, waystones, campfire, beacon (2x)."""
+    """Review sheet: trees by age x wind, bushes, flowers, stones, cairn 1-5, waystones, campfire, beacon, post 0-5 (2x)."""
     from PIL import Image, ImageDraw, ImageFont
     bold = ImageFont.truetype("/System/Library/Fonts/Supplemental/Verdana Bold.ttf", 20)
     img = Image.new("RGB", (1900, 520), (104, 164, 78))
@@ -332,7 +371,7 @@ def kit_image(season: float = 1.0, sun=DEFAULT_SUN):
         x += put(bush(v, 1, season, sun), x, 180) + 6
     for v in range(4):
         x += put(flowers(v, 1), x, 180) + 6
-    d.text((20, 210), "stones · cairn 1-5 · waystones · campfire phases 0-3 + unlit · beacon phases 0-3 + unlit", font=bold, fill=(250, 244, 226))
+    d.text((20, 210), "stones · cairn 1-5 · waystones · campfire phases 0-3 + unlit · beacon phases 0-3 + unlit · wish post 0-5 papers", font=bold, fill=(250, 244, 226))
     x = 20
     for v in range(3):
         x += put(stone(v, sun), x, 400) + 8
@@ -345,10 +384,12 @@ def kit_image(season: float = 1.0, sun=DEFAULT_SUN):
     x += put(campfire(0, False, sun), x, 400) + 16
     for p in range(4):
         x += put(beacon(p, True, (229, 82, 183), sun), x, 400) + 8
-    x += put(beacon(0, False, (229, 82, 183), sun), x, 400) + 8
+    x += put(beacon(0, False, (229, 82, 183), sun), x, 400) + 16
+    for n in range(0, 6):
+        x += put(post(n, sun), x, 400) + 8
     return img
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":                      # run as `python -m stream.world.art.props` (relative imports)
     kit_image().save("/tmp/props_kit.png")
     print("wrote /tmp/props_kit.png")

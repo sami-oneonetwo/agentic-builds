@@ -204,7 +204,8 @@ VERB_ALIASES = {"walk": "go", "head": "go", "light": "fire", "pitch": "camp"}
 # the typed text, never with an @name. `hut / build / settle` -> camp; `light / warm / campfire` -> fire; `grow / seed /
 # flower / tree` -> plant X; `walk / move / run / further` + a direction or place -> go X; `vote / pick / choose` + a
 # letter -> the letter; a verb that needs an object and got none -> its shortest example (`go` -> `go river`).
-HINT_VERB_SYNONYMS = {"hut": "camp", "tent": "camp", "build": "camp", "settle": "camp", "pitch": "camp",
+HINT_VERB_SYNONYMS = {"hut": "camp", "tent": "camp", "settle": "camp", "pitch": "camp",
+                      "stone": "stack", "stones": "stack", "rock": "stack", "cairn": "stack",
                       "light": "fire", "warm": "fire", "campfire": "fire", "hearth": "fire",
                       "grow": "plant", "seed": "plant", "sow": "plant", "planting": "plant",
                       "walk": "go", "move": "go", "head": "go", "explore": "go",
@@ -212,16 +213,41 @@ HINT_VERB_SYNONYMS = {"hut": "camp", "tent": "camp", "build": "camp", "settle": 
 # NOT synonyms (false positives are worse than silence): `there` (`hello there`), `further`, `run`, `home` (`I'm going
 # home` is a goodbye, not a verb) -- `go north further` / `go home` already carry the verb word.
 HINT_PLANT_WORDS = {"flower": "flower", "flowers": "flower", "tree": "tree", "trees": "tree", "sapling": "tree", "reed": "reed", "reeds": "reed"}
-HINT_EXAMPLES = {"go": "go river", "plant": "plant flower", "camp": "camp", "fire": "fire"}
+HINT_EXAMPLES = {"go": "go river", "plant": "plant flower", "camp": "camp", "fire": "fire", "stack": "stack stone"}
+# `build` + a camp noun -> camp; `build` alone or + stone words -> stack (IDLEWORLD 0.2 row 9: hint_for takes the FIRST
+# synonym token, so a blind `build -> stack` would turn the live `Build a hut here` into `try: stack stone`)
+HINT_BUILD_CAMP_NOUNS = ("hut", "tent", "house", "home", "settle", "pitch")
 PITCH_NEEDS_OBJECT = True                       # `pitch` alone is chat; `pitch a tent` / `pitch camp` is camp
 VERBS = tuple(VERB_SPECS.keys())
 TARGET_VERBS = {v: s["targets"] for v, s in VERB_SPECS.items() if s.get("targets", (0, 0))[1] > 0}
 WORD_VERBS = {v for v, s in VERB_SPECS.items() if s.get("word")}           # exactly one plain word (<= 12 alnum)
-LATER_VERBS = {v: "%s · not yet · try: go river · plant a flower · camp" % v          # world voice, never roadmap-speak (`comes in a later raising`)
-               for v in ("sow", "harvest", "stack", "swim", "sing", "explore", "water", "teach")}
+# IDLEWORLD 1.3 (S1): `stack` is the age's labour verb and is NOT gated any more; the still-gated verbs' copy names it
+LATER_VERBS = {v: "%s · not yet · try: stack stone · plant a flower · camp" % v          # world voice, never roadmap-speak (`comes in a later raising`)
+               for v in ("sow", "harvest", "swim", "sing", "explore", "water", "teach")}
 VERB_COOLDOWN_S = {"go": 5.0, "fire": 600.0, "feed": 30.0, "pet": 30.0, "wave": 5.0, "sit": 5.0, "dance": 5.0,
                    "name": 600.0, "sing": 60.0, "explore": 60.0, "water": 60.0, "stack": 45.0, "swim": 30.0,
                    "teach": 300.0}
+# stack: 45 s / 3 per session (IDLEWORLD 0.2 row 8, measured before loosening); a `hauling day` round (AGES 3) relaxes it to
+# 20 s / 6 while RoundEngine holds bridge.hauling_until in the future. ONE record per act either way (stones_double is gone).
+STACK_SESSION_CAP = 3
+STACK_CAP_COPY = "three stones a day · the cairn has yours"        # AGES 1.5 / row 1: no night word on any surface
+HAULING_COOLDOWN_S = 20.0
+HAULING_SESSION_CAP = 6
+HAULING_CAP_COPY = "six stones a day · the cairn has yours"
+# IDLEWORLD 2.1 (S1): the wish TAG. (b) a plain line of >= 3 tokens whose first content token (or the one after `can we /
+# could we / let's / please`) is a head; (c) a line of <= 3 tokens naming a recipe noun; (a) every `!idea` with an arg.
+# The bridge only tags; the noun tables live in stream/world/registry.py (hot-reload) and are read lazily when present.
+WISH_HEADS_LOCAL = ("build", "make", "add", "put", "dig", "cut", "climb", "zoom", "raise", "give", "want", "need", "more",
+                    "less", "bigger", "change", "turn", "wish", "should")
+WISH_LEADS = ("can we", "could we", "let's", "lets", "please", "can you", "could you", "we should", "you should")
+WISH_STOP = frozenset(("a", "an", "the", "to", "at", "my", "some", "on", "of", "in", "here", "there", "this", "that", "it",
+                       "is", "we", "i", "you", "me", "us", "please", "can", "could", "would", "let's", "lets", "just",
+                       "so", "now", "also", "and", "or", "for", "with", "hey", "hi", "hello", "ok", "okay", "yes", "no"))
+RECIPE_NOUNS_LOCAL = ("lantern", "lanterns", "lamp", "banner", "banners", "flag", "garden", "gardens", "flower", "flowers",
+                      "tree", "trees", "orchard", "grove", "stones", "rocks", "bench", "benches")
+ACK_NAME_RE = re.compile(r"@[^\s\u00b7]+")      # an @name inside a reason (acks.jsonl carries no name, IDLEWORLD 6.2)
+ACKS_FLUSH_S = 5.0                                    # acks.jsonl buffered writer cadence (IDLEWORLD 6.2)
+ACKS_ROTATE_BYTES = 5 * 1024 * 1024                   # rotate at 5 MB, keep 2
 PLANT_SESSION_CAP = {"flower": 3, "tree": 1, "reed": 3}   # OPENWORLD 6: trees 1 / flowers 3 per session (reeds as flowers)
 PLANT_CAP_COPY = {"flower": "three flowers a day · yours are planted", "tree": "one tree a day · yours is planted",
                   "reed": "three reeds a day · yours are planted"}      # AGES 1.5: no night word on any surface
@@ -496,7 +522,12 @@ class ChatBridge(object):
         self._verb_last: Dict[Tuple[str, str], float] = {}  # (key, verb) -> t of the last accepted use
         self._plant_used: Dict[Tuple[str, str], int] = {}   # (key, kind) -> plants this session (OPENWORLD 6 caps)
         self._camp_used: Dict[str, int] = {}                # key -> `camp` uses this session (1)
-        self._stack_used: Dict[str, int] = {}               # key -> stones this session (3; v1)
+        self._stack_used: Dict[str, int] = {}               # key -> stones this session (3; 6 on a hauling day)
+        self.hauling_until: Optional[float] = None          # RoundEngine._world_effect("hauling_day") writes now + round_s
+        self._acks: List[Dict] = []                         # acks.jsonl rows waiting for the 5 s flush (IDLEWORLD 6.2)
+        self._acks_flushed: Optional[float] = None
+        self.acks_path = os.path.join(run_dir, "acks.jsonl")
+        self._wish_tables: Optional[Tuple[Tuple[str, ...], frozenset]] = None
         self._sow_used: Set[str] = set()                    # keys that sowed this session (v1)
         self._gift_used: Set[Tuple[str, str]] = set()       # (by, target) this session
         self._sing_global_t: Optional[float] = None
@@ -564,6 +595,7 @@ class ChatBridge(object):
         return first
 
     def flush(self, now: float, force: bool = False) -> None:
+        self._flush_acks(now, force)
         if not self._builders_dirty:
             return
         if not force and self._builders_flushed is not None and now - self._builders_flushed < BUILDERS_FLUSH_S:
@@ -574,6 +606,92 @@ class ChatBridge(object):
             self._builders_flushed = now
         except Exception as e:
             self.log("builders.json write failed: %r" % (e,))
+
+    # ------------------------------------------------------------------ acks.jsonl (IDLEWORLD 6.2)
+    def _ack_row(self, m: Dict, now: float, ok: bool, reason: Optional[str] = None) -> None:
+        """One buffered row per moderated record that was not dropped: {id, t, ack_t, kind, ok, reason}. No text, no
+        name: the row says the record was seen and whether it was acted on, nothing a panel could quote. A verb reason
+        can name a typed target (`you already left @kai a gift today`), so every @token is cut to a bare `@` first."""
+        if not m.get("id"):
+            return
+        row = {"id": str(m.get("id")), "t": round(float(m.get("t") or now), 3), "ack_t": round(float(now), 3),
+               "kind": str(m.get("kind") or "plain"), "ok": bool(ok)}
+        if reason:
+            row["reason"] = ACK_NAME_RE.sub("@", str(reason))[:80]
+        self._acks.append(row)
+        if len(self._acks) > 5000:
+            del self._acks[:-5000]
+
+    def _flush_acks(self, now: float, force: bool = False) -> None:
+        if not self._acks:
+            return
+        if not force and self._acks_flushed is not None and now - self._acks_flushed < ACKS_FLUSH_S:
+            return
+        rows, self._acks = self._acks, []
+        self._acks_flushed = now
+        try:
+            try:
+                if os.path.getsize(self.acks_path) >= ACKS_ROTATE_BYTES:
+                    for i in (2, 1):
+                        src = self.acks_path if i == 1 else "%s.%d" % (self.acks_path, i - 1)
+                        if os.path.exists(src):
+                            os.replace(src, "%s.%d" % (self.acks_path, i))
+            except OSError:
+                pass
+            with open(self.acks_path, "a", encoding="utf-8") as fh:
+                fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        except Exception as e:
+            self.log("acks.jsonl write failed: %r" % (e,))
+
+    # ------------------------------------------------------------------ the wish tag (IDLEWORLD 2.1)
+    def _wish_words(self) -> Tuple[Tuple[str, ...], frozenset]:
+        """(WISH_HEADS, recipe nouns) from stream/world/registry.py when it is on disk (hot-reloadable data), else the
+        local lists. Read once per bridge; the registry is data, never a caller."""
+        if self._wish_tables is not None:
+            return self._wish_tables
+        heads, nouns = WISH_HEADS_LOCAL, set(RECIPE_NOUNS_LOCAL)
+        try:
+            from stream.world import registry as R   # noqa
+            heads = tuple(getattr(R, "WISH_HEADS", None) or WISH_HEADS_LOCAL)
+            rw = getattr(R, "RECIPE_WORDS", None) or {}
+            syn = getattr(R, "SYNONYMS", None) or {}
+            nouns = set(rw.keys()) | {k for k, v in syn.items() if v in rw}
+            nouns |= set(RECIPE_NOUNS_LOCAL)
+        except Exception:
+            pass
+        self._wish_tables = (tuple(heads), frozenset(nouns))
+        return self._wish_tables
+
+    def wish_tag(self, text: str, kind: str = "plain") -> Tuple[bool, Optional[str]]:
+        """-> (wish, head). (a) an !idea with an arg; (b) >= 3 tokens and the first content token (or the token after a
+        lead like `can we` / `please`) is a WISH_HEAD; (c) <= 3 tokens and one of them is a recipe noun (so a line of
+        exactly 3 tokens without a head, `a lantern please`, still takes (c)). Nothing here classifies: the noun tables
+        belong to the registry and the scene."""
+        t = (text or "").strip()
+        heads, nouns = self._wish_words()
+        toks = [w.lower().strip(TOKEN_TRIM) for w in t.split()]
+        toks = [w for w in toks if w and not w.startswith("@") and not URL_RE.search(w)]
+        if kind == "idea":                                  # (a): every !idea is a wish; the head is its first content word
+            content = [w for w in toks if w not in WISH_STOP]
+            return True, (content[0] if content else "idea")
+        if not t or URL_RE.search(t) or not toks:
+            return False, None
+        n_tokens = len(toks)
+        if n_tokens >= 3:
+            low = " ".join(toks)
+            for lead in WISH_LEADS:
+                if low.startswith(lead + " "):
+                    toks = toks[len(lead.split()):]
+                    break
+            content = [w for w in toks if w not in WISH_STOP]
+            if content and content[0] in heads:
+                return True, content[0]
+            if n_tokens > 3:
+                return False, None
+        for w in toks:                                      # (c): <= 3 tokens (as typed) naming a recipe noun
+            if w in nouns:
+                return True, w
+        return False, None
 
     # ------------------------------------------------------------------ word lists (compat shims)
     def _load_blocklist(self, now: float) -> None:
@@ -683,7 +801,14 @@ class ChatBridge(object):
             if w in VERB_ALIASES:
                 verb = VERB_ALIASES[w]
                 break
-        syn = next((HINT_VERB_SYNONYMS[w] for w in toks if w in HINT_VERB_SYNONYMS), None)
+        syn = None
+        for w in toks:
+            if w == "build":
+                syn = "camp" if any(x in HINT_BUILD_CAMP_NOUNS for x in toks) else "stack"
+                break
+            if w in HINT_VERB_SYNONYMS:
+                syn = HINT_VERB_SYNONYMS[w]
+                break
         letters = [w.upper() for w in toks if w in ("a", "b", "c")]
         direction = next((w for w in toks if w in DIRECTIONS), None)
         place = next((GO_OBJECTS[w] for w in toks if w in GO_OBJECTS and w not in ("home", "camp", "tent", "hut")), None)
@@ -1003,9 +1128,10 @@ class ChatBridge(object):
                   "dropped": False, "drop_reason": None, "rate_limited": False, "first_ever": False,
                   "display_name": "?", "builder_n": None, "show_t": t + HOLD_S,
                   "text_clean": self.clean_text(text, cap), "history": history,
-                  "verb": None, "verb_ok": None, "verb_reason": None})
+                  "verb": None, "verb_ok": None, "verb_reason": None, "wish": False, "head": None})
         if m.get("type") not in (None, "message"):
             m.update({"dropped": True, "drop_reason": "not a message", "accepted": False})
+            raw["dropped"] = True
             return m
 
         # -- mod commands act immediately (gated on badges); never rendered in the pane
@@ -1013,6 +1139,7 @@ class ChatBridge(object):
             if is_mod:
                 self._apply_mod(arg, name, is_owner, now, history)
                 m["dropped"], m["drop_reason"] = True, "mod command"
+                raw["dropped"] = True                    # the scene skips the hop for a dropped record (IDLEWORLD 3.4)
                 return m
             kind = m["kind"] = "plain"
             m["arg"] = ""
@@ -1020,6 +1147,7 @@ class ChatBridge(object):
         # -- step 2: hidden users are ignored entirely (message, vote, idea, verb)
         if key in self.hidden:
             m.update({"dropped": True, "drop_reason": "hidden", "accepted": False})
+            raw["dropped"] = True                        # in place on the raw record: no hop, no wish (IDLEWORLD 2.1 / 3.4)
             return m
 
         # -- step 5: word filter on the text (raw and cleaned, leet-normalised) -> drop message + vote/idea/verb; a strike
@@ -1029,6 +1157,7 @@ class ChatBridge(object):
         if hit:
             self.dropped += 1
             m.update({"dropped": True, "drop_reason": "blocklist", "accepted": False})
+            raw["dropped"] = True
             if not history:
                 self.log("dropped msg %s from %r (blocklist)" % (m.get("id"), name))
                 self._strike(key, now)
@@ -1068,7 +1197,9 @@ class ChatBridge(object):
                 if not history:
                     self._set_notice("!idea <what should change>", "warn", now)
             elif not history:
-                self._ack("%s's idea is on the board" % self._at(key, now), now, dur=IDEA_ACK_S)
+                # no `on the board` ack here (IDLEWORLD 2.1): the panel's `pinned` line is the ack and it fires only after
+                # the record exists; the bridge tags the record as a wish (a)
+                m["wish"], m["head"] = self.wish_tag(arg, "idea")
         elif kind == "theme":
             if history:
                 m["accepted"] = False
@@ -1115,6 +1246,8 @@ class ChatBridge(object):
                     self._hint_t[key] = now
                     m["hint"] = hint
                     self._set_notice(hint, "warn", now, HINT_S)
+            if pv is None and not history:
+                m["wish"], m["head"] = self.wish_tag(m["text_clean"] or text, "plain")   # tag only (b) / (c); the scene classifies
 
         # -- step 8: per-user render rate 1 line / 2 s (votes already counted, ideas already classified, verbs queued)
         last = self._last_render_t.get(key)
@@ -1124,6 +1257,9 @@ class ChatBridge(object):
         else:
             self._last_render_t[key] = t
             self.messages.append(m)
+        if not history:
+            self._ack_row(m, now, bool(m.get("accepted")) and m.get("verb_ok") is not False,
+                          m.get("verb_reason") if m.get("verb_ok") is False else (m.get("notice") or None))
         return m
 
     # ------------------------------------------------------------------ strikes (WORLD.md 11.5)
@@ -1218,8 +1354,11 @@ class ChatBridge(object):
                 return PLANT_CAP_COPY[kind]
         if verb == "camp" and self._camp_used.get(key, 0) >= CAMP_SESSION_CAP:
             return "camp once a day · yours is pitched"
-        if verb == "stack" and self._stack_used.get(key, 0) >= 3:
-            return "three stones a day · the cairn has yours"
+        if verb == "stack":
+            hauling = self.hauling_until is not None and now < float(self.hauling_until)
+            cap = HAULING_SESSION_CAP if hauling else STACK_SESSION_CAP
+            if self._stack_used.get(key, 0) >= cap:
+                return HAULING_CAP_COPY if hauling else STACK_CAP_COPY
         if verb == "sow" and key in self._sow_used:
             return "one field a day · yours is sown"
         if verb == "name":
@@ -1234,6 +1373,8 @@ class ChatBridge(object):
         if verb == "gift" and (key, target) in self._gift_used:
             return "you already left %s a gift today" % self._at(target, now)
         cd = VERB_COOLDOWN_S.get(verb)
+        if verb == "stack" and self.hauling_until is not None and now < float(self.hauling_until):
+            cd = HAULING_COOLDOWN_S                          # hauling day (AGES 3): 20 s / 6 for the round window
         if cd is not None:
             last = self._verb_last.get((key, verb))
             if last is not None and t - last < cd:
@@ -1363,7 +1504,7 @@ class ChatBridge(object):
             return world.command("go", actor, target=(tgt or None), arg=word, now=now)
         if verb == "plant":
             return world.command("plant", actor, arg=(word or "flower"), now=now)
-        if verb in ("camp", "fire", "wave", "sit", "dance", "forget"):
+        if verb in ("camp", "fire", "wave", "sit", "dance", "forget", "stack"):
             return world.command(verb, actor, now=now)
         if verb == "name":
             ok, reason = world.command("name", actor, arg=word, now=now)
@@ -1740,9 +1881,12 @@ def _self_test() -> int:
         "I love to sing in the shower": None, "right?": None, "I dug it": None, "dig": None, "dig now": None,
         "duck": None, "the north": None, "go to the river please now": None, "go https://x.com": None,
         "go @kai river": None, "feed the river": None, "camp fire": None, "sit down": None,
+        # the labour verb (IDLEWORLD 1.3): parses and is NOT refused any more
+        "stack": ("stack", None, None), "stack stone": ("stack", None, None), "stack stones": ("stack", None, None),
+        "Stack a stone!": ("stack", None, None), "stack the stones": ("stack", None, None), "stack it high": None,
         # stubs parse (so they never bubble as commands elsewhere) and are refused later
         "sow": ("sow", None, None), "sow a field": ("sow", None, None), "harvest": ("harvest", None, None),
-        "stack": ("stack", None, None), "stack stones": ("stack", None, None), "swim": ("swim", None, None),
+        "swim": ("swim", None, None),
         "sing": ("sing", None, None), "explore": ("explore", None, None), "water @kai": ("water", "kai", None),
         "water": None,
     }
@@ -1755,7 +1899,11 @@ def _self_test() -> int:
         print("FAIL parse_verb(%r) -> %r, want %r" % (txt, got, want))
     # unparsed-with-hint (HUD pass, journal 028): the exact canonical token, never the typed words, never an @name
     HINTS = {"go north further": "try: go north", "can you go to the river please": "try: go river",
-             "build a hut here": "try: camp", "plant some trees please": "try: plant tree",
+             "build a hut here": "try: camp", "Build a hut here": "try: camp", "plant some trees please": "try: plant tree",
+             # IDLEWORLD 1.3 / 0.2 row 9: stone words -> stack; `build` by object
+             "build a castle": "try: stack stone", "build something": "try: stack stone", "stones": "try: stack stone",
+             "rock please": "try: stack stone", "the cairn": "try: stack stone", "build a tent": "try: camp",
+             "build a house here": "try: camp",
              "warm us up": "try: fire", "I pick B": "try: B", "kick would be nice": "try: !theme kick",
              "go north @hiddenname": "try: go north", "go there": "try: go river",
              "river please": "try: go river", "bbbbb": "try: B", "AAA": "try: A", "!ccc": "try: C",
@@ -1791,9 +1939,97 @@ def _self_test() -> int:
     assert b._safe_reason("too close to @kai's camp", "camp") == "too close to someone's camp"
     assert b._safe_reason("unknown verb", "go") == "go is not on this land yet"
     assert L.COLORS["warn"].upper() == "#FFB020"
+
+    # ---- S1 (IDLEWORLD 1.3 / 2.1 / 6.2): stack un-refused + caps, the wish tag, raw["dropped"], no idea ack, acks.jsonl
+    import shutil
+    import tempfile
+    rd = tempfile.mkdtemp(prefix="lg-S1-bridge-")
+    s1 = []
+
+    def chk(name, cond, detail=""):
+        s1.append((name, bool(cond)))
+        print("%s %s%s" % ("PASS" if cond else "FAIL", name, (" -- %s" % detail) if detail else ""))
+    try:
+        b = ChatBridge(rd)
+        now = 1_700_000_000.0
+        chk("stack is not a LATER verb; LATER copy names it", "stack" not in LATER_VERBS and all("try: stack stone" in v for v in LATER_VERBS.values()))
+        chk("still-gated verb copy", b._check_verb("kai", "sow", None, None, now, now) == "sow · not yet · try: stack stone · plant a flower · camp")
+        refusals = []
+        for i in range(4):
+            r = b._check_verb("kai", "stack", None, None, now + 50 * i, now + 50 * i)
+            refusals.append(r)
+            if r is None:
+                b._stack_used["kai"] = b._stack_used.get("kai", 0) + 1
+                b._verb_last[("kai", "stack")] = now + 50 * i
+        chk("stack: three accepted (45 s apart), the 4th refused with the cap copy",
+            refusals[:3] == [None, None, None] and refusals[3] == STACK_CAP_COPY, "%r" % refusals)
+        chk("stack: a fresh key is not refused", b._check_verb("lu", "stack", None, None, now, now) is None)
+        b._verb_last[("lu", "stack")] = now
+        chk("stack cooldown 45 s", (b._check_verb("lu", "stack", None, None, now + 30, now + 30) or "").startswith("stack again in 15 s"),
+            b._check_verb("lu", "stack", None, None, now + 30, now + 30))
+        b.hauling_until = now + 600
+        chk("hauling day: cooldown 20 s (30 s later is fine) and cap 6", b._check_verb("lu", "stack", None, None, now + 30, now + 30) is None
+            and b._check_verb("kai", "stack", None, None, now + 300, now + 300) is None)
+        b._stack_used["kai"] = 6
+        chk("hauling day: the 7th stone is refused", b._check_verb("kai", "stack", None, None, now + 300, now + 300) == HAULING_CAP_COPY)
+        b.hauling_until = None
+        chk("no night word in any stack copy", all("night" not in s for s in (STACK_CAP_COPY, HAULING_CAP_COPY) + tuple(LATER_VERBS.values())))
+        # the wish tag
+        T = b.wish_tag
+        chk("tag (b): a plain line >= 3 tokens with a head", T("Build a castle in the field there") == (True, "build") and T("can we build a bridge") == (True, "build")
+            and T("please add more trees") == (True, "add") and T("I want a lantern here") == (True, "want") and T("we should dig a hole")[0])
+        chk("tag (c): <= 3 tokens naming a recipe noun", T("a lantern") == (True, "lantern") and T("trees please") == (True, "trees"))
+        chk("tag (c) at exactly 3 tokens when (b) finds no head", T("a lantern please") == (True, "lantern") and T("some flowers here") == (True, "flowers")
+            and T("please a lantern") == (True, "lantern") and T("a lantern please now") == (False, None), "%r %r" % (T("a lantern please"), T("some flowers here")))
+        chk("no tag: greetings, chat, 2 tokens without a noun, a URL", T("hello there friend") == (False, None) and T("lol") == (False, None)
+            and T("nice one") == (False, None) and T("build https://x.com now") == (False, None))
+        chk("tag (a): every !idea", T("show the diff bigger", "idea") == (True, "show") and T("", "idea") == (True, "idea"))
+        raws = [{"id": "w1", "name": "Kai", "text": "Build a castle in the field there", "t": now, "type": "message"},
+                {"id": "w2", "name": "Kai", "text": "!idea a bridge over the ford", "t": now + 3, "type": "message"},
+                {"id": "w3", "name": "Kai", "text": "A", "t": now + 6, "type": "message"},
+                {"id": "w4", "name": "Kai", "text": "go river", "t": now + 9, "type": "message"},
+                {"id": "w5", "name": "Kai", "text": "make it rain please", "t": now - 600, "type": "message"},
+                {"id": "w6", "name": "Kai", "text": "hello there", "t": now + 12, "type": "message"}]
+        outs = [b._ingest_one(dict(r), now + 12, False) for r in raws]
+        by_id = {m["id"]: m for m in outs}
+        chk("ingest: wish on the plain line and the idea; never on a vote, a verb, history or plain chat",
+            by_id["w1"]["wish"] and by_id["w1"]["head"] == "build" and by_id["w2"]["wish"] and by_id["w2"]["kind"] == "idea"
+            and not by_id["w3"]["wish"] and not by_id["w4"]["wish"] and by_id["w4"]["verb"] and not by_id["w5"]["wish"] and by_id["w5"]["history"]
+            and not by_id["w6"]["wish"], json.dumps({k: (m["wish"], m["head"]) for k, m in by_id.items()}))
+        chk("no idea ack: the plank carries no `on the board`", b._ack_notice is None or "on the board" not in b._ack_notice[0])
+        bl = os.path.join(rd, "blocklist.txt")
+        with open(bl, "w", encoding="utf-8") as fh:
+            fh.write("zorbleface\n")
+        b.words = WordLists(blocklist_path=bl, allowlist_path=os.path.join(rd, "allow.txt"))
+        b.words.reload(now + 20, force=True)
+        raw_bad = {"id": "w7", "name": "Kai", "text": "zorbleface build a castle", "t": now + 15, "type": "message"}
+        mb = b._ingest_one(raw_bad, now + 15, False)
+        chk("raw[\"dropped\"] set in place for a blocklisted record; no wish", raw_bad.get("dropped") is True and mb["dropped"] and not mb["wish"])
+        b._hidden.add("troll")
+        raw_hid = {"id": "w8", "name": "Troll", "text": "a lantern", "t": now + 16, "type": "message"}
+        mh = b._ingest_one(raw_hid, now + 16, False)
+        chk("raw[\"dropped\"] set in place for a hidden user", raw_hid.get("dropped") is True and mh["drop_reason"] == "hidden")
+        b.flush(now + 30, force=True)
+        rows = [json.loads(ln) for ln in open(b.acks_path, encoding="utf-8") if ln.strip()]
+        ids = [r["id"] for r in rows]
+        chk("acks.jsonl: one row per non-dropped, non-history record with id/t/ack_t/kind/ok and no text",
+            sorted(ids) == ["w1", "w2", "w3", "w4", "w6"] and all(set(r) >= {"id", "t", "ack_t", "kind", "ok"} and "text" not in r and "name" not in r for r in rows),
+            "%r" % ids)
+        chk("acks.jsonl: the vote and the verb are ok, kinds recorded", {r["id"]: r["kind"] for r in rows}["w3"] == "vote"
+            and {r["id"]: r["ok"] for r in rows}["w4"] is True)
+        b._ack_row({"id": "w9", "t": now, "kind": "plain"}, now + 40, False, "you already left @Kai_99 a gift today \u00b7 @lu is here")
+        b.flush(now + 60, force=True)
+        r9 = [json.loads(ln) for ln in open(b.acks_path, encoding="utf-8") if ln.strip() and '"w9"' in ln][0]
+        chk("acks.jsonl: a reason never carries a typed name (every @token cut to `@`)", r9["reason"] == "you already left @ a gift today \u00b7 @ is here"
+            and "kai" not in r9["reason"].lower() and "lu" not in r9["reason"].split(), r9["reason"])
+        chk("_apply routes stack to world.command", "\"stack\"" in open(__file__, encoding="utf-8").read().split("def _apply(")[1].split("def _target_absent")[0])
+    finally:
+        shutil.rmtree(rd, ignore_errors=True)
+    s1_bad = [n for n, ok in s1 if not ok]
+    print("S1 bridge checks: %d, %d failed" % (len(s1), len(s1_bad)))
     print("parse_verb: %d cases, %d failed" % (len(cases), len(bad)))
-    return 1 if bad else 0
+    return 1 if (bad or s1_bad) else 0
 
 
 if __name__ == "__main__":
-    sys.exit(_self_test())
+    sys.exit(_self_test())          # `--self-test` and no flag are the same run (the gate names both)

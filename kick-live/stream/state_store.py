@@ -121,13 +121,17 @@ def write_state_atomic(path: str, d: Dict) -> None:
 OWNED_PATHS: Dict[str, List[str]] = {
     # RoundEngine (stream/rounds.py) - runs inside the compositor process
     "rounds": ["session", "version", "round", "micro", "theme",
-               "ideas[+]", "ideas[].id", "ideas[].text", "ideas[].by", "ideas[].ts", "ideas[].plus", "ideas[].status"],
+               "ideas[+]", "ideas[].id", "ideas[].text", "ideas[].by", "ideas[].ts", "ideas[].plus", "ideas[].status",
+               "ideas[].plus_by",                     # who added a +1 (typed !idea repeats and promotion askers)
+               "ideas[].source", "ideas[].merge_key", "ideas[].wish_ids"],   # IDLEWORLD 2.3 tier 2: a promotion drained from the scene
     # the frame loop's own mirrors; the RoundEngine writes them on the compositor's behalf (same process)
     "compositor": ["compositor", "chat", "mod", "metrics", "audio"],
     # agents/duty.py - the on-duty agent, a separate process
     "agent": ["agent", "macro", "ask", "ideas[].class", "ideas[].status", "ideas[].reason"],
     # scripts/stop.sh --credits
     "stop": ["session.ending"],
+    # agents/probe.py (IDLEWORLD 4 / 6.2): its heartbeat and the last report only; wishes live in $RUN_DIR jsonl files
+    "probe": ["probe"],
 }
 
 _TOK_RE = re.compile(r"\[([^\]]*)\]|([^.\[\]]+)")
@@ -298,6 +302,7 @@ def default_state(now_iso: str) -> Dict:
         "macro": {"active": False, "title": None, "requested_by": None, "module": None, "started_ts": None, "deadline_ts": None,
                   "step": None, "step_index": 0, "step_label": None, "file": None, "status_lines": [], "last_reload": None},
         "agent": {"on_duty": False, "heartbeat_ts": None, "name": "builder"},
+        "probe": {"heartbeat_ts": None, "last_report": None},
         "ideas": [],
         "ask": {"enabled": False, "current": None, "queue": [], "last": None},
         "chat": {"display": True, "connected": False, "founders": [], "msgs_per_min_5m": 0.0, "unique_chatters_5m": 0},

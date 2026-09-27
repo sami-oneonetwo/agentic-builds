@@ -2,7 +2,7 @@
 """chatter_log.py -- the chatter funnel, derived from chat.jsonl + metrics.jsonl (read-only inputs).
 
 Per chatter (key = lower-case username):
-  first_seen_ts, first_kind (vote | verb | idea | plain), first_text (60-char preview), second_within_10m
+  first_seen_ts, first_kind (vote | verb | idea | unparsed-head | plain), first_text (60-char preview), second_within_10m
   (a 2nd message inside 10 min of the 1st), messages, last_seen, days_seen, first_message_stream_offset_s
   (seconds after the live session's started_at, when metrics show us live at that moment), is_owner
   (broadcaster badge, the channel's own slug, or $KICK_OWNER_ACCOUNTS), is_staff (Kick staff badge), badges.
@@ -40,6 +40,10 @@ Paths: everything is resolved from ONE RUN_DIR (monitor/run_paths.py): $RUN_DIR 
 chat.jsonl, metrics.jsonl, builders.json, world.json, chatters.json. $CHAT_FILE / $METRICS_FILE are honoured
 only when they live under that RUN_DIR (scripts/env.sh exports them from a possibly different RUN_DIR).
 
+Archives (IDLEWORLD 6.2 / scripts/rotate_chat.py): when `<stem>.manifest.json` sits beside the chat file (`chat.manifest.json`
+for `chat.jsonl`), every archive it lists is read first, in order, then the live file, so a rotated day counts like one file.
+Rows are de-duplicated on id as before. A manifest row names its archive by `file` (a plain basename) or `path`.
+
 Environment: RUN_DIR, KICK_CHANNEL, KICK_OWNER_ACCOUNTS. Python 3.9, stdlib only.
 """
 from __future__ import annotations
@@ -74,12 +78,18 @@ OWNER_ACCOUNTS = {CHANNEL.lower()} | {x.strip().lower() for x in os.environ.get(
 SECOND_MSG_WINDOW_S = 10 * 60
 PREVIEW_LEN = 60
 
-# Mirrors stream/chat_bridge.py (OPENWORLD.md 6): exact-token vote, !idea, leading verb (<= 4 tokens).
+# Mirrors stream/chat_bridge.py (OPENWORLD.md 6): exact-token vote, !idea, leading verb (<= 4 tokens). `stack` is a
+# live verb since IDLEWORLD 1.3 (S1; it was LATER-gated before); the LATER set is what the bridge still refuses.
 VOTE_RE = re.compile(r"^!?([abc])$", re.IGNORECASE)
 IDEA_RE = re.compile(r"^!idea\b", re.IGNORECASE)
 VERBS = {"go", "home", "plant", "camp", "fire", "feed", "pet", "gift", "wave", "sit", "dance", "forget", "name",
          "teach", "sow", "harvest", "stack", "swim", "sing", "explore", "water",
          "walk", "head", "light", "pitch"}
+LATER_VERBS = {"sow", "harvest", "swim", "sing", "explore", "water", "teach"}      # parsed, refused `not yet` (no stack)
+# verb-like heads the grammar drops (IDLEWORLD 0.1: dig 8, build 4, cut 1, climb 1, zoom 1 on the live transcript): their
+# own kind so the funnel shows what people try to DO that the land cannot hear yet
+UNPARSED_HEADS = {"dig", "build", "cut", "climb", "zoom", "make", "raise"}
+KINDS = ("vote", "verb", "idea", "unparsed-head", "plain")
 MAX_VERB_TOKENS = 4
 TOKEN_TRIM = "!?.,;:"
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]+")
@@ -128,11 +138,56 @@ def classify(text: str) -> str:
     if IDEA_RE.match(t):
         return "idea"
     toks = t.split()
-    if toks and len(toks) <= MAX_VERB_TOKENS:
+    if toks:
         head = toks[0].strip(TOKEN_TRIM).lower()
-        if head in VERBS:
+        if len(toks) <= MAX_VERB_TOKENS and head in VERBS:
             return "verb"
+        if head in UNPARSED_HEADS:
+            return "unparsed-head"
     return "plain"
+
+
+def manifest_archives(path: str) -> List[str]:
+    """Archive paths listed by `<stem>.manifest.json` beside `path` (rotate_chat.py's shape: {"live", "archives": [{file |
+    path, ...}]}; the spec's {"files": [{path}]} shape is accepted too), in manifest order. [] without a manifest; a
+    malformed manifest is reported and ignored (the live file still counts)."""
+    d = os.path.dirname(path) or "."
+    base = os.path.basename(path)
+    stem = base[:-len(".jsonl")] if base.endswith(".jsonl") else base
+    mp = os.path.join(d, stem + ".manifest.json")
+    if not os.path.isfile(mp):
+        return []
+    try:
+        with open(mp, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as e:
+        sys.stderr.write("chatter_log: manifest %s unreadable (%s); reading the live file only\n" % (mp, e))
+        return []
+    rows = doc.get("archives") if isinstance(doc, dict) else None
+    if not isinstance(rows, list):
+        rows = doc.get("files") if isinstance(doc, dict) else None
+    out: List[str] = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        f = r.get("file") or r.get("path")
+        if not f:
+            continue
+        f = str(f)
+        p = f if os.path.isabs(f) else os.path.join(d, f)
+        if os.path.basename(p) == base:
+            continue                                     # never the live file twice
+        out.append(p)
+    return out
+
+
+def read_chat_jsonl(path: str) -> List[Dict[str, Any]]:
+    """The manifest's archives (oldest first) + the live file, as one row list (IDLEWORLD 6.2)."""
+    rows: List[Dict[str, Any]] = []
+    for p in manifest_archives(path):
+        rows.extend(read_jsonl(p))
+    rows.extend(read_jsonl(path))
+    return rows
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -383,7 +438,7 @@ def build(chat_rows: List[Dict[str, Any]], metrics_rows: List[Dict[str, Any]],
                  "first_kind": classify(m["text"]), "first_text": clean(m["text"]),
                  "first_message_stream_offset_s": stream_offset(m["ts"], mrows),
                  "second_within_10m": False, "messages": 0, "last_seen": None, "_days": set(), "_badges": set(),
-                 "is_owner": False, "is_staff": False, "kinds": {"vote": 0, "verb": 0, "idea": 0, "plain": 0}}
+                 "is_owner": False, "is_staff": False, "kinds": {k: 0 for k in KINDS}}
             chatters[key] = c
         elif c["messages"] == 1 and (m["ts"] - c["_first"]).total_seconds() <= SECOND_MSG_WINDOW_S:
             c["second_within_10m"] = True
@@ -457,7 +512,7 @@ def build(chat_rows: List[Dict[str, Any]], metrics_rows: List[Dict[str, Any]],
     def rate(cs: List[Dict[str, Any]]) -> Optional[float]:
         return round(100.0 * sum(1 for c in cs if c["second_within_10m"]) / len(cs), 1) if cs else None
 
-    kinds = {"vote": 0, "verb": 0, "idea": 0, "plain": 0}
+    kinds = {k: 0 for k in KINDS}
     for c in chatters.values():
         kinds[c["first_kind"]] += 1
     today = now.strftime("%Y-%m-%d")
@@ -541,12 +596,12 @@ assert all(k != "first_text" for k, _ in CHATTER_COLS), "chat text never goes in
 def summary_line(d: Dict[str, Any]) -> str:
     s = d.get("summary") or {}
     return ("chatters  %s total (%s ext, %s owner, %s staff)  2nd-msg<10m %s%% (ext %s%%)  arrivals today %s  1st-time today %s (ext %s)  "
-            "median 1st-msg offset %ss  first kinds vote/verb/idea/plain %s/%s/%s/%s  [%s]" % (
+            "median 1st-msg offset %ss  first kinds vote/verb/idea/unparsed-head/plain %s/%s/%s/%s/%s  [%s]" % (
                 _fmt(s.get("chatters_total")), _fmt(s.get("chatters_external")), _fmt(s.get("chatters_owner_accounts")),
                 _fmt(s.get("chatters_staff_accounts")), _fmt(s.get("second_message_rate_pct")), _fmt(s.get("second_message_rate_external_pct")),
                 _fmt(s.get("arrivals_today")), _fmt(s.get("first_time_chatters_today")), _fmt(s.get("first_time_external_today")),
                 _fmt(s.get("median_first_message_stream_offset_s")),
-                *[_fmt((s.get("first_kind_counts") or {}).get(k)) for k in ("vote", "verb", "idea", "plain")],
+                *[_fmt((s.get("first_kind_counts") or {}).get(k)) for k in KINDS],
                 d.get("generated_at")))
 
 
@@ -649,9 +704,37 @@ def self_test() -> int:
             fails.append("chat text leaked into markdown")
         if nf.terms != 2:
             fails.append("blocklist terms: %d" % nf.terms)
+        # S1: classify() mirrors the bridge (stack is a live verb; the unparsed heads have their own kind)
+        want = {"stack stone": "verb", "stack": "verb", "dig": "unparsed-head", "dig a hole": "unparsed-head",
+                "build a castle in the field there": "unparsed-head", "cut some trees": "unparsed-head", "zoom out": "unparsed-head",
+                "climb the fell": "unparsed-head", "go river": "verb", "!idea zoom": "idea", "a": "vote", "hello there": "plain",
+                "digging is fun": "plain", "sow": "verb"}
+        got = {k: classify(k) for k in want}
+        if got != want:
+            fails.append("classify: %r" % {k: (got[k], want[k]) for k in want if got[k] != want[k]})
+        if "stack" in LATER_VERBS or "stack" not in VERBS:
+            fails.append("stack must be a live verb, not LATER")
+        # S1: manifest awareness: an archive listed by chat.manifest.json is read before the live file, once
+        ar = os.path.join(td, "chat.20260925T0000.1")
+        live = os.path.join(td, "chat.jsonl")
+        with open(ar, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": "2026-09-25T01:00:00Z", "id": "a1", "username": "Archie", "content": "dig", "badges": []}) + "\n")
+            fh.write(json.dumps({"ts": "2026-09-25T01:00:05Z", "id": "a2", "username": "Archie", "content": "stack stone", "badges": []}) + "\n")
+        with open(live, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": "2026-09-26T01:00:00Z", "id": "a2", "username": "Archie", "content": "stack stone", "badges": []}) + "\n")   # a dup id across the cut
+            fh.write(json.dumps({"ts": "2026-09-26T01:00:10Z", "id": "l1", "username": "Archie", "content": "b", "badges": []}) + "\n")
+        with open(os.path.join(td, "chat.manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump({"schema": 1, "name": "chat.jsonl", "live": "chat.jsonl", "archives": [{"file": "chat.20260925T0000.1", "lines": 2}]}, fh)
+        rows = read_chat_jsonl(live)
+        d2 = build(rows, [], name_filter=NameFilter(bl, os.path.join(td, "builders.json"), os.path.join(td, "world.json")))
+        a = d2["chatters"].get("archie") or {}
+        if len(rows) != 4 or a.get("messages") != 3 or a.get("first_kind") != "unparsed-head" or a.get("days_seen") != ["2026-09-25", "2026-09-26"]:
+            fails.append("manifest replay: rows %d chatter %r" % (len(rows), a))
+        if read_chat_jsonl(os.path.join(td, "nomanifest.jsonl")) != []:
+            fails.append("a chat file without a manifest reads as before")
     for f in fails:
         print("chatter_log SELF-TEST FAIL: %s" % f)
-    print("chatter_log self-test %s (matcher %s, 9 checks)" % ("PASS" if not fails else "FAIL", nf.source))
+    print("chatter_log self-test %s (matcher %s, 13 checks)" % ("PASS" if not fails else "FAIL", nf.source))
     return 0 if not fails else 1
 
 
@@ -690,7 +773,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     CHAT_FILE, METRICS_FILE = args.chat, args.metrics
     nf = NameFilter(args.blocklist, args.builders, args.world)
-    d = build(read_jsonl(args.chat), read_jsonl(args.metrics), name_filter=nf)
+    d = build(read_chat_jsonl(args.chat), read_jsonl(args.metrics), name_filter=nf)
     if args.out != "-":
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         tmp = "%s.tmp.%d" % (args.out, os.getpid())
