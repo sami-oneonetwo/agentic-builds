@@ -686,6 +686,7 @@ class Behaviour(object):
         self.stats_local = 0
         self.stats_picks = 0
         self.stats_deferred = 0                # idle picks pushed to the next frame by the 2-plans-per-frame cap
+        self.stats_boot_stepped = 0            # away bodies place_settler moved off a waystone at boot (AGES 1.3)
         self.stats_reactions = 0
         self._plans_frame = 0                  # route plans (block BFS / cell refinement) started by walks this frame
         self.stats_speaker_skips = 0           # idle picks skipped because the snapped cell sat beside the newest speaker
@@ -980,6 +981,17 @@ class Behaviour(object):
         e.last_attention_t = e.last_active_t
         e.present_s = self.present_s
         e.present = (t - e.last_active_t) <= self.present_s
+        if not e.present and not self._stone_clear(e.x, e.y):
+            # AGES 1.3 / the honesty `idle` rule: an away body never stands at a waystone. A save that left it mid-route
+            # by the Moot (or on the slot it voted from) is stepped BEFORE the first frame to its camp door, else to a
+            # clear Moot-ring cell (a boot, not an event: nobody saw it; the fallback errand pick is ~2.4 s away)
+            door = self.ground.nearest(float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0) if e.camp is not None else None
+            if door is not None and self._stone_clear(*door):
+                e.x, e.y = float(door[0]), float(door[1])
+            else:
+                rx, ry = self.ground.nearest(*self._moot_ring_cell(e))
+                e.x, e.y = float(rx), float(ry)
+            self.stats_boot_stepped += 1
         e.minutes_tonight = 0.0
         e.pause_until = t + self._u(0.5, 3.0)
         e.next_blink_t = t + self._u(BLINK_MIN, BLINK_MAX)
@@ -1659,6 +1671,16 @@ class Behaviour(object):
             return None
         return (float(p["x"]), float(p["y"]))
 
+    def _stone_clear(self, tx: float, ty: float) -> bool:
+        """(tx, ty) is at least MOOT_STONE_CLEAR from every waystone and from the standing rows south of it (3 rows of
+        slots and their margin): where an away body may stand (AGES 1.3; the honesty `idle` rule uses 2.5 cells)."""
+        for sx, sy in self.waystones:
+            if math.hypot(tx - sx, ty - sy) < MOOT_STONE_CLEAR:
+                return False
+            if abs(tx - sx) < STAND_DX + MOOT_STONE_CLEAR and sy + STAND_Y0 - MOOT_STONE_CLEAR <= ty <= sy + STAND_Y0 + 3 * STAND_DY + MOOT_STONE_CLEAR:
+                return False
+        return True
+
     def _moot_ring_cell(self, e: Entity) -> Vec:
         """A cell on the Moot ring 10-24 out: never the green's centre, never within MOOT_STONE_CLEAR of a waystone or the
         standing rows south of it (an away body never stands at a stone, AGES 1.3)."""
@@ -1666,15 +1688,7 @@ class Behaviour(object):
         for _ in range(8):
             ang, rad = self._u(0, 2 * math.pi), self._u(MOOT_RING[0], MOOT_RING[1])
             tx, ty = mx + rad * math.cos(ang), my + rad * math.sin(ang) * 0.7
-            clear = True
-            for sx, sy in self.waystones:
-                if math.hypot(tx - sx, ty - sy) < MOOT_STONE_CLEAR:
-                    clear = False
-                    break
-                if abs(tx - sx) < STAND_DX + MOOT_STONE_CLEAR and sy + STAND_Y0 - MOOT_STONE_CLEAR <= ty <= sy + STAND_Y0 + 3 * STAND_DY + MOOT_STONE_CLEAR:
-                    clear = False                                  # the standing rows (3 rows of slots) and their margin
-                    break
-            if clear:
+            if self._stone_clear(tx, ty):
                 return (tx, ty)
         return (mx, my + MOOT_RING[1] * 0.7 + 4.0)                 # south of the green, below every slot row
 

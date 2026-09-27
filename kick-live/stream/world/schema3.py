@@ -389,9 +389,10 @@ def verify_v3(old: Dict[str, Any], new: Dict[str, Any], chat_path: Optional[str]
     scan = chat_scan(chat_path)
     doa = list(nw.get("days_on_air") or [])
     distinct = scan["dates"]
-    gate("days_on_air == distinct local chat dates", "%d == %d %s" % (len(doa), len(distinct), doa),
-         scan["readable"] and sorted(set(doa)) == doa and doa == distinct,
-         "days_on_air %r != chat dates %r%s" % (doa, distinct, "" if scan["readable"] else " (chat copy unreadable)"))
+    no_chat = not scan["readable"] and not os.path.exists(str(chat_path or ""))     # a run dir with no chat.jsonl yet
+    gate("days_on_air == distinct local chat dates", "%d == %d %s%s" % (len(doa), len(distinct), doa, " (no chat file, both empty)" if no_chat and not doa else ""),
+         (scan["readable"] and sorted(set(doa)) == doa and doa == distinct) or (no_chat and not doa and not distinct),
+         "days_on_air %r != chat dates %r%s" % (doa, distinct, "" if scan["readable"] else (" (no chat file: days_on_air must be empty)" if no_chat else " (chat copy unreadable)")))
     people, stones = hatched_count(new), len(nw.get("stones") or [])
     want_age = LAND.age_gate(people, stones, len(doa))
     gate("age == age_gate(people, stones, days)", "%s == age_gate(%d, %d, %d) = %d (%s)" % (nw.get("age"), people, stones, len(doa), want_age, LAND.age_name(want_age)),

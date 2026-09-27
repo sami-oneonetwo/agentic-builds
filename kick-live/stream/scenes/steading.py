@@ -761,8 +761,9 @@ class SteadingScene(object):
         self.worker.submit(SPRITE_PRIO_HATCH, self._job_warm_props, self._octant, float(season_idx))
         self.booted = True
         self._boot_ms = (_time.perf_counter() - t0) * 1000
-        self.log("boot done in %.0f ms; %d entities, %d camps, bake %s" % (
-            self._boot_ms, len(self.behaviour.entities), len(self.land.camps()), (self.bakes.current.stats() if self.bakes.current else None)))
+        self.log("boot done in %.0f ms; %d entities (%d stepped off a waystone), %d camps, bake %s" % (
+            self._boot_ms, len(self.behaviour.entities), int(getattr(self.behaviour, "stats_boot_stepped", 0)), len(self.land.camps()),
+            (self.bakes.current.stats() if self.bakes.current else None)))
 
     def _sheet_ready(self, key: str) -> bool:
         """The behaviour asks before a hatch (<= 4 s grace): is this settler's first frame rendered? Never renders."""
@@ -2578,7 +2579,7 @@ def _self_test() -> bool:                                       # pragma: no cov
                     "bake": sc.bakes.current.stats() if sc.bakes.current else None, "boot_ms": round(sc._boot_ms)}
     print("    A: avg %.2f p95 %.2f max %.2f ms over %d frames; sections %s" % (arr.mean(), np.percentile(arr, 95), arr.max(), len(arr), sc.stats()["sections_ms"]))
     print("    A: entities %s" % [(e["key"], e["state"], e["x"], e["y"], e["sx"], e["sy"], e["in_view"]) for e in sc.entities(now)])
-    print("    A: plates %s" % [(p["key"], p["word"], p["night"], p["x"], p["y"], p["in_view"]) for p in sc.plates(now)])
+    print("    A: plates %s" % [(p["key"], p["word"], p["days"], p["x"], p["y"], p["in_view"]) for p in sc.plates(now)])
     print("[A2] a vote stands at a waystone; 2 min of quiet -> both REMAIN on the land (present 0, DRIFT, wear delta 0, 0 violations); a message is a return")
     f0 = 900
     votes = [(names[1], "A", now0 + f0 / fps)]

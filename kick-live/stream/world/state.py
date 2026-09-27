@@ -61,6 +61,7 @@ import base64
 import copy
 import datetime as _dt
 import glob
+import importlib
 import json
 import os
 import re
@@ -75,9 +76,36 @@ if _ROOT not in sys.path:
 
 from stream.state_store import write_state_atomic, iso_to_epoch, epoch_to_iso, normalise_chat, run_path  # noqa: E402
 from stream.world import SIM_W, SIM_H  # noqa: E402
-from stream.world import pips as P  # noqa: E402
-from stream.world import land as LAND  # noqa: E402
-from stream.world import schema3 as S3  # noqa: E402
+
+
+class _Late(object):
+    """`stream.world.<name>` resolved at EVERY attribute access from sys.modules, never bound at import. The compositor's
+    world-batch hot-reload (HotReloader.WORLD_ORDER) re-executes this module BEFORE land / pips, and `_rebind_parent`
+    only swaps the package attribute when THAT module re-executes one step later: an import-time
+    `from stream.world import land as LAND` here kept the previous land module for the whole deploy and the fresh state
+    raised AttributeError (land.local_date, Land.record_visit) on its first record (integration finding; the same pattern
+    as honesty._idle_caps). A module never imported yet is imported once, here."""
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        object.__setattr__(self, "_name", name)
+
+    def __getattr__(self, attr: str):
+        mod = sys.modules.get(self._name)
+        if mod is None:
+            mod = importlib.import_module(self._name)
+        return getattr(mod, attr)
+
+    def __repr__(self) -> str:
+        return "<late %s>" % self._name
+
+
+P = _Late("stream.world.pips")
+LAND = _Late("stream.world.land")
+S3 = _Late("stream.world.schema3")
+for _n in ("stream.world.pips", "stream.world.land", "stream.world.schema3"):
+    importlib.import_module(_n)               # import-time errors still surface here, as with the plain imports
+del _n
 
 SCHEMA_V1 = 1                     # PIP HOLLOW (the cave); still read and written for the rollback week
 SCHEMA_V2 = 2                     # LONGGRASS (OPENWORLD.md 5)
@@ -969,7 +997,7 @@ class WorldState(object):
         try:
             size = os.path.getsize(self.chat_path)
         except OSError:
-            return out
+            return self._finish_wishes(out, now)
         offset = int(cur.get("chat_jsonl_offset") or 0)
         if offset > size:                     # truncated / rotated: start over (idempotent anyway)
             offset = 0
@@ -982,11 +1010,11 @@ class WorldState(object):
                 fh.seek(offset)
                 data = fh.read(size - offset)
         except OSError:
-            return out
+            return self._finish_wishes(out, now)
         last_nl = data.rfind(b"\n")
         if last_nl < 0:
             self._quarantine_scan(now, out)       # an existing but empty chat.jsonl: nobody chatted, so nobody is a pip
-            return out
+            return self._finish_wishes(out, now)  # ... but the wish replay still runs (a no-new-chat boot logs `wishes: +0`)
         for line in data[: last_nl + 1].splitlines():
             line = line.strip()
             if not line:
@@ -1058,8 +1086,14 @@ class WorldState(object):
         self._quarantine_scan(now, out)
         self.data["world"]["hatched_ever"] = self.hatched_ever
         self.dirty = True
+        return self._finish_wishes(out, now)
+
+    def _finish_wishes(self, out: Dict[str, int], now: float) -> Dict[str, int]:
+        """IDLEWORLD 2.1: the wish ledger replay rides EVERY boot walk of recompute_from_chat, including one that found no
+        new chat bytes (integration finding: the early return skipped it, so a rotated wishes.jsonl was never refilled and
+        the `wishes: +N` boot line only appeared with new chat)."""
         if self.schema >= 2:
-            wr = self.recompute_wishes(now)                    # IDLEWORLD 2.1: the ledger replay rides the same boot walk
+            wr = self.recompute_wishes(now)
             out["wishes_added"], out["wishes_present"] = int(wr.get("added") or 0), int(wr.get("present") or 0)
         return out
 

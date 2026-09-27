@@ -630,7 +630,8 @@ def frame_hook(scene, ev: List[Dict[str, Any]], now: float) -> None:
         st["date"] = today                                      # a boot never turns the day
     elif st["date"] != today and not any(e_.get("type") == "day_turn" for e_ in ev):
         st["date"] = today
-        ev.append({"type": "day_turn", "date": today, "by": "ledger"})
+        if w is None or not hasattr(w, "take_day_turns"):        # W3 present: state._note_day queues the day_turn on the
+            ev.append({"type": "day_turn", "date": today, "by": "ledger"})   # first live record of the new date (one turn, one save)
     for e_ in ev:
         if e_.get("type") == "day_turn":
             st["date"] = today
@@ -921,12 +922,19 @@ def _scene_test() -> bool:                                       # pragma: no co
     ret = [ev for ev in sc.events if ev.get("type") == "return"]
     gate("one return event", len(ret) == 1 and ret[0].get("pip") == name, repr([(ev.get("type"), ev.get("pip")) for ev in sc.events]))
     tl = ret[0].get("told_line") if ret else None
-    gate("the return line rides the event (`@kai_w5 is back`: no last_told on a schema-2 file -> bare line)", tl == "@%s is back" % name, repr(tl))
-    gate("ev now/told attached; told is None before the schema bump", bool(ret) and ret[0].get("now") is not None and ret[0].get("told") is None,
-         repr(ret[0].get("now") if ret else None))
-    p = sc.world.pip(name)
     st = importlib.import_module("stream.world.state")
-    if int(getattr(st, "SCHEMA", 2)) >= 3 or had_told:
+    v3 = int(getattr(st, "SCHEMA", 2)) >= 3 or had_told
+    if v3:                                                       # W3 landed: last_told is seeded at load, so the line carries the diff
+        gate("the return line rides the event (schema 3: `@name is back` + the diff clauses, copy-clean)",
+             isinstance(tl, str) and tl.startswith("@%s is back" % name) and clean(tl), repr(tl))
+        gate("ev now/told attached; told is the seeded last_told snapshot (schema 3)",
+             bool(ret) and ret[0].get("now") is not None and isinstance(ret[0].get("told"), dict), repr(ret[0].get("told") if ret else None))
+    else:
+        gate("the return line rides the event (`@kai_w5 is back`: no last_told on a schema-2 file -> bare line)", tl == "@%s is back" % name, repr(tl))
+        gate("ev now/told attached; told is None before the schema bump", bool(ret) and ret[0].get("now") is not None and ret[0].get("told") is None,
+             repr(ret[0].get("now") if ret else None))
+    p = sc.world.pip(name)
+    if v3:
         gate("last_told written (schema >= 3)", isinstance(p.get("last_told"), dict))
     else:
         gate("last_told NOT written on a schema-2 file (W3 owns the bump)", "last_told" not in p)
@@ -948,7 +956,11 @@ def _scene_test() -> bool:                                       # pragma: no co
     now += 1 / fps
     sc.frame(mkctx(now, f), size)
     dt_ev = [ev for ev in sc.events if ev.get("type") == "day_turn"]
-    gate("local-date change -> one day_turn event (W3 absent)", len(dt_ev) == 1 and dt_ev[0].get("by") == "ledger", repr(dt_ev))
+    if hasattr(sc.world, "take_day_turns"):
+        gate("local-date change -> NO ledger day_turn while W3 owns the day (state._note_day queues it on the first record)",
+             not any(e_.get("by") == "ledger" for e_ in dt_ev), repr(dt_ev))
+    else:
+        gate("local-date change -> one day_turn event (W3 absent)", len(dt_ev) == 1 and dt_ev[0].get("by") == "ledger", repr(dt_ev))
     bp = board_plate(sc, now)
     gate("board plate is None when nothing happened yesterday (never an empty `yesterday`)", bp is None or (bp.startswith("yesterday · ") and clean(bp)), repr(bp))
     gate("scene clean", sc.errors == 0 and sc.honesty_violations == 0, "errors %d honesty %d" % (sc.errors, sc.honesty_violations))

@@ -1205,6 +1205,9 @@ class WorldPanel(Panel):
                     if land_mode and ev.get("told_line"):              # W5 hook: the ledger's diff line (validated at write) at PRIO_YOU
                         self._notice(now, str(ev["told_line"]), accent, dur=6.0, prio=PRIO_YOU, key=ev.get("pip"))
                         self._cairn_pin_until = max(self._cairn_pin_until, now + float(ev.get("plate_pin_s") or CAIRN_PIN_S))
+                        growth = [L.strip_non_bmp(str(g)) for g in (ev.get("growth") or []) if L.strip_non_bmp(str(g))]
+                        if growth and ev.get("pip"):                  # the land's real growth (`your tree grew`) keeps its per-settler
+                            self._care[ev["pip"]] = (" · ".join(growth), now + 6.0)   # care label beside the told line
                     else:
                         self._care_line(sc, ev, now)
                     if ev.get("only_light") and ev.get("pip") and not land_mode:
@@ -1540,6 +1543,9 @@ class WorldPanel(Panel):
             pl = (ld.plate(key, now) if ld is not None else None) or {}
             if pl.get("word"):
                 parts.append(str(pl["word"]))
+            n_days = int(pl.get("days") or 0)                      # W3 hook: a len() over days_seen (IDLEWORLD 1.4 `3 days here`)
+            if n_days:
+                parts.append("%d day%s here" % (n_days, "" if n_days == 1 else "s"))
             n_marks = sum(1 for m in (ld.marks if ld is not None else []) if str(m.get("owner") or "").lower() == key)
             if n_marks:
                 parts.append("%d mark%s" % (n_marks, "" if n_marks == 1 else "s"))
@@ -1549,14 +1555,20 @@ class WorldPanel(Panel):
                     stones = int(n)
             if stones:
                 parts.append("%d stone%s" % (stones, "" if stones == 1 else "s"))
-            try:                                                   # W5 hook: `1 stands` when the person's placed rows exist (ledger)
-                parts.extend(importlib.import_module("stream.world.ledger").stats_extra(sc.world.pip(key), sc.world))
-            except Exception:
-                pass
             e = sc.behaviour.get(key)
             mins = int(round(float(getattr(e, "minutes_tonight", 0.0) or 0.0))) if e is not None else 0
             if mins:
                 parts.append("%d min here" % mins)
+            try:                                                   # W5 hook: `1 stands` when the person's placed rows exist (ledger)
+                parts.extend(importlib.import_module("stream.world.ledger").stats_extra(sc.world.pip(key), sc.world))
+            except Exception:
+                pass
+            try:                                                   # W3 hook: the age's name closes the line (`· the Camp`)
+                age_nm = importlib.import_module("stream.world.land").age_name(int((sc.world.data.get("world") or {}).get("age") or 0))
+                if age_nm:
+                    parts.append(str(age_nm))
+            except Exception:
+                pass
         except Exception:
             pass
         return " · ".join(parts)
