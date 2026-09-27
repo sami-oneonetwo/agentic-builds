@@ -1,5 +1,39 @@
 # HANDOFF for a fresh session
 
+## Current operational handoff — 2026-09-27 13:36 AEST
+
+This section supersedes the historical handoff below.
+
+- Active work is on `origin/worktree-idle-world`, not `main`; local tree `.claude/worktrees/idle-world/kick-live`.
+  Do not pull main over it or merge branches automatically. Runtime code is the frozen `live-snapshot-v3` behind
+  `~/.local/share/kick-live/live-current`; runtime data is `~/.local/share/kick-live/run-live`.
+- On air: persistent settlers, no sleep, full errand table/ROAM, schema 3 and camps by days, return summary,
+  natural-tone pixel sprites, gathering/hauling rounds, wish ledger, wish post/validated recipe placement, and
+  age construction. All creature identities remain chat-derived. Camp construction began at 13:36 after deployment.
+- Pixel deployment 13:21 used a tested snapshot-only bundle. Ages/wishes deployment 13:36 was a watched-file
+  hot reload: encoder 13123 and compositor 22112 were unchanged by that deploy. Read pidfiles; never trust these
+  historical PID numbers for killing processes.
+- Backups: `~/.local/share/kick-live/pixel-backup-20260927T132059` and
+  `~/.local/share/kick-live/world-backup-20260927T133621`. Each contains exact prior code plus a world copy.
+  Newer live records must be preserved if rollback becomes necessary.
+- Verified: final staged 3900-frame construction replay completed the Camp with zero honesty/copy errors,
+  tile/board gates passing, p95 17.0 ms. Concurrent-bake and replay-action regressions are in
+  `validate/test_world_regressions.py`. Synthetic high-population cold-boot timing remains unresolved; do not claim
+  100 simultaneous chatters are fully validated. The old cave rollback tests also have known legacy failures.
+- The probe is a **session cron**, not a running headless `probe.pid`: :07/:27/:47, session-only, seven-day expiry.
+  It observes, answers questions and proposes; it does not execute arbitrary chat text or automatically deploy.
+  Headless runner exists but was not started: its measured model cost was high. Use one runtime, not both.
+- Check `pause_bot.json` before mutations. `nuke` stops the encoder pipeline while chat/API monitors stay up so
+  the broadcaster's `init` can be heard. Operators are defined in `scripts/ops_chat_switch.py`, account IDs checked.
+- At 13:04 the supervisor watchdog restarted the pipeline after sustained Kick API offline responses. Root cause
+  of the remote session loss is unknown; renderer logs kept running. CPU readings do not establish Chrome as cause.
+  Relay gaps are a capped history: compare latest timestamps/cumulative counters, not just list length.
+- Remaining work: sustained high-population feedback fairness/scale tests, arbitrary new mechanics via the keeper
+  build loop, later age artwork and docs cleanup. Do not present the fixed recipe catalogue as unlimited generation.
+- Future visual changes should show a small preview quickly and run focused regressions, not another studio/judge
+  cycle. Keep heavy rendering tests serial and niced on this streaming Mac; retain a few evidence frames only.
+
+
 Written 2026-09-26, 15:40 Brisbane time. Supersedes the mid-morning handoff (that session's plan was executed).
 
 ## Who and what

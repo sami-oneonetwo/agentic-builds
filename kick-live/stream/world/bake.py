@@ -46,6 +46,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -258,7 +259,9 @@ class GroundBake:
         self.marks = marks or {}
         self.log = log or (lambda *a: None)
         self.path = bake_path(run_dir, T.seed, self.season_idx, self.octant, self.bake_ver, self.px)
-        self.tmp = self.path + ".tmp-%d" % os.getpid()
+        self.tmp = self.path + ".tmp-%d-%s" % (os.getpid(), uuid.uuid4().hex)
+        # Old and new scenes can bake the same key concurrently during hot reload.
+        # Each job owns a private staging inode; only the final atomic replace is shared.
         self.H, self.W = T.h * self.px, T.w * self.px
         self.arr: Optional[np.memmap] = None
         self.ready = False

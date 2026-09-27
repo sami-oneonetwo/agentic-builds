@@ -1,45 +1,59 @@
-# Resuming kick-live in a new Claude Code session
+# Resuming the live world
 
-Everything that matters survives a session close **except work that is still running inside the
-session** (background workflows, monitors). The live stream, the repo, the snapshots, the runtime
-dirs and the memory files are all on disk and unaffected.
+Current handoff: `docs/HANDOFF.md`, top section, updated 2026-09-27. The older plans are design history.
+Active branch: `origin/worktree-idle-world`. No automatic merge to main.
 
-## What survives
-- Repo: `~/Workspace/agentic-builds` (all committed and pushed; check `git status`).
-- Live stream: processes under `~/.local/share/kick-live/run-live/pids/` keep running as long as the
-  Mac stays awake. Code: `~/.local/share/kick-live/live-current` (symlink to the live snapshot).
-- Memory: `~/.claude/projects/-Users-sandy-Workspace/memory/` (loaded automatically when Claude Code
-  starts in `~/Workspace`; not tied to the API key).
-- Secrets: `~/.config/kick-live/env`, OAuth tokens `~/.config/kick-live/tokens.json`.
+## Inspect before changing anything
 
-## What does not survive
-- Any workflow mid-flight. Its completed agents are cached only for the **same session id**.
-  Reopening this exact conversation (`claude --continue` in `~/Workspace`, or `claude --resume` and
-  pick "SSH key generation for GitHub") keeps the session id, so
-  `Workflow({scriptPath, resumeFromRunId})` still works. A brand-new conversation cannot resume
-  the cache; use the integrate-only workflow below instead.
-
-## Steps
 ```bash
-cd ~/Workspace && git -C agentic-builds pull
-tail -80 agentic-builds/kick-live/docs/journal.md          # latest entries first: what was mid-flight
-L=~/.local/share/kick-live/run-live
-for n in supervisor relay compositor ffmpeg kick_api chat_listener duty; do kill -0 $(cat $L/pids/$n.pid) 2>/dev/null && echo "$n up" || echo "$n DOWN"; done
-curl -s http://127.0.0.1:8080/health | head -c 200         # OAuth/webhook receiver (peer's kickapp)
+T="$HOME/Workspace/agentic-builds/.claude/worktrees/idle-world/kick-live"
+L="$HOME/.local/share/kick-live/run-live"
+PY="$HOME/.local/share/kick-live/venv/bin/python"
+RUN_DIR="$L" bash "$T/scripts/status.sh"
+tail -40 "$T/docs/journal.md"
+test ! -e "$L/pause_bot.json"
 ```
-If the pipeline is down: `RUN_DIR=$L KL_LIVE=1 MODE=live SOURCE=compositor AUDIO_SOURCE=pipe:$L/a.pcm bash ~/.local/share/kick-live/live-current/scripts/start.sh`
-and `RUN_DIR=$L ~/.local/share/kick-live/venv/bin/python agentic-builds/kick-live/agents/duty.py heartbeat &`.
-If the receiver/tunnel is down: `bash ~/Workspace/agentic-builds/.claude/worktrees/kick-ngrok-tunnel/kick-live/scripts/kick-app.sh up`.
 
-## LONGGRASS is live (state as of 2026-09-26 15:40)
-The integrate-only workflow ran to completion (journal 024, 025); LONGGRASS was hot-reloaded into live-snapshot-v3 at
-14:13 and fix pass 2 at 15:34. See docs/HANDOFF.md for the current state, open items and the proven deploy recipe.
-Also check the owner's chat kill switch: `kill -0 $(cat $L/pids/ops_switch.pid)`; relaunch recipe in the docstring of
-`scripts/ops_chat_switch.py` (never `source env.sh` first).
+Use current pidfiles and verify command identity, not historical PIDs. The probe is a session cron, so no probe PID
+is expected unless the headless alternative was deliberately started. The live snapshot is distinct from the working
+checkout. Never copy uncommitted work to it just because a self-test passed on some other tree.
 
-## Using a different API key / gateway
-Claude Code reads `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) and
-`ANTHROPIC_MODEL`. The gateway must speak the Anthropic Messages API; check the provider's docs for
-their Anthropic-compatible endpoint and model ids before relying on it. Model availability may differ
-(the workflows pin `model: 'fable'`; adjust if the gateway lacks it). The conversation transcript and
-memory are local and independent of the key.
+## Probe tick
+
+```bash
+MODE=live "$PY" "$T/agents/probe.py" --run-dir "$L" observe --json
+MODE=live "$PY" "$T/agents/probe.py" --run-dir "$L" dossiers
+```
+
+Read `agents/prompts/probe.md`, answer the eight questions from the observation, then pipe the validated JSON to
+`MODE=live "$PY" "$T/agents/probe.py" --run-dir "$L" ingest --orchestrator`. This does not build or deploy.
+Only append a probe journal paragraph when ingest returns a non-null paragraph. Do not write a quiet-tick commit.
+Re-arm one session cron at `7,27,47 * * * *` after resuming if needed. It dies with the session and expires after
+seven days. Check the existing job list first. When paused, observe only: no dossiers, board writes, or deploy.
+
+`agents/probe.sh --once` is the optional headless alternative, not currently running. It needs the session's API
+configuration and `MODE=live`; do not source streaming secrets into it. Do not run it alongside the session cron.
+
+## Deployment and recovery
+
+Small world changes: exact tested, backed-up batch of watched world/scene/panel files, then verify reload probation,
+new error lines, honesty and Kick HLS. Art/spine changes need one relay-held renderer-child restart via `deploy.sh`.
+Never restart the encoder for a small change. Schema migration and replay must be tested on copies first.
+A paused/stopped pipeline may be intentional: inspect ops_switch and supervisor logs before relaunching.
+
+If relaunch has been authorized and the pipeline is genuinely stopped:
+
+```bash
+RUN_DIR="$L" KL_LIVE=1 MODE=live SOURCE=compositor AUDIO_SOURCE="pipe:$L/a.pcm" \
+  bash "$HOME/.local/share/kick-live/live-current/scripts/start.sh"
+```
+
+Keeper heartbeat and category sampler currently run from the worktree; the ops switch runs from the snapshot.
+Use each script's documented launch recipe, avoid duplicates, and strip streaming secrets from non-streaming processes.
+Validate playback with `validate/hls_probe.py --channel atleastonce --seconds 8 --out <fresh-evidence-directory>`.
+
+## State that persists
+
+`world.json` schema 3 stores identities, homes, dates, age history, wish papers and placed objects. Append-only chat and
+wish ledgers preserve provenance. Session cron/workflows do not survive a session exit. Do not rotate active chat
+files while the compositor is running. Never overwrite current state with a test fixture or stale backup.

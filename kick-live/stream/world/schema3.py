@@ -525,15 +525,18 @@ def replay_row(m: Dict[str, Any], kind: str, n: Optional[int], tagger=None) -> D
         if kind == "theme":
             arg = (arg.split(" ")[0].lower().lstrip("#") if arg else "")
     cap = CAP_IDEA_TEXT if kind == "idea" else (CAP_ASK_TEXT if kind == "ask" else CAP_LEDGER_TEXT)
-    wish, head = False, None
+    wish, head, verb = False, None, None
     if tagger is not None:
         try:
-            wish, head = tagger.wish_tag(arg if kind == "idea" else text, kind)
+            parsed = tagger.parse_verb(text) if kind == "plain" else None
+            verb = parsed[0] if parsed else None
+            if verb is None:
+                wish, head = tagger.wish_tag(arg if kind == "idea" else text, kind)
         except Exception:
             wish, head = False, None
     t = float(m["t"])
     return {"id": str(m["id"]), "ts": m.get("ts") or _ss().epoch_to_iso(t), "key": str(m.get("name") or "").lower(),
-            "by": str(m.get("name") or "?"), "n": n, "kind": kind, "text": arg[:cap], "verb": None, "hint": None,
+            "by": str(m.get("name") or "?"), "n": n, "kind": kind, "text": arg[:cap], "verb": verb, "hint": None,
             "wish": bool(wish), "head": head, "first_ever": False, "session": None, "src": "replay", "class": "pending"}
 
 

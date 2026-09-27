@@ -1,5 +1,28 @@
 # World API — LONGGRASS: what the verbs / rounds / text-layer / panels / audio agents code against
 
+## Current contract delta (2026-09-27)
+
+This block overrides older sleep/schema-2 prose below.
+- `world.json` schema 3; `schema3.py` migrates with identity/count/provenance gates and a pre-migration backup.
+- `Entity.is_present(now)` measures recent chat. `is_on_land()` includes absent residents. `awake_count()` is a
+  compatibility alias for present count; `awake()` is on-land entities, **not** a presence test. Absent residents may
+  errand or haul recorded stones, never generate votes, speech, marks or wear.
+- `SteadingScene` attaches `ages.AgeDirector` and `wishes.WishPost`. Their state is owned by the scene. The age
+  director completes recorded milestones without an agent call; construction uses 1x framing so pixel settlers read.
+- `scene.menu_wishes()`, `take_promotions()`, `promotions_pending()` feed the existing round engine. The post accepts
+  moderated wish-tagged records, validates closed-kit recipes, and credits real askers. New mechanics still require
+  a keeper code change; the registry is not an unrestricted code generator.
+- `ledger.py` supplies return summaries, snapshots, dated camp plates and flower growth. W3 owns `day_turn`.
+- `wishes.jsonl` is durable input; `wishes.out.jsonl` is outcome history. Old replay rows lacking verb metadata are
+  reparsed before classification. A prior `plant a flower` action must not become another flowerbed request.
+- Placement geometry is checked when an item is placed. Enduring schema/type/provenance checks continue afterwards;
+  walking a path underneath a valid structure must not delete it.
+- Pixel renderer API/cache keys remain compatible. Labels resolve `creatures.colour_hex(key)` at draw time, not
+  stale saved colours. Palette changes bump bake version once, without changing identity fields.
+- World module imports must be reload-safe: `state.py` uses late bindings for land/pips/schema3. Bake jobs use a
+  per-job UUID staging file so old/new scenes cannot collide during a hot reload.
+
+
 Owner: the world core (`stream/scenes/steading.py`, `stream/world/*`). Spec: `docs/OPENWORLD.md` (§4 map and camera,
 §5 entity model, §6 verbs, §7 art and budget, §8 layout content, §12 honesty); art: `docs/ART.md` (the look) and
 `docs/art-rules.md` (what may appear and move). Python 3.9, pillow 11, numpy 2, stdlib. **Nothing here reads

@@ -1382,3 +1382,29 @@ Also, relay status retains only 20 gaps; an unchanged list length of 20 does NOT
 Probe: accepted the castle request into the ledger (two requests from one distinct asker); no new proposal. The
 flowerbed proposal is only a hypothesis: historical plant verbs must not be reinterpreted as fresh build requests.
 Ingest accepted the updated answers with journal=null, so no separate quiet-tick commit is needed.
+
+## 040 — 2026-09-27 13:40 — Ages and wish post live; Camp construction completed
+
+The final integrated world was staged from the live snapshot plus an explicit 11-file manifest. Final regression
+fixes before deployment: bake jobs now use per-job UUID temporary filenames, avoiding old/new scene jobs sharing one
+PID-named temporary file; new replay rows preserve parsed verb metadata, and old replay rows are reparsed before wish
+classification so past planting actions cannot create additional flowerbeds; project requests survive boot beyond a
+recipe's 24-hour window. A lightweight concurrent-bake/replay suite passes all three cases.
+
+A 3,900-frame copied-live run completed the Camp construction, age_built=age=1, build cleared, honesty 0 and copy 0.
+Board/tile gates passed throughout; render p95 17.0 ms. The construction camera now stays at 1x instead of 0.75x:
+the wider framing made the newly smaller pixel settlers fail the tile-legibility gate; the closer framing passed it
+in every eligible frame. Only first/final frame images were retained, not thousands of PNGs.
+
+Hot reload at 13:36:23 loaded both AgeDirector and WishPost; the panel committed after 30 clean renders. Encoder
+13123 and compositor 22112 stayed alive. The Camp construction completed on air, with 20 recorded stones moved;
+world.age_built is now 1 and age_build null. Playback HLS passed at 720p30. A real subsequent idea was classified,
+pinned and promoted in wishes.out.jsonl at 13:38:53, with one paper persisted on the post. No synthetic chat was sent.
+A relay-held gap of 0.47 s was recorded near the final scene repaint, so this release is not described as gap-free.
+Backups: ~/.local/share/kick-live/world-backup-20260927T133621. Exact stage and checks:
+job tmp/world-final-1790479985, gate.json and compositor.log; live deploy manifest job tmp/world-deploy-result.json.
+
+Remaining limits, not completed: strict cold-boot timing for a 60-person synthetic scene, 100-chatter fairness/scale
+validation, later-age artwork, and general new-mechanic generation beyond the closed recipe catalogue. The probe
+loop is active in this session; it proposes only. A real keeper code change still needs tests and a deliberate deploy.
+No new probe proposal in the last tick, so no quiet-tick journal commit was created; this entry records the deployment.

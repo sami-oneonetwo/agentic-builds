@@ -1,5 +1,11 @@
 # LONGGRASS — build-ready spec for the open-world redesign (top-down settlement)
 
+> **Release status, 2026-09-27 13:36 AEST:** The stream is live. Schema 3, persistent settlers without sleep,
+> errands/ROAM, personal return summaries, pixel-art sprites with natural tones, the age director and the wish post
+> are deployed. See `HANDOFF.md` for operational truth. Earlier “design only”, “stream OFF”, schema-2 and sleep
+> descriptions below are historical context, not current instructions. The 100-chatter feedback/scale rows and
+> open-ended new-mechanic generation beyond the shipped recipes remain follow-up work, not completed features.
+
 Channel `atleastonce` on kick.com. Written 2026-09-25 by the synthesizer step of the
 `kick-live-open-world` workflow (5 concepts, 3 judges, this document), re-run under an **owner
 directive** after the mockup review (journal 020, 18:40 addendum). The owner's verdict on PIP

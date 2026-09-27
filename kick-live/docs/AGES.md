@@ -1,5 +1,11 @@
 # AGES — nobody sleeps, the settlement climbs through ages (spec, 2026-09-26, synthesis)
 
+> **Release status, 2026-09-27 13:36 AEST:** The stream is live. Schema 3, persistent settlers without sleep,
+> errands/ROAM, personal return summaries, pixel-art sprites with natural tones, the age director and the wish post
+> are deployed. See `HANDOFF.md` for operational truth. Earlier “design only”, “stream OFF”, schema-2 and sleep
+> descriptions below are historical context, not current instructions. The 100-chatter feedback/scale rows and
+> open-ended new-mechanic generation beyond the shipped recipes remain follow-up work, not completed features.
+
 Owner direction (terminal, 19:25, binding; journal 034): *"Remove the bottom part of the screen where chat is and
 just have the main thing. Let's make the world progress through the ages. Nobody falls asleep, everybody continues
 to walk around."* Standing rules: no fake viewers / chat / names; no NPCs or animals that pretend to be people;

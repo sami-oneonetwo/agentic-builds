@@ -1,5 +1,11 @@
 # IDLEWORLD — an idle world that chat shapes: accrual, the wish ledger, the feedback ladder, the probe loop (spec, 2026-09-27, synthesis)
 
+> **Release status, 2026-09-27 13:36 AEST:** The stream is live. Schema 3, persistent settlers without sleep,
+> errands/ROAM, personal return summaries, pixel-art sprites with natural tones, the age director and the wish post
+> are deployed. See `HANDOFF.md` for operational truth. Earlier “design only”, “stream OFF”, schema-2 and sleep
+> descriptions below are historical context, not current instructions. The 100-chatter feedback/scale rows and
+> open-ended new-mechanic generation beyond the shipped recipes remain follow-up work, not completed features.
+
 Owner direction (terminal, 2026-09-27 morning; binding): *"built like a generative world that is similar to an idle
 game. The world should progress through stages and chat can build and shape that as it goes ... dynamically generate
 what the chat is asking for ... Let chat shape it but also create a general structure and flow. Every time someone

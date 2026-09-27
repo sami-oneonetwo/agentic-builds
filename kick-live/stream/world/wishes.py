@@ -369,13 +369,25 @@ class WishPost(object):
                 continue
             key = str(r.get("key") or r.get("by") or "").lower()
             ts = _epoch(r.get("ts")) or now
-            if not key or now - ts > RECIPE_WINDOW_S:
+            if not key or key not in self._pips() or key in self._banished():
                 continue
-            w = R.classify(str(r.get("text") or ""), verb=r.get("verb"), hint=r.get("hint"),
+            verb = r.get("verb")
+            if r.get("src") == "replay" and r.get("kind") == "plain" and not verb:
+                # Older replay ledgers omitted verb metadata. A past planting action
+                # is not consent to create another object on every boot.
+                from stream.chat_bridge import ChatBridge
+                parsed = ChatBridge.parse_verb(str(r.get("text") or ""))
+                verb = parsed[0] if parsed else None
+            w = R.classify(str(r.get("text") or ""), verb=verb, hint=r.get("hint"),
                            kind="idea" if r.get("kind") == "idea" else "plain")
             self._seen.add(wid)
             out["rows"] += 1
             if w.cls in ("silent", "have_it") or w.cls.startswith("refuse"):
+                continue
+            # Projects remain part of the settlement's record across restarts.
+            # Recipe/menu requests retain their own bounded freshness window.
+            window = MENU_WINDOW_S if w.cls.startswith("menu") else RECIPE_WINDOW_S
+            if not w.cls.startswith("project") and now - ts > window:
                 continue
             c = self._cluster(w, ts)
             c.join(key, wid, ts)
