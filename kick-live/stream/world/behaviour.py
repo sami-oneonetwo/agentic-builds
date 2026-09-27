@@ -677,7 +677,9 @@ class Behaviour(object):
         self.session_id: Optional[str] = None   # set by the scene (informational: camps are the scene's / the land's)
         self.night: Union[float, Callable[[], float]] = 0.0   # nature.night_amount for the errand weights (the scene sets it)
         self.rain: Union[float, Callable[[], float]] = 0.0    # 0..1: the weather's rain (home x2, water x0.3; the scene sets it)
-        self.build: Optional[Dict[str, Any]] = None           # an age build (AGES 2.5, row 4): {"pile": (x, y), "site": (x, y)} -> haul 100
+        self.build: Optional[Dict[str, Any]] = None           # an age build (AGES 2.5, row 4): {"pile": (x, y), "site": (x, y)} -> haul 100;
+                                                              # W4 hook: ages.py sets {pile, site, idx} and walks the haulers itself
+                                                              # (then haul:pick / haul:place): with "idx" set the errand director holds
         self.fires: Optional[Callable[[str], Optional[Vec]]] = None   # key -> the owner's lit fire cell (the scene's _fires) or None
         self.owned: Optional[Callable[[str], List[Tuple[float, float, str]]]] = None   # key -> [(x, y, kind)] own field / tree / flower
         self.walk_ready: Optional[Callable[[str], bool]] = None       # the art cache has the walk frames; else standing errands only
@@ -1418,6 +1420,11 @@ class Behaviour(object):
         ang = (h % 3600) / 3600.0 * 2.0 * math.pi
         rad = 6.0 + ((h >> 16) % 1000) / 1000.0 * 10.0
         tx, ty = float(target[0]) + rad * math.cos(ang), float(target[1]) + rad * math.sin(ang) * 0.7
+        for i in range(1, 9):                                    # W4 hook: a gathered body dwells where it stops (an age build holds the
+            if self._stone_clear(tx, ty):                        # errands), so the ring cell is never within MOOT_STONE_CLEAR of a
+                break                                            # waystone or its standing rows (honesty `idle`: never at a stone)
+            a2 = ang + i * (2.0 * math.pi / 8.0)
+            tx, ty = float(target[0]) + rad * math.cos(a2), float(target[1]) + rad * math.sin(a2) * 0.7
         tgt = self.ground.nearest(*LAND.clamp_cell(tx, ty), 12)
         spd = self._u(ERRAND_SPEED[0], ERRAND_SPEED[1]) * e.tempo
         return self._start_walk(e, tgt, t, "gather", speed=spd)
@@ -1728,6 +1735,9 @@ class Behaviour(object):
         pick that would need a third waits one frame). The errand is the land's, not the person's: `then` is
         `errand:<name>` (or `sit`), `last_active_t` is untouched, no wear unless the person is here. `huddle` (rounds)
         aims every errand at the Moot. A settler whose walk frames are not rendered yet does standing errands only."""
+        if self.build is not None and self.build.get("idx") is not None:   # W4 hook: an age raising holds the errands (everyone
+            e.pause_until = t + 2.0                                        # stands at the Moot ring; ages.py walks the haulers itself)
+            return
         if self._plans_frame >= ROUTE_PLANS_PER_FRAME:
             self.stats_deferred += 1
             e.pause_until = t + 1.0 / 30.0                           # the director's frame budget: next frame

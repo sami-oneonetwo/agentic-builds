@@ -85,6 +85,12 @@ LINE_MAX = 60
 # LONGGRASS (OPENWORLD.md 10)
 RAISE_S = 20.0                        # a raising goes up over this long (survey stakes -> scaffold rows -> the finished sprite)
 RAISE_STEP_S = 1.0                    # the reveal advances at most 1 Hz (nothing flashes above 1 Hz)
+FLARE_HZ = 1.0                        # W4 hook: the beacon's flare while a raising runs toggles at 1 Hz (was int(now * 4) % 2: 2 Hz)
+
+
+def flare_on(now: float) -> bool:
+    """W4 hook: the flare phase (<= 1 Hz) the scene reads for the beacon during a raising / an age build."""
+    return int(float(now) * FLARE_HZ) % 2 == 0
 LAND_MILESTONES: Dict[int, str] = {3: "the cairn", 5: "the hearth ring", 10: "the Coast", 25: "the Birch Wood", 50: "the Tarn"}
 LAND_STRIP_MILESTONES = (10, 25, 50)  # open a 320x440 strip: v1.1 keeper ships; they WAIT in v1
 RAISING_SITES = {                     # place key + cell offset from it (the scene may refine to the nearest passable cell)

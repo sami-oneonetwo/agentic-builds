@@ -71,7 +71,8 @@ LEAD_HOLD_S = 2.0             # the lead offset flips only after the facing has 
 EVENT_HOLD_S = 4.0
 HATCH_CLOSE_S = 3.0
 HATCH_CLOSE_MAX_AWAKE = 2     # a hatch is a 1.5x close-up while at most this many are awake (the first-minute case is 1-2 people)
-EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "return", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named")
+EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "return", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named",
+               "age", "age_cam")          # W4 hook: an age raising frames the Moot at 0.75x for its ~90 s (ev["zoom"], ev["hold_s"])
 # ROAM (AGES 1.4): at 0 here with settlers on the land the camera follows the most watchable errand (haul > visit > water >
 # moot > tend > home > stroll) for 40-90 s or until that errand ends (never under ROAM_MIN_S: an ease takes seconds), eases
 # to the next at <= PAN_CAP, never the same settler twice running; every third hold is the Moot dwell (30 s at 1.5x)
@@ -428,12 +429,15 @@ class Camera(object):
         # 1. EVENT: that point, hold 4 s, 1x (1.5x for a 3 s hatch close-up while at most two pips are awake)
         if self._event is not None and self._event_t is not None:
             age = now - self._event_t
-            if age <= EVENT_HOLD_S:
+            hold = float(self._event.get("hold_s") or EVENT_HOLD_S)   # W4 hook: an age raising holds the Moot ~90 s
+            if age <= hold:
                 z = 1.0
                 if self._event.get("type") == "hatch" and len(awake) <= HATCH_CLOSE_MAX_AWAKE and age <= HATCH_CLOSE_S:
                     z = 1.5
+                if self._event.get("zoom") in ZOOMS:                  # W4 hook: ... at the zoom it asks for (0.75x)
+                    z = float(self._event["zoom"])
                 ex, ey = float(self._event["x"]), float(self._event["y"])
-                hw, hh = WINDOW[1.0][0] / 2.0, self.safe_h(1.0) / 2.0
+                hw, hh = WINDOW[z][0] / 2.0, self.safe_h(z) / 2.0
                 self._nudge_pts = [(ex, ey, HEAD_CELLS)]       # the event is the subject; only people who can share its frame count
                 self._nudge_pts += [(float(a["x"]), float(a["y"]), _top(a)) for a in awake
                                     if abs(float(a["x"]) - ex) <= hw and abs(float(a["y"]) - ey) <= hh]

@@ -77,7 +77,8 @@ if _ROOT not in sys.path:
 
 from stream.state_store import normalise_chat, run_path  # noqa: E402
 
-RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "roster", "here", "agency", "idle", "scene", "wear", "marks")
+RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "roster", "here", "agency", "idle", "scene", "wear", "marks",
+         "age")                                # W4 hook: `age` (AGES 4.2)
 SEED_STATES = ("seed", "hatching")
 HIDDEN_STATES = ("hidden", "burrowed")           # the one lying pose (mod !hide); `burrowed` is the cave's name for it
 MOVING_STATES = ("walking", "hauling")           # the states the land advances (a haul is a walk with a stone)
@@ -97,6 +98,7 @@ def _idle_caps() -> Tuple[float, int, int, float]:
 
 STONE_STAND_CELLS = 2.5                          # an away body dwelling this close to a waystone cell "stands at a waystone"
 SPEAKER_TARGET_CELLS = 2.0                       # an errand aimed this close to the newest speaker "targets the newest speaker"
+LAND_THEN_PREFIXES = ("errand:", "haul:")        # W4 hook: `haul:pick` / `haul:place` are the age raising's (the land moves them, AGES 2.5)
 RECORD_EVENTS_PIP = ("stack", "stone", "place", "plant", "sow", "harvest", "camp", "fire", "go", "speak", "hop", "emote", "pickup")
 RECORD_EVENTS_BY = ("feed", "pet", "gift", "hearth")    # the actor is `by` (the recipient `pip` may be away, AGES 1.5)
 RECORD_LISTS = (("stones", "by", "stone"), ("marks", "owner", "mark"))   # land lists diffed per frame: (attr, owner key, word)
@@ -345,7 +347,7 @@ class HonestyMonitor(object):
                             and float(getattr(e, "emote_until", 0.0)) - 2.0 - la > ps + CLAIM_SLACK_S:
                         claims.append("wave")
                     then = getattr(e, "then", None)
-                    if e.state in MOVING_STATES and then is not None and then not in AWAY_THEN_OK and not str(then).startswith("errand:"):
+                    if e.state in MOVING_STATES and then is not None and then not in AWAY_THEN_OK and not str(then).startswith(LAND_THEN_PREFIXES):   # W4 hook
                         claims.append("walking.then=%s" % then)
                     if e.state in ("idle", "sitting"):
                         for sx, sy in (getattr(b, "waystones", None) or ()):
@@ -497,7 +499,7 @@ class HonestyMonitor(object):
                 actor = ev.get("pip") or ev.get("key")
             elif typ == "walk":
                 then = str(ev.get("then") or "idle")
-                verb_walk = (then not in AWAY_THEN_OK and not then.startswith("errand:")) or isinstance(ev.get("to"), str)
+                verb_walk = (then not in AWAY_THEN_OK and not then.startswith(LAND_THEN_PREFIXES)) or isinstance(ev.get("to"), str)   # W4 hook
                 if verb_walk:
                     actor = ev.get("pip") or ev.get("key")
             if not actor:
@@ -581,6 +583,14 @@ class HonestyMonitor(object):
                     rep.unverified.append("provenance_violations: %r" % (ex,))
                 if bad:
                     rep.add("marks", "%d mark(s) whose owner is not a pip row: %s" % (len(bad), "; ".join(str(b) for b in bad[:3])))
+        # -- age (AGES 4.2; W4 hook): age <= age_gate(people, stones, days), monotonic across frames, age_built <= age,
+        #    stones_placed <= len(stones); the assertions live in ages.age_violations (schema 2 with no director: nothing)
+        try:
+            from stream.world import ages as _AG
+            for s_ in _AG.age_violations(scene, self):
+                rep.add("age", s_)
+        except Exception as ex:
+            rep.unverified.append("age: %r" % (ex,))
         rep.counts = {"entities": len(live), "animate": animate, "animate_real": animate_real, "present": n_present,
                       "present_real": present_real, "on_land_real": on_land_real, "hidden_real": hidden_real,
                       "seeds": sum(1 for e in live.values() if e.state in SEED_STATES),
@@ -1132,6 +1142,26 @@ def _selftest(run_dir: str) -> int:
     print("[fake 17f] _idle_caps() from sys.modules -> %r (no import-time binding)" % (caps_now,))
     run_frames(1)
 
+    # 18. W4 hook: the `age` rule's planted fakes (AGES 4.2): an age above the gate, a REGRESSED age, an age_built > age
+    ages_dir = getattr(scene, "ages", None)
+    if land_scene and ages_dir is not None:
+        blk = ages_dir.block()
+        gate0 = ages_dir.gate()
+        blk["age"] = gate0 + 3
+        rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+        caught["age (age above the gate)"] = "age" in rep.rules()
+        print("[fake 18a] age %d with gate %d -> %r" % (gate0 + 3, gate0, rep.violations))
+        blk["age"] = gate0
+        rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+        caught["age (regressed age)"] = "age" in rep.rules() and "regressed" in str(rep.violations)
+        print("[fake 18b] age %d -> %d (regressed) -> %r" % (gate0 + 3, gate0, rep.violations))
+        mon._age_last = gate0
+        blk["age_built"] = gate0 + 1
+        rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+        caught["age (age_built > age)"] = "age" in rep.rules() and "age_built" in str(rep.violations)
+        print("[fake 18c] age_built %d > age %d -> %r" % (gate0 + 1, gate0, rep.violations))
+        blk["age_built"] = min(int(blk.get("age_built") or 0), gate0)
+        run_frames(1)
     # 8. after cleanup: violation-free again (the monitor does not get stuck)
     rep = run_frames(3)
     print("[after] clean again: ok=%s violations=%r counts=%r" % (rep.ok, rep.violations, rep.counts))

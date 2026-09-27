@@ -999,6 +999,11 @@ class Land(object):
                     out.append("raising %r plaque names %r with no pip" % (r.get("name"), k))
         if self.hearth.get("by") and self.real_pip(self.hearth["by"]) is None:
             out.append("hearth lit by %r with no pip" % (self.hearth["by"],))
+        banished = self.ws.data.get("banished") or {}              # W4 hook: provenance covers age_history[].raised_by (a banished
+        for h in self.world.get("age_history") or []:               # key stays in the row: the history keeps the counts at reach)
+            for k in (h or {}).get("raised_by") or []:
+                if self.real_pip(k) is None and k not in banished:
+                    out.append("age %r raised_by %r has no pip" % ((h or {}).get("idx"), k))
         return out
 
     def purge_owner(self, key: str) -> Dict[str, Any]:

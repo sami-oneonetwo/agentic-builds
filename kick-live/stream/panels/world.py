@@ -1291,6 +1291,10 @@ class WorldPanel(Panel):
                         n = ev.get("stock")
                         tail = (" · stone %d" % int(n)) if n is not None else ""
                         self._notice(now, "@%s stacked a stone on the cairn%s" % (nm, tail), accent, prio=PRIO_VERB)
+                    if land_mode:
+                        self._cairn_pin_until = now + CAIRN_PIN_S     # W4 hook: the monument plate pins 10 s after every stone
+                elif typ in ("age", "age_gap") and ev.get("plank"):   # W4 hook: the turn line / the gap line (ages.py validated it)
+                    self._notice(now, str(ev["plank"]), accent, dur=8.0, named=False, prio=PRIO_EVENT)
                 elif typ == "cairn_named":
                     self._notice(now, "the cairn is named", accent, dur=8.0, named=False)
                 elif typ in ("raising", "raising_ship", "land_open"):
@@ -2567,6 +2571,11 @@ class WorldPanel(Panel):
             pin_ids.append("cairn:walkers" if (stop.get("kind") == "moot" or sid == "moot") else sid)
         if now < self._cairn_pin_until:
             pin_ids.append("cairn:walkers")
+        ag = getattr(sc, "ages", None)                              # W4 hook: the monument plate takes the cairn's pins (hatch / stone /
+        if ag is not None and any(m[0] == "age:reached" for m in in_view):   # Moot dwell) and pins itself through the plaque + 20 s
+            pin_ids = [ag.plate_id(now) if p == "cairn:walkers" else p for p in pin_ids]
+            if ag.plate_pinned(now) and ag.plate_id(now) not in pin_ids:
+                pin_ids.insert(0, ag.plate_id(now))
         pin_ids += [m[0] for m in in_view if m[1] in ("raising", "board")]     # W5 hook: the nightly board rides pinned (ledger)
         for pid in pin_ids:
             if pid in picked_ids:
@@ -2726,6 +2735,12 @@ class WorldPanel(Panel):
             names = " ".join("@" + nm for nm, _n in top if nm)
             if names:
                 marks.append(("cairn:stack", "cairn_stack", cx_, cy_ + 3.0, None, "cairn · " + names))
+        ag = getattr(sc, "ages", None)                              # W4 hook: the monument plate, both forms (ages.py composes + validates)
+        if ag is not None:
+            try:
+                marks.extend(ag.plate_marks(now, lambda k: self._shown(sc, k)))
+            except Exception:
+                pass
         # a raising in progress (pinned at its site) and the last one landed (10 min)
         try:
             if isinstance(raising, dict) and raising.get("name"):

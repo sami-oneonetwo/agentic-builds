@@ -79,6 +79,7 @@ from stream.world import HOLD_S, SLEEP_AFTER_S, test_pips_allowed  # noqa: E402
 from stream.world import behaviour as BH  # noqa: E402
 from stream.world import bake as BK  # noqa: E402
 from stream.world import camera as CAM  # noqa: E402
+from stream.world import ages as _AG  # noqa: E402   # W4 hook: the age director (AGES 2)
 from stream.world import land as LAND  # noqa: E402
 from stream.world import nature as NAT  # noqa: E402
 from stream.world import terrain as TER  # noqa: E402
@@ -759,6 +760,11 @@ class SteadingScene(object):
         if found is not None and found != self.land.bake_ver:
             self._bake_marks_ver[id(B)] = -1                        # ... and every mark region is repainted, then renamed
         self.worker.submit(SPRITE_PRIO_HATCH, self._job_warm_props, self._octant, float(season_idx))
+        try:                                                        # W4 hook: the age director (gate at round close, the 90 s raising)
+            self.ages = _AG.AgeDirector(self)
+        except Exception as ex:
+            self.ages = None
+            self.log("ages: director failed to start: %r" % (ex,))
         self.booted = True
         self._boot_ms = (_time.perf_counter() - t0) * 1000
         self.log("boot done in %.0f ms; %d entities (%d stepped off a waystone), %d camps, bake %s" % (
@@ -1049,6 +1055,8 @@ class SteadingScene(object):
             if self._round_no is not None:
                 b.release_votes(now)
                 self._votes_seen = {}
+                if getattr(self, "ages", None) is not None:          # W4 hook: age_check once per round close (AGES 2.5)
+                    self.ages.round_closed(now, ctx)
             self._round_no = rnd
         rule = ((ctx.micro or {}).get("colony_rule") or "free")
         b.colony_rule = rule if rule in ("free", "huddle") else "free"      # follow / scatter are gone (AGES 1.3)
@@ -1562,6 +1570,8 @@ class SteadingScene(object):
             self.behaviour.night = NAT.night_amount(self.nature.hour(now))   # the errand table's day / night weights
             self.behaviour.rain = 1.0 if self.nature.weather.state_at(now) == "rain" else 0.0   # home x2, water x0.3
             ev = self.behaviour.tick(now, dt)
+            if getattr(self, "ages", None) is not None:              # W4 hook: the age sequencer reads the arrive events, adds its own
+                ev.extend(self.ages.tick(now, ctx, ev))
             try:                                                     # W5 hook: return mutter + day_turn / nightly board (ledger)
                 importlib.import_module("stream.world.ledger").frame_hook(self, ev, now)
             except Exception as ex:
@@ -1849,6 +1859,10 @@ class SteadingScene(object):
         for t in self._trees(now):
             if visible(t["x"], t["y"]):
                 live.append((t["y"], n, "tree", t)); n += 1
+        ag = getattr(self, "ages", None)                              # W4 hook: the pile, the age sites, the rising sites (composites)
+        if ag is not None:
+            for ay_, aspr_, axy_ in ag.live_sprites(now, visible, sun):
+                live.append((ay_, n, "age", (axy_[0], axy_[1], aspr_))); n += 1
         for c in self.land.camps():
             lit_t = self._fires.get(c["key"])
             if lit_t is None:
@@ -1873,7 +1887,8 @@ class SteadingScene(object):
         acc = L.hex_rgb(L.preset(ctx.preset)["accent"])
         kp = getattr(self, "keepers", None)
         flare = bool(getattr(kp, "raising", None)) or bool((getattr(ctx, "macro", None) or {}).get("active"))   # a raising runs: the beacon flares
-        beacon_col = (255, 236, 200) if (beacon_lit and flare and int(now * 4) % 2 == 0) else (acc if beacon_lit else (150, 150, 150))
+        flare = flare or bool(getattr(ag, "build", None))             # W4 hook: ... and during an age raising
+        beacon_col = (255, 236, 200) if (beacon_lit and flare and _AG.flare_on(now)) else (acc if beacon_lit else (150, 150, 150))   # W4 hook: <= 1 Hz
         for _, _, kind, data in live:
             if kind == "pip":
                 self._blit_pip(rgb, data, now, zoom, s)
@@ -1890,6 +1905,8 @@ class SteadingScene(object):
             elif kind == "cairn":
                 x, y = data
                 spr = props.cairn(min(5, 1 + self.land.stock // 4), sun)
+            elif kind == "age":                                       # W4 hook: a ready composite (pile / site / reveal mask)
+                x, y, spr = data
             elif kind == "tree":
                 x, y = data["x"], data["y"]
                 spr = props.tree(NAT.tree_age_for_atlas(data["stage"]), LAND.name_hash(data["id"]) % 4, wind_phase, season, sun)
