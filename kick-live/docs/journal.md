@@ -1263,3 +1263,13 @@ the ring, `N gathered`, no record written); `raising day: stones x2` became `hau
 days), `wish`, `placed_step`, `placed_ship`, `age`; `props.post` exists for the wish post (drawn by W6). Backups:
 state.json.bak-pre-s1. Known: the rounds self-tests append to `docs/CHANGELOG.md` in whatever tree they run from (a
 harness pollution to fix in the test hooks; the file was deleted from the worktree).
+
+Tick 11:15 (probe): 10/10 processes, honesty 0/0, 3 viewers, rank #1 of the category again, followers 4; 35 min of
+chat silence (last line Sami's `c` at 10:38). Round 394 is the first ballot drawn from the new menu on air:
+`gathering at the Moot`, `hauling day · the Steading's stones`, `wind`; the ledger and acks files will appear with the
+next typed line. Frame-time trend worth watching, not yet red: relay gaps 5 -> 20 (a burst of four 0.2-0.3 s gaps at
+11:04:49, then single repeated frames), 236 dup/dropped and 39 over-budget frames in the 3000 since the 11:01 restart,
+fps p95 13.9 -> 20.9 over four ticks. `ps` puts the cause on the box, not in the code: two Chrome helpers at 157 %
+and 114 % CPU (the Kick player watching the stream on the streaming Mac), the compositor at 52 %, ffmpeg 41 %, load
+4.6-5.7, plus the W2 fix harness runs. Watching the stream on another device while the harnesses run would spare the
+encoder. No new idea; board top p-0002. W2 fix still running; nothing deployed this tick.
