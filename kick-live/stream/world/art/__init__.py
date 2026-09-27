@@ -5,7 +5,8 @@ docs/art/final/render_final.py. Nothing here reads the clock or the run dir: eve
 arguments and cached, so the compositor can call it on the frame path after a warm-up.
 
     creatures   render(username, tier, frame, zoom, facing, sun) -> RGBA · genome(username) · shadow(...) ·
-                settler_sheet(...) · head_icon(...) · anchor(tier) · FRAMES · TIERS
+                settler_sheet(...) · head_icon(...) · anchor(tier) · FRAMES · TIERS · GEO / ART_PX (the pixel grid:
+                one art px = 2 screen px at 1x, NEAREST, hard alpha; `python creatures.py --check` is the sweep)
     tiles       atlas(season) · Ground(cells, season).paint(wind, ripple) / repaint(region) · grade(rgb, hour) ·
                 sun_vector(hour) · CAT · T · CELL
     buildings   render(kind, tier, colour, seed, lit, sun) -> (RGBA, (dx, dy)) · footprint(kind, tier)

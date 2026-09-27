@@ -21,30 +21,41 @@ real Kick username created it; its look is a pure function of that username. The
 villagers, no mascots. Nature (trees, flowers, water, fire) supplies the rest of the life. Every number on the HUD is a
 `len()` over real records. Seeds have no name and no colour until the hold clears.
 
-## 2. Silhouette language: small people
+## 2. Silhouette language: small people on a pixel grid
 
-A settler is a **person**, not a shape: a big round head on a short neck, a belted tunic, two arms that gesture with
-mitten hands, two legs with round shoes. Seen from the front in the 3/4 top-down view. Head slightly wider than the
-shoulders (the lovability lives in the head); feet and hands visible in every standing frame; at 320x180 a settler is a
-coloured figure with a cream dot on top, not a blob.
+A settler is a **person**, not a shape: a wide rounded-square head about half the figure, a short belted tunic with
+1-px sleeves and cream mitten hands, two short legs with dark shoes. Seen from the front in the 3/4 top-down view and
+drawn as **chunky pixel art on a hard integer grid** (owner brief 2026-09-27 12:05, "rebuild the character models to be
+a bit cooler", with the four-figure pixel reference): one art pixel = 2 screen px at 1x (`creatures.ART_PX`), 4 at 2x,
+nearest-neighbour, no anti-aliasing, no supersample, no rotation. Head wider than the shoulders (the lovability lives
+in the head); feet and hands visible in every standing frame; at 320x180 a settler is a coloured figure with a cream
+dot on top, not a blob.
 
 | | sprout (tier 0) | settler (1) | builder (2) | elder (3) |
 |---|---|---|---|---|
-| standing height S at 1x | 26 px | 30 px | 34 px | 42 px |
-| heads tall | 2.1 | 2.5 | 2.5 | 3.0 |
-| head radius R (body units, 1.0 = S) | 0.238 | 0.20 | 0.20 | 0.167 |
-| hem (leg length) | 0.24 | 0.27 | 0.27 | 0.29 |
-| worn | hair only | hair, belt | + hat (beanie / hood) + kit | + elder hat + accent cape |
-| frame box (W x H) | 1.6 S x 1.72 S, ground point at (W/2, H - 0.14 S) | | | |
+| standing height S at 1x (fill rows x 2 px) | 26 px = 13 rows | 30 px = 15 rows | 34 px = 17 rows | 42 px = 21 rows |
+| legs (rows; the bottom row is the shoe) | 2 | 2 | 3 | 4 |
+| torso (rows x columns) | 3 x 6 | 4 x 8 | 5 x 8 | 8 x 10 |
+| head (rows x columns, corners cut) | 7 x 8 | 8 x 10 | 8 x 10 | 8 x 10 |
+| legs (width, columns) | 1 at -2 and 1 | 2 at -3..-2 and 1..2 | 2 at -3..-2 and 1..2 | 3 at -4..-2 and 1..3 |
+| visual height with both outline rows | 15 rows = 30 px | 17 = 34 px | 19 = 38 px | 23 = 46 px (+2 hat rows) |
+| worn | hair only | hair, belt row | + hat (beanie / hood) + kit | + elder hat, accent cape, collar step |
+| frame box (W x H) | 1.6 S x 1.72 S, ground line at (W/2, H - 0.14 S): unchanged | | | |
 
-Body units (x right, y up from the ground point): head centre `1 - R`; neck 0.05 under the chin (0.035 for sprouts);
-tunic top `head_bottom - neck + 0.03` (tucks under the chin outline); shoulders +/-0.165, hem +/-0.20, a hem shade band
-and a belt at 34 % of the torso with a 0.02 accent buckle; legs at +/-0.082, stroke 0.10, shoes 0.078 x 0.046
-ellipses; arms stroke 0.085 from the shoulder pivot (`top - 0.045`) with an elbow, hands r 0.055. Growth is taller and
-more dressed, never bigger-headed: sprout -> settler adds the belt, builder adds hat + kit, elder adds one head of
-stature, an elder hat and a cape.
+Rows count up from the ground line (`creatures.GEO`, `creatures.art_rows(tier)`): row 0 is the bottom outline row and
+sits ON the ground line, so the feet, the ground shadow and the label anchor agree on air; fill rows 1..S/2; the top
+outline row above. The head sits over one outline row (the neck) above the tunic; between every two parts there is
+exactly one outline pixel. Figures are even widths centred on the ground point (x = -1 | 0 is the centre boundary), so
+`facing = -1` is an exact mirror. Hats add up to 4 art rows above the head's top outline (beanie 1 + its outline, hood
+point 2, elder brim crown 2 + outline; `creatures.HAT_ROWS`): a label sits above `anchor_y - S - 8 px`. Growth is taller
+and more dressed, never bigger-headed: sprout -> settler adds a torso row, the belt row and two head columns; the builder
+adds a leg row, a torso row, hat + kit; the elder adds a leg row, three torso rows, a 10-wide tunic, the collar step,
+an elder hat and a cape (the head stays 8 x 10 from the settler up).
 
-Zoom 2 renders at the same working resolution (4x supersample at 1x, 2x at zoom 2) so a frame costs the same at both.
+Zoom 2 shares the zoom-1 art grid (cached per name / tier / frame / sun octant); only the nearest-neighbour blow-up
+differs, so a frame costs the same at both. The scene (`steading.py`) renders the atlas at zoom 2 and scales it by
+`SETTLER_SCALE` (1.0) x camera zoom / 2: exactly 2 screen px per art px at 1x and 3 at 1.5x (NEAREST on a canvas padded
+to the art pixel, every art pixel one uniform block) and 1.5 px at 0.75x (BOX, the wide view).
 
 ## 3. Genome: everything from the name, nothing hand-picked
 
@@ -52,9 +63,9 @@ Zoom 2 renders at the same working resolution (4x supersample at 1x, 2x at zoom 
 
 | gene | source | values |
 |---|---|---|
-| **hue** (tunic = the name colour) | 31-multiplier hash of the lower-cased name, `% 1000 / 1000 * 270`, +90 when >= 70 | a 270 degree wheel that SKIPS the grass band 70-160. HSV(hue, 0.64, 0.90). Labels, roofs, banners, fields use it |
-| accent | hue + 150 + 40 * sha1[6] % 3, grass band skipped | HSV(., 0.60, 0.92): hats, scarf, belt, badge, cape, blanket, hut trim |
-| outline | hue at (0.60, 0.30) mixed 50 % toward ink | never pure black |
+| **tone** (tunic = the name colour) | `(name_hash(name) % 1000) % 24` | Natural earth, plant and mineral palette: ochre, rust, terracotta, sand, olive, moss, teal, slate, plum-brown, brick, cream, charcoal, mustard, pine, clay, indigo, walnut, fern, storm, wine, honey, ash, copper, heather. Hue is derived from the selected RGB, not a saturated wheel. |
+| accent | `sha1[6] % 3` selects paired accent or tone rows +5 / +11 | Muted coordinated hats, scarf, belt, badge, cape and hut trim; no neon accent wheel |
+| outline | Main tone mixed toward ink in two steps | Never pure black; high-contrast edge separates moss/pine garments from grass |
 | hair | (sha1[0] + sha1[9]) % 6 | bob, tuft, crop, bun, flower, curlcap |
 | hair colour (yarn) | sha1[1] % 6 | cocoa #4A342E, rust #AA623C, straw #ECC664, cream #F6EEDE, plum #60405C, or the accent |
 | hat (worn from builder) | sha1[8] % 8 -> (0,0,0,1,1,2,0,1) | none 4/8, beanie 3/8, hood 1/8 |
@@ -64,7 +75,7 @@ Zoom 2 renders at the same working resolution (4x supersample at 1x, 2x at zoom 
 | eyes | sha1[4] % 3 | dots, tall, wide (pupil spacing / shape only) |
 | side | sha1[5] % 2 | which side things hang on, which hand waves |
 
-Under a hat only bob drops and the flower stay; spikes and buns never poke through a crown. Hats come off for sleep.
+Under a hat only bob drops and the flower stay; spikes and buns never poke through a crown. The legacy lying pose is used only for moderation hiding, never absence.
 
 ## 4. Palette
 
@@ -75,7 +86,7 @@ Per settler at most five colours plus cream and ink: main, accent, outline (+ de
 | face and hands (everyone) | cream #FAECD4 tinted 6 % toward the tunic. **A toy colour, never a skin tone** |
 | ink (pupils, mouth) | #261E1C · glint #FFFCF6 |
 | blush #EE7E82 (alpha 125) · freckles #C48468 · heart #EC5468 · sparkle #FFE478 | |
-| legs | hue at (0.45, 0.42) mixed 50 % with #5A463C · shoes = outline mixed 50 % with #46302E |
+| legs | Main tone mixed with earth brown, then darkened; shoes use the outline mixed with brown |
 | props on people | berry #DE4052, stone #A09C92, wood #966A42, iron #787C84, lantern #FCD260 |
 | ground shadow | #18120C at 36 % (60 % on hop1 = 24 %) |
 
@@ -96,44 +107,58 @@ ok #7ECE80.
 
 ## 5. Faces
 
-Two ink pupils (r 0.033, ~2 px at 34 px, 4 px at 2x) under a faint eyelid hairline at 59 % alpha: the lid is what makes a
-dot read as an eye. No eye whites (they read as goggles). A glint appears on `big` eyes and at zoom 2. Blink = flat
-lines, sleep = shallow "u" arcs, joy = "n" arcs. `look_l` / `look_r` shift the head 0.04 and the pupils 0.03 toward
-the speaker so no flip (and no mirrored satchel) is needed. Mouth: smile arc, "o", speak notch, grin chord, "w"
-(love), flat (sleep / effort). Blush or freckles by gene. Everyone has the same face; only colour and kit vary.
+Eyes are two INK bars of 1 x 2 art px (2 x 4 screen px at 1x) on rows 2-3 of the head fill: `dots` two columns apart,
+`wide` four apart, `tall` 1 x 3. No eye whites (they read as goggles), no glint, no eyelid: the bar on the cream block
+is the eye. `blink` = one pixel each, `sleep` = 2-px flat bars, `joy` = a "^" of three pixels, `big` (hop1, love) = one
+row taller. `look_l` / `look_r` shift the head one column and the bars one more toward the speaker so no flip (and no
+mirrored satchel) is needed. **The mouth is drawn only when it means something**: `speak0` an open 2 x 2 "o" from the
+chin row, `speak1` a 1-px notch, `hop1` the "o", `joy` a 4-px grin line, `love` and the lying pose a 2-px line. Idle,
+walk, wave, point, carry and sit are mouthless like the reference, so chatter never looks like shouting. Blush = two
+pixels each side under the eyes (one on `wide`), freckles = one pixel, by gene. Everyone has the same face; only colour
+and kit vary.
 
-## 6. Sticker outlines and light
+## 6. Outlines and light on the grid
 
-Every part carries its own outline (1.0 px at 26 px, 1.3 px at 34, 2.6 px at 2x) drawn at supersample and
-downsampled premultiplied, so arm over torso over leg stays legible after a 3 Mbps encode.
+Every part is a boolean mask on the art grid. Painting it writes its 4-neighbour ring in the palette OUTLINE colour
+(the tunic darkened toward ink, never pure black) over whatever is already there, then its flat fill: that ring is the
+one-art-pixel line between head and tunic, tunic and legs, sleeve and body, item and hands, and a final ring around
+every fill outlines the whole silhouette, so hair spikes, buns and hats that poke out are outlined too. The outline is
+2 screen px at 1x, 3 at the 1.5x Moot dwell, and stays a line through a 60 % JPEG at 1280 (the 3 Mbps proxy).
 
-Light is one sun for the whole world: `sun=(sx, sy)` is the screen-space unit vector toward the sun. Sprites get a warm
-rim (#FFE2AA, 30 %) on the sun edge and a cool violet shade band (#3C325A, 28 %) on the far edge; ground shadows slide
-0.05 S away from the sun; tree lobes, hut walls and roofs shade the same way. `tiles.sun_vector(hour)` gives east low
-at dawn, high at noon, west low at dusk, moon high at night. Settler frames are cached per sun OCTANT (8 buckets); a
+Light is one sun for the whole world: `sun=(sx, sy)` is the screen-space unit vector toward the sun. A part takes ONE
+darker shade step (its fill mixed toward the outline: tunic 22 %, face 22 %, legs 30 %, accent / cape 28-30 %, hair
+40 % toward its own outline) on the column away from the sun (|sx| >= 0.5) or on its bottom row (noon, moonlight from
+above); the deep tunics (builder, elder) take the same step as a collar row under the chin. No rim, no gradient, no
+blur, nothing in between. Ground shadows are a two-row pixel ellipse under the feet (row 0 behind the bottom outline
+and the row below the ground line) at 36 % ink, 24 % on hop1, one art pixel wider on sit and the lying pose, sliding
+one art px away from the sun; tree lobes, hut walls and roofs shade the same way. `tiles.sun_vector(hour)` gives east
+low at dawn, high at noon, west low at dusk, moon high at night. Settler frames are cached per sun OCTANT (8 buckets); a
 compositor that moves the sun through the day rebuilds sheets at octant changes only (roughly every 1.75 h of world
 time), so cache memory is 1 octant x settlers x tiers, not 8x.
 
-## 7. Animation: 23 frames, squash-and-stretch in the geometry
+## 7. Animation: 23 frames, squash-and-stretch in whole art rows
 
-| frame | pose | timing (compositor plays; the sheet supplies poses) |
+Poses are integer moves on the grid (`creatures._pose`): a head that drops one row, a body that lifts one row, a shoe
+two rows up. Nothing scales or rotates the bitmap; there is no lean, no tilt, no sub-pixel.
+
+| frame | pose (art rows / columns) | timing (compositor plays; the sheet supplies poses) |
 |---|---|---|
-| idle0 / idle1 | breath: 1.03 x 0.97, head dips 0.008 | alternate every ~0.8 s |
-| blink | flat lines | 1 in 6 idles, 4 ticks |
-| look_l / look_r | head 0.04 + pupils 0.03 toward the side | while someone within ~200 px speaks |
-| walk0 walk1 walk2 walk3 | **contact L**: left leg planted forward (+0.035), right leg lifted behind with a knee at hip-0.10 and the shoe at 0.155 tilted 22 deg, arms swing opposite (forward arm out + up, back arm low), lean 4 deg toward travel · **pass**: legs together, one at 0.075, body up 0.025 · contact R · pass | 8 fps (4 ticks per frame at 30 fps); facing = direction of travel (mirror) |
-| hop0 / hop1 | anticipation squash 1.06 x 0.86, knees bent out, arms swept back, mouth "o" · airborne 0.95 x 1.08, lift 0.27, legs tucked (shoes tilted 28 deg), arms up, big eyes, shadow 62 % | hop0 x3 ticks, hop1 x6 on a parabola, hop0 x2 |
-| wave0 / wave1 | one arm over the head, open hand, wobble 0.07, grin on wave1 | alternate every 0.25 s |
-| point | arm straight out toward +x, other hand on the hip, gaze right, mouth "o" | hold (mirror for -x) |
-| sit | upper body drops by the leg length, legs out toward the camera with soles, hands on knees, shadow 112 % | hold |
-| sleep | curled on one side under an accent blanket with a folded edge, shoes peeking, hand under the cheek, hat off, zz | alternate with a 1 % breath scale |
-| carry_berry / carry_stone / carry_tool | two-handed hold at belly height (a basket heaped with berries, a boulder, a mallet held diagonally); hands 0.115 apart, item in FRONT of the hands | while walking to / from a farm, quarry, build site |
-| speak0 / speak1 | mouth "o" then notch, head bob +0.02 / -0.006, one gesture hand | alternate every 6 ticks while the pill shows |
-| joy | both arms up, "n" eyes, grin, two sparkles, up 0.04 | 1 s on a tier-up, a vote win |
-| love | hands clasped, big eyes with glints, "w" mouth, a heart at the side | 1 s on feed / pet / gift |
+| idle0 / idle1 | breath: the head drops one row onto the shoulders (the neck row closes) | alternate every ~0.8 s |
+| blink | 1-px eyes | 1 in 6 idles, 4 ticks |
+| look_l / look_r | head one column + eyes one more toward the side | while someone within ~200 px speaks |
+| walk0 walk1 walk2 walk3 | **contact L**: the left shoe strides one column out, the right shoe is lifted `WALK_LIFT` = 2 rows (4 px at 1x) under the hem as a raised knee, the head waddles one column over the planted leg, the arm on the lifted side swings forward (out one column, hand up one row) and the other hand swings down below the hem · **pass**: body up one row, one leg reaches the ground · contact R · pass. Contact differs from idle by ~420 px at 1x (settler) | 8 fps (4 ticks per frame at 30 fps); facing = direction of travel (mirror) |
+| hop0 / hop1 | anticipation: legs one row shorter, shoes out one column, head down one row, hands below the hem · airborne: lift 0.27 S = 4 / 4 / 5 / 6 rows (`HOP_LIFT`), shoes tucked one row up and out, arms up beside the head, big eyes, "o", shadow 62 % | hop0 x3 ticks, hop1 x6 on a parabola, hop0 x2 |
+| wave0 / wave1 | the side arm up beside the head with the hand at the head's top row; wave1 one row higher and one column out, head tilts one column | alternate every 0.25 s |
+| point | the right arm 3 px straight out toward +x with the hand, gaze right (head + eyes), other hand down | hold (mirror for -x) |
+| sit | the tunic drops onto a sole row (the legs fold away as two soles beside the hem), hands on the hem, shadow 112 % | hold |
+| sleep | **the ONE lying pose, a hidden (moderated) settler only** (`behaviour.frame_name`): seen from above lying on the back, so the face is upright at ground level with closed eyes, an accent blanket with a light folded edge tucked under the chin covers the body, shoes peek out at the far end, a hand rests on the blanket, hat off, two Zs | never on the land; nobody sleeps |
+| carry_berry / carry_stone / carry_tool | hands joined one row above the hem, the item above them over the tunic (a basket + four berries, a boulder with a highlight, a mallet held diagonally) | while walking to / from a farm, quarry, build site |
+| speak0 / speak1 | head up one row on a cream neck with the 2 x 2 "o", gesture hand raised beside the chin · notch mouth, hand out at the side | alternate every 6 ticks while the pill shows |
+| joy | body up one row, both arms up beside the head, "^" eyes, grin line, two sparkles | 1 s on a tier-up, a vote win |
+| love | hands clasped at the belly, big eyes, a small mouth line, a heart glyph beside the head | 1 s on feed / pet / gift |
 
-Elder capes flare +0.06 on hop1. `creatures.shadow()` returns the ground ellipse alone so a hop can move the body up
-the parabola while the shadow stays on the ground.
+Elder capes flare one column each side on hop1. `creatures.shadow()` returns the ground ellipse alone so a hop can move
+the body up the parabola while the shadow stays on the ground.
 
 ## 8. Tile rules
 
@@ -191,14 +216,18 @@ variants), flower clumps (one colour each), stones (3 sizes), the **cairn** (1-5
 ## 12. What makes ours ours (and explicitly not Thronglets)
 
 - **People, not creatures.** Thronglets are yellow bipedal critters with animal proportions and a single species look;
-  ours are small people with a belted tunic, a neck, hats, hair and hand-held kit, in a 270-hue wheel where the colour is
-  the person's name colour. No default yellow, no shared species body.
+  ours are small people with a belted tunic, a neck, hats, hair and hand-held kit, in the natural-tone table where the
+  colour is the person's name colour. No default yellow, no shared species body.
+- **Chunky pixel people, our own grid.** The owner's reference set the vocabulary (a hard grid, one dark outline around
+  and between parts, one shade step, bar eyes, a wide head, big hats); ours keeps it but with the toy-cream face instead
+  of the reference's skin tones, the natural-tone tunics, yarn hair, kit and the 23-frame life. Not a sprite from any game.
 - **One toy face for everyone.** Not a skin tone, not a species face: cream, tinted toward the tunic. Identity is hair,
   hat, kit and colour, never features.
 - **Kit as identity.** Staff, lantern, satchel, shoulder mallet, apron, scarf, badge, belt: a settler looks like they do a
   job in the settlement. Elders get stature, a hat and a cape, not size.
-- **Real gestures.** Long enough arms to wave over the head, point, carry a basket; a walk with a knee; a hop with an
-  anticipation frame. Squash-and-stretch happens in the geometry, never by scaling the bitmap.
+- **Real gestures.** Arms that reach up beside the head to wave, point 3 px out, join to carry a basket; a walk with a
+  raised knee, a waddle and swinging hands; a hop with an anticipation frame. Squash-and-stretch happens in whole art
+  rows, never by scaling or rotating the bitmap.
 - **The village is the chatters' colours.** Roofs, banners, fields, waystones and pills all carry the name hue.
 - **Light is shared.** People, trees, huts and fire sit in one sun; night keeps a floor so no one disappears.
 - Nothing here is a franchise sprite: no Pokémon, Stardew, Age of Empires, Thronglets shapes, names or palettes.
@@ -218,26 +247,39 @@ the hash.
 Before a ship, on the final renders:
 
 - [ ] **1x (1280x720):** every settler shows head + torso + two legs; hands visible in idle; the walk contact frame
-      differs from idle by a lifted shoe (>= 3 px) and a raised arm; pupils are 2 px dots; the pill portrait is a face.
+      differs from idle by a shoe lifted 2 art px (4 screen px), a swung arm and a one-column head waddle; eyes are
+      1 x 2 ink bars (2 x 4 px); the pill portrait is a face cropped on the art grid and NEAREST-scaled.
+- [ ] **Pixel gate:** `PYTHONPATH=. $PY stream/world/art/creatures.py --check` passes: 23552 renders with hard alpha
+      (0 / 255) and uniform ART_PX x zoom blocks at both zooms, shadow box + slide per octant, fill rows = S / 2 with the
+      bottom outline row on the anchor and nothing below it, the walk contact lift, 50 distinct genomes, ms per frame.
 - [ ] **320x180 thumb:** every settler is a coloured figure with a cream dot; every hut a colour dot; the header title
       and the three panel titles are readable shapes; the water is blue, the sand a line.
-- [ ] **3 Mbps encode (or a 60 % JPEG at 1280):** outlines still separate arms from torso; no tile edges show;
-      flower drifts still read as streaks; night frame still shows every settler (0.55 floor).
-- [ ] Sun consistency: sprites, trees, huts and ground shadows all lit from the same side in dawn, dusk and night.
+- [ ] **3 Mbps encode (or a 60 % JPEG at 1280):** outlines still separate arms from torso and head from body; no tile
+      edges show; flower drifts still read as streaks; night frame still shows every settler (0.55 floor).
+- [ ] Sun consistency: sprites (the shade column), trees, huts and ground shadows all lit from the same side in dawn,
+      dusk and night.
+- [ ] Scene scale: `steading.SETTLER_SCALE` x zoom / 2 maps an art pixel to a whole number of screen px at the camera's
+      resting zooms (2 px at 1x, 3 px at 1.5x) so the prescale is NEAREST; only the 0.75x wide view BOX-averages.
 - [ ] No text on the world except pills; every text >= 20 px.
-- [ ] `genome()` of 50 random names: no two identical, no name yields a green (70-160) tunic.
+- [ ] `genome()` of 50 random names: no two identical; no tunic reads as the grass (the natural tones moss / fern / pine
+      fall in the 70-160 hue band but sit well below the grass in value; the check names them).
 
-## 15. Frame budget (measured 2026-09-25, M3 Pro, Python 3.9, numpy 2.0, Pillow 11)
+## 15. Frame budget (settlers measured 2026-09-27 on the live Mac at nice 15, Python 3.9, numpy 2, Pillow 11; the
+rest 2026-09-25)
 
 | item | cost |
 |---|---|
-| one settler frame | 31.9 ms at 1x, 33.9 ms at 2x (constant working resolution) |
-| one settler sheet (23 frames, one tier / zoom / sun octant) | ~0.75 s at hatch, cached forever; ~14 KB per 1x frame (34 px tier) |
+| one settler frame (pixel grid, cache miss, with shadow) | **0.37 ms at 1x, 0.55 ms at 2x** (`creatures.py --check`: 92 builder frames); the vector renderer it replaces measured 28.5 ms the same hour |
+| one settler sheet (23 frames, one tier / zoom / sun octant) | ~9 ms at hatch (was ~0.75 s), cached forever; 48 x 52 x 4 = 10 KB per 1x settler frame, 39 KB at 2x (the box is unchanged, so `creatures._CACHE` bytes per sheet are unchanged; the shared art grid adds ~3 KB per frame) |
+| the pixel sweep (23552 renders, 8 names x 4 tiers x 23 frames x 8 octants x 2 zooms x 2 facings) | 6.4 s |
+| scene budget, `steading.py --self-test` C1 / C2 / C3 / C4 (20 pips 1x 18:00 / 60 pips 0.75x / 20 pips 23:00 / 6 pips noon, 300 frames each) | 8.36 / 11.62 / 9.70 / 7.43 ms avg (limits 14 / 19 / 14 / 12); contended by the worker rendering sheets 8.24 / 11.61 / 9.60 / 7.37 |
+| scene prescale copies (`SpriteCache._zoomed`) | 0.5 x the atlas at 1x (was 0.6): (1.0 / 1.2)^2 = 31 % fewer bytes per zoomed frame |
 | ground paint, 40x27 tiles (320x216 cells at 4 px) | 49 ms; repaint of an 80x40-cell region 19 ms |
 | background bake (ground + ~110 props + 9 huts + grade + glows), 1280x440 | 49 ms, off the frame clock, 16 phase pairs |
 | world compose: 20 settlers + 3 cloud shadows + 3 pills + smoke on 1280x440 | 2.18 ms mean, 2.41 ms p95, 2.68 ms max |
 | tile stack (32 tiles) | 27 ms per (wind, ripple) pair, 16 pairs per season |
 
-Rules: sheets are rendered at hatch (or at a sun-octant change) in a worker step, never inside the frame path; the
-background is baked per (wind, ripple) and re-baked on a map change via `Ground.repaint`; the frame path only blits
-cached arrays. Budget for the world panel: 24 ms; the art module needs ~2.5 ms of it.
+Rules: sheets are rendered at hatch (or at a sun-octant change) in a worker step, never inside the frame path (a sheet
+is cheap now, but the rule stays so a hatch storm cannot touch the frame clock); the background is baked per (wind,
+ripple) and re-baked on a map change via `Ground.repaint`; the frame path only blits cached arrays. Budget for the
+world panel: 24 ms; the art module needs ~2.5 ms of it.

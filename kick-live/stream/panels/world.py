@@ -833,6 +833,9 @@ def wood_contrast(alpha: int = WOOD_ALPHA) -> float:
 
 def _colour_of(sc, key: Optional[str], e: Optional[Dict[str, Any]] = None, preset: Optional[str] = None) -> str:
     """The creature's colour: the entity's (the scene reads the genome), else the pip row's `colour`, else the cave hash."""
+    # Natural palette is resolved at draw time, including off-screen and plate labels.
+    if key and getattr(sc, "land", None) is not None:
+        return importlib.import_module("stream.world.art.creatures").colour_hex(key)
     if e is not None and e.get("colour"):
         return str(e["colour"])
     if key and getattr(sc, "world", None) is not None:

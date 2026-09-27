@@ -769,6 +769,10 @@ class SteadingScene(object):
                 pass
         if self.force_zoom is not None and not test_pips_allowed(self.run_dir, ctx, dict(os.environ, KL_TEST_PIPS="1")):
             self.force_zoom = None                                  # the hook is test-mode only
+        # Refresh cached camp roofs when the presentation palette changes; keep all identity fields intact.
+        if self.world.data["world"].get("art_palette_version") != "natural-24-v1":
+            self.world.data["world"]["art_palette_version"] = "natural-24-v1"
+            self.land.bump_bake("natural palette")
         self._marks_build(now)
         season_idx = NAT.season_index(self.nature.season(now))
         found = self._existing_bake_ver(season_idx, self._octant, self.land.bake_ver)
@@ -782,10 +786,12 @@ class SteadingScene(object):
         try:                                                        # W6 hook: the wish post (lazy import: hot-reload order)
             from stream.world import wishes as _W
             _W.WishPost(self)
+            self.log("wishes: WishPost attached")
         except Exception as e:
             self.log("wish post not attached: %r" % (e,))
         try:                                                        # W4 hook: the age director (gate at round close, the 90 s raising)
             self.ages = _AG.AgeDirector(self)
+            self.log("ages: AgeDirector attached")
         except Exception as ex:
             self.ages = None
             self.log("ages: director failed to start: %r" % (ex,))
@@ -2128,7 +2134,7 @@ class SteadingScene(object):
             d.update({"x": round(x, 2), "y": round(y, 2), "sx": int(round(sx - ax)), "sy": int(round(sy - ay)),
                       "sw": int(round(bw)), "sh": int(round(bh)), "feet_sx": int(round(sx)), "feet_sy": int(round(sy)),
                       "in_view": bool((x0 <= x <= x0 + vw) and (y0 <= y <= y0 + vh)),
-                      "fx": fx, "fy": fy, "colour": p.get("colour") or creatures.colour_hex(e.key),
+                      "fx": fx, "fy": fy, "colour": creatures.colour_hex(e.key),  # palette is presentation, not persisted identity
                       "camp": dict(camp) if camp else (d.get("camp")), "burrow": None})
             if seed:
                 d["display_name"] = None

@@ -1346,3 +1346,39 @@ misses on this box; two settlers share the pine tone (a hash collision; hats and
 **Palette** (owner 12:40: "less pink and purple, more natural tones"): commit df03b0a, a 24-row natural-tone table
 (ochre .. heather) replaces the saturated hue wheel in `creatures.palette()`; labels, roofs and banners follow. Ships
 with the pixel-art sprites (child restart; art/ is not hot-reloaded).
+
+Tick 12:56 (probe): 10/10 processes, honesty 0/0 after the 12:52 reload (no relay gap through it), 2 viewers, rank
+#10 (a larger channel entered), stones 24, forward 1 person / 6 stones / 1 day. Chat since the last tick: `camp`,
+`dig` from the owner's account at 12:39 (`dig` still falls through silently: no verb, no hint). The replayed ledger
+now shows what chat has asked for over four days: 103 rows, 24 open in 16 clusters; the only recipe cluster with two
+askers is **flowerbed** (atleastonce 25 Sep, sami 26 Sep, three rows, neither has anything placed), then `outside`
+(3 askers: screen / UI asks, silent by design), `camp` (2, answered from records), a castle (1, a Town project), and
+singletons (dig, cut, gems, pixel, music, a cave, the clock, a theme). Proposed p-0005 (tier 1): the flowerbed
+cluster is the first placed thing when the wish post lands, credited to both by name. Builds: W4 + W6 integrating
+onto the on-air tree (one review to follow), the pixel-art integrator working on `creatures.py`. Nothing deployed
+this tick.
+
+## 039 — 2026-09-27 13:23 — Pixel settlers live; watchdog incident investigated
+
+Owner reiterated in the terminal: "Keep going, change whatever you need." Pixel sprites deployed at 13:21 from a
+snapshot-only staged bundle, not the unfinished ages/wishes integration. New hard-grid art, natural 24-tone palette,
+nearest-neighbour scaling, name labels resolving the presentation palette instead of stale saved pink values, and a
+one-time bake-version bump to repaint camp roofs without changing identity records. Tested 300 compositor frames on
+copies of live data: frame p95 18.5 ms, honesty 0, copy/board/tile gates PASS. Art sweep: 23,552 renders, zero bad;
+uncached sprite renders measured 0.388 ms at 1x and 0.543 ms at 2x. Prior renderer measured about 27.6 ms at 1x.
+The renderer child restarted under the relay; encoder 13123 stayed alive; final reported handoff gap one frame.
+Kick HLS check PASS at 720p30 and captured the new sprites, muted labels and roofs. Deployment manifest and exact
+staged files: job tmp/pixel-stage-1790479038; rollback copies: ~/.local/share/kick-live/pixel-backup-20260927T132059.
+Files deployed: art/creatures.py, art/__init__.py, snapshot-derived scenes/steading.py and panels/world.py. Ages and
+WishPost hooks were deliberately not included. Those remain under integration testing.
+
+Incident: at 13:02:37 Kick's successful API responses began reporting offline. The watchdog observed false for 91 s
+and restarted the pipeline at 13:04:12, recovered via API at 13:04:30. The earlier 13:01:10 timeout resolved before
+this sustained interval. Renderer/relay logs continued; no evidence of system sleep. Root cause of Kick's offline
+reports remains unknown. This was the supervisor watchdog, not a requested deploy restart. Earlier journal statements
+that CPU readings established Chrome as the cause were not justified: CPU contention is a possibility, not proof.
+Also, relay status retains only 20 gaps; an unchanged list length of 20 does NOT establish that no new gap occurred.
+
+Probe: accepted the castle request into the ledger (two requests from one distinct asker); no new proposal. The
+flowerbed proposal is only a hypothesis: historical plant verbs must not be reinterpreted as fresh build requests.
+Ingest accepted the updated answers with journal=null, so no separate quiet-tick commit is needed.
