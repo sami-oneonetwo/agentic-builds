@@ -1317,3 +1317,32 @@ harness fix, already in the tree). Migration on the live copy: 25/25 gates, peop
 Camp. W4 (ages, branch idle-w4 6355a33, 65 self-test checks ok, 90 s raising played with 24 of 24 stones hauled) and
 W6 (the wish post, patch 0002 + wishes.py, 12 planted fakes refused) wait for the fix to land before their merge.
 Pixel-art settlers: studios A and B returned, C rendering. Nothing deployed this tick.
+
+**12:52 — The world batch on air (W2 + W3 + W5).** Owner (11:22): "Surely it shouldn't take that long! Can you speed
+up the development somehow?" The serial world lane was replaced by four parallel module builds (W3 schema 3, W4
+ages, W5 return beat, W6 wish post) in isolated worktrees plus one integrated review, and W7/W8 (100-chatter density,
+scale hardening) were deferred. The harness's worktree guard pinned every agent's git to the main worktree, so the
+slices landed as commits there (W3), a hooks patch (W5), a plumbing commit on idle-w4 (W4) and a patch file (W6); the
+integrator applied them by hand. The integrated review (one adversarial pass, full gates) FAILED on three real
+blockers, all closed in the fix pass: (1) `state.py` imported `land` at module level while the HotReloader
+re-executes state BEFORE land, so a one-cp reload would have bound the fresh state to the stale land module and every
+first record would have raised into the fallback frame with no rollback (replayed on a snapshot copy: reproduced,
+then fixed with a late-binding proxy that resolves `sys.modules` on every access; replay PASS); (2) the honesty
+`idle` rule fired 72 times at boot because an away body was restored exactly where the file left it, a waystone cell,
+so bodies within 4 cells of a stone now step to their camp door at boot; (3) the steading self-test read the plate
+key `night` that W3 renamed to `days`. Commits eef4675 (W3), 4c2dad6 (W2), 922c3f4 (W5), 772b140 (fixes).
+Deployed 12:52:38 as ONE cp batch of the ten changed hot-reload files (panels/world, scenes/steading, world/bake,
+behaviour, camera, honesty, land, ledger, schema3, state) into live-snapshot-v3, backups live-snapshot-v3-pre-wb1 +
+world.json.bak-pre-wb1 (+ the code's own .bak-pre-idle). The HotReloader re-executed the world batch, the scene
+rebooted in 38 ms and **migrated the live world.json to schema 3 on air: 25 gates, 25 passed** (people 4 · stones 24
+· days 4 -> age 1 the Camp; 4 camps lifted by days: atleastonce and sami to huts, lordoomer and the newcomer to tents;
+wishes: +90 replay rows, 13 already present; 0 bodies stepped off a waystone), the panel committed after 30 clean
+renders, honesty 0/0, scene avg 8 ms. On air now: the full errand table with haunts and tempo, the camera ROAMing
+after the most watchable errand at 0 present with the Moot dwell every third hold, camps graded by days with `N days
+here` plates, the `@name is back · ...` return line on the next return after 20 min away, the nightly board plate on
+the first record of a new day. Known: D' (boot burst, one frame > 24 ms) and C5's pick count are load-dependent
+misses on this box; two settlers share the pine tone (a hash collision; hats and trims differ).
+
+**Palette** (owner 12:40: "less pink and purple, more natural tones"): commit df03b0a, a 24-row natural-tone table
+(ochre .. heather) replaces the saturated hue wheel in `creatures.palette()`; labels, roofs and banners follow. Ships
+with the pixel-art sprites (child restart; art/ is not hot-reloaded).
