@@ -1249,7 +1249,7 @@ class WorldPanel(Panel):
                 elif typ == "camp_raised":
                     nm = self._shown(sc, ev.get("pip"))
                     if nm:
-                        days = int(ev.get("night") or ev.get("nights") or 0)                       # a len() (camp.nights / sessions)
+                        days = int(ev.get("days") or ev.get("night") or ev.get("nights") or 0)     # W3 hook: a len() over days_seen (never `night N`)
                         line = "@%s's camp · %s" % (nm, str(ev.get("word") or "camp"))
                         self._notice(now, (line + " · %d day%s here" % (days, "" if days == 1 else "s")) if days > 0 else line,
                                      accent, dur=6.0, prio=PRIO_VERB)
@@ -2637,7 +2637,7 @@ class WorldPanel(Panel):
             if not nm:
                 continue
             fw, fh = CAMP_FOOTPRINT.get(int(c.get("tier") or 0), (10, 8))
-            days = int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)      # a len() (camp.nights / sessions), AGES 1.5
+            days = int(c.get("days") or 0) or int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)   # W3 hook: len(days_seen) first (AGES 1.2), never `night N`
             text = ("@%s's %s · %d day%s here" % (nm, c["word"], days, "" if days == 1 else "s")) if days > 0 else ("@%s's %s" % (nm, c["word"]))
             marks.append(("camp:" + c["key"], "camp", float(c["x"]) + fw / 2.0, float(c["y"]) + fh, c["key"], text))
         for f in self._fields:

@@ -38,6 +38,22 @@ Counts are never incremented on boot: `recompute_from_chat` walks chat.jsonl fro
 decays while asleep or while the stream is off (WORLD.md 10): decay is applied only by the behaviour tick
 for awake pips. Nothing here draws text; `display_name` is stored from the moderated record so the text
 layer never needs the raw name path (014.1).
+
+Schema 3 (AGES 5, IDLEWORLD 6.1-6.3; the logic lives in stream/world/schema3.py):
+    ws = WorldState(run_dir, schema=3)                           # a schema-2 file is migrated in memory under the 6.3 gates
+                                                                 # (world.json.bak-pre-idle-<ts> first); a failed gate leaves
+                                                                 # schema 2 and migration_ok False: the scene refuses to boot
+    ws.record_visit("sami", now, sid) -> new tier | None         # at hatch and on the first `here` of a local day (AGES 1.2)
+    ws.visit_events("sami", now, sid) -> [camp_raised event]     # the same, as the scene's event rows
+    ws.take_day_turns() -> [{"type": "day_turn", "date", "days"}]  # queued by the first live record of a new local date
+    ws.ensure_camp("sami", now, sid, ring=True)                  # camp at hatch at the hashed Steading-ring spot
+    ws.recompute_wishes(now) -> {added, present, ...}            # chat.jsonl -> $RUN_DIR/wishes.jsonl replay rows (by id)
+    $PYTHON stream/world/state.py --migrate-copy SRC.json --to 3 --chat CHAT.jsonl --out /tmp/x/world.json [--replay]
+    $PYTHON stream/world/state.py --replay-wishes /tmp/x [--chat CHAT.jsonl]      # prints `wishes: +N ...`, then `+0`
+World block gains `age, age_built, age_history[], days_on_air[], age_build, wish_post[], placed[], placed_seq`, the cursor
+`wishes_offset`; a pip gains `days_seen[]`, `last_told`; `camp.nights -> camp.sessions` (values copied, `nights` kept one
+release) and `camp.tiers[]`. `record_message` / `recompute_from_chat` append the LOCAL date of every moderated record to
+`pip.days_seen` and `world.days_on_air` (the DAYS key: each a len() over distinct dates, never a counter).
 """
 from __future__ import annotations
 
@@ -61,9 +77,11 @@ from stream.state_store import write_state_atomic, iso_to_epoch, epoch_to_iso, n
 from stream.world import SIM_W, SIM_H  # noqa: E402
 from stream.world import pips as P  # noqa: E402
 from stream.world import land as LAND  # noqa: E402
+from stream.world import schema3 as S3  # noqa: E402
 
 SCHEMA_V1 = 1                     # PIP HOLLOW (the cave); still read and written for the rollback week
-SCHEMA = 2                        # LONGGRASS (OPENWORLD.md 5)
+SCHEMA_V2 = 2                     # LONGGRASS (OPENWORLD.md 5)
+SCHEMA = 3                        # IDLEWORLD (AGES 5 / IDLEWORLD 6.1): ages, days, camps by days, the wish fields
 IDENTITY_FIELDS = ("name", "n", "colour_idx", "genome", "born_ts")   # byte-identical across the migration (5.4)
 FLUSH_S = 5.0
 _STATE_MAP = {"asleep": "idle", "curled": "idle", "awake": "idle", "burrowed": "hidden"}   # load-time map (AGES 1.1 / 8); schema stays 2
@@ -126,6 +144,8 @@ def _default_world(schema: int = SCHEMA_V1) -> Dict[str, Any]:
             "bake_ver": 1, "mark_seq": 0,
             "history": {},
         })
+        if int(schema) >= 3:
+            common.update(S3.world_v3_defaults())     # age, age_built, age_history, days_on_air, age_build, wish_post, placed, placed_seq
     else:
         common.update({
             "terrain_b64": None,
@@ -140,7 +160,7 @@ def _default_data(schema: int = SCHEMA_V1) -> Dict[str, Any]:
     return {
         "schema": int(schema),
         "updated_ts": None,
-        "cursor": {"chat_jsonl_offset": 0, "last_id": None},
+        "cursor": {"chat_jsonl_offset": 0, "last_id": None, "wishes_offset": 0},   # wishes_offset: the ledger replay's cursor
         "pips": {},
         "world": _default_world(schema),
         "sessions": [],           # [{id, started_ts, last_ts}] every session this module has seen (live or inferred)
@@ -189,6 +209,9 @@ def _default_pip(key: str, name: str, display_name: str, n: Optional[int], t: fl
         for f in ("burrow", "moss_planted", "digs"):
             p.pop(f, None)
         p.update(_v2_pip_fields(key))
+    if int(schema) >= 3:
+        p.pop("nights_streak", None)               # the sleep era's counter is never written again (AGES 5)
+        p.update(S3.pip_v3_defaults())             # days_seen [], last_told None
     return p
 
 
@@ -221,12 +244,17 @@ class WorldState(object):
         self.load_errors = 0
         self.session_id: Optional[str] = None
         self.migration: Optional[Dict[str, Any]] = None
+        self.migration_v2: Optional[Dict[str, Any]] = None
         self.migration_ok: bool = True
+        self.day_turns: List[Dict[str, Any]] = []            # queued `day_turn` events (the first live record of a new local date)
         self.load()
         if self.want_schema is not None and self.want_schema >= 2:
             if self.schema < 2:
                 self.migrate_v2(now=now, moot_xy=self._moot, passable=passable, water=water)
-            else:
+                self.migration_v2 = self.migration
+            if self.want_schema >= 3 and self.schema == 2 and self.migration_ok:
+                self.migrate_v3(now=now)                     # AGES 5 / IDLEWORLD 6.3: the 2 -> 3 gates, refused = no boot
+            elif self.migration is None:
                 self.migration = {"ok": True, "skipped": True, "reason": "file is schema %d" % self.schema}
 
     # ------------------------------------------------------------------ schema
@@ -299,9 +327,11 @@ class WorldState(object):
         base["schema"] = sch
         base["pips"] = {str(k).lower(): v for k, v in base["pips"].items() if isinstance(v, dict) and not v.get("_test")}
         for p in base["pips"].values():                      # AGES 1.1 / 8: nobody lies down. The cave's / the old land's state
-            st = p.get("state")                              # names are mapped on the way in (schema stays 2); never written back
+            st = p.get("state")                              # names are mapped on the way in (schema 2 AND 3); never written back
             if st in _STATE_MAP:                             # as the old name because _persist writes the entity's state each frame
                 p["state"] = _STATE_MAP[st]
+        if sch >= 3:
+            S3.adopt_v3(base)                                # every 6.1 key present, camp.sessions mirrored from nights
         return base
 
     def _load_bak(self) -> bool:
@@ -374,7 +404,7 @@ class WorldState(object):
                 with open(self.path, "rb") as src, open(bak + ".tmp", "wb") as dst:
                     dst.write(src.read())
                 os.replace(bak + ".tmp", bak)
-            dailies = [b for b in sorted(glob.glob(self.path + ".bak-*")) if ".bak-v1-" not in b]   # the pre-migration copy is kept
+            dailies = [b for b in sorted(glob.glob(self.path + ".bak-*")) if ".bak-v1-" not in b and ".bak-pre-" not in b]   # the pre-migration copies are kept
             for old in dailies[:-BAK_KEEP]:
                 try:
                     os.remove(old)
@@ -492,6 +522,7 @@ class WorldState(object):
         self.add_session(p, sid)
         if not p.get("last_seen_ts") or (iso_to_epoch(p.get("last_seen_ts")) or 0) < t:
             p["last_seen_ts"] = _iso(t)
+        self._note_day(p, t, live=not history)
         if not history:
             p["own_messages"] = int(p.get("own_messages") or 0) + 1
             p["energy"] = min(1.0, float(p.get("energy") or 0.0) + 0.15)
@@ -499,6 +530,56 @@ class WorldState(object):
                 self._learn_words(p, text)
         self.dirty = True
         return p
+
+    # ------------------------------------------------------------------ days (AGES 1.2 / 2.1: the DAYS key and days_seen)
+    def _note_day(self, p: Dict, t: float, live: bool) -> Optional[str]:
+        """The LOCAL date of a moderated record joins `pip.days_seen` and `world.days_on_air` (sorted distinct dates: each
+        count is a len()). A LIVE record that opens a new date queues one `day_turn` event; history never does. Test pips
+        never touch either list. Returns the date."""
+        if self.schema < 2 or p.get("_test"):
+            return None
+        d = LAND.local_date(t)
+        if d is None:
+            return None
+        seen = p.setdefault("days_seen", [])
+        if d not in seen:
+            seen.append(d)
+            seen.sort()
+            self.dirty = True
+        doa = self.data["world"].setdefault("days_on_air", [])
+        if d not in doa:
+            doa.append(d)
+            doa.sort()
+            self.dirty = True
+            if live:
+                self.day_turns.append({"type": "day_turn", "date": d, "days": len(doa), "ts": _iso(t)})
+        return d
+
+    def take_day_turns(self) -> List[Dict[str, Any]]:
+        """The queued `day_turn` events (the scene appends them to the behaviour's event list), then the queue is empty."""
+        out, self.day_turns = self.day_turns, []
+        return out
+
+    def record_visit(self, key: str, t: float, session_id: Optional[str] = None) -> Optional[int]:
+        """AGES 1.2 `record_visit` (the old `record_night`): the owner is HERE at their camp, at hatch and on the first
+        `here` of each local day. `camp.sessions` gains the session id, `days_seen` the local date, and the tier is re-read
+        through `camp_tier_for(p, age)` (never lower). Returns the new tier when it rose, else None."""
+        if self.schema < 2:
+            return None
+        return self.land.record_visit(key, session_id or self.session_id, t)
+
+    record_night = record_visit
+
+    def visit_events(self, key: str, t: float, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """`record_visit` as event rows for the scene: [] or one `camp_raised` {pip, tier, word, days, x, y} (the 12-frame
+        raise; the plate reads `days`, a len() over days_seen, never a night count)."""
+        nt = self.record_visit(key, t, session_id)
+        if nt is None:
+            return []
+        p = self.pip(key) or {}
+        camp = p.get("camp") if isinstance(p.get("camp"), dict) else {}
+        return [{"type": "camp_raised", "pip": (key or "").lower(), "tier": int(nt), "word": LAND.CAMP_WORDS[min(3, max(0, int(nt)))],
+                 "days": len(set(p.get("days_seen") or [])), "x": camp.get("x"), "y": camp.get("y")}]
 
     def _learn_words(self, p: Dict, text: str) -> None:
         words = p.setdefault("words", {})
@@ -606,10 +687,12 @@ class WorldState(object):
         self.dirty = True
 
     def ensure_camp(self, key: str, t: float, session_id: Optional[str] = None, x: Optional[float] = None,
-                    y: Optional[float] = None) -> Optional[Dict]:
-        """The first real sleep creates the camp (a hollow, tier 0) at the spot the pip stood (5.1 / 5.3); later sleeps
-        only record the night and re-read the ladder. A spot the rules refuse (the green, water, another's camp) falls
-        back to the hashed Steading-ring spot. Returns the camp (or None for an unknown / test pip / schema 1)."""
+                    y: Optional[float] = None, ring: bool = False) -> Optional[Dict]:
+        """Create the camp for a real pip that has none (AGES 1.2: at HATCH, `ring=True`, at the hashed Steading-ring spot,
+        so a stranger owns a plot in minute one; `camp` moves it later under the 5.3 rules), or, when it exists, record the
+        visit and re-read the ladder. Without `ring` the spot the pip stands on is tried first (the `camp` verb's path), a
+        refused spot (the green, water, another's camp) falling back to the ring. Returns the camp (None for an unknown /
+        test pip / schema 1)."""
         if self.schema < 2:
             return None
         land = self.land
@@ -618,11 +701,11 @@ class WorldState(object):
             return None
         camp = p.get("camp")
         if isinstance(camp, dict):
-            land.record_night(key, session_id, t)
+            land.record_visit(key, session_id, t)
             return camp
         px = x if x is not None else p.get("x")
         py = y if y is not None else p.get("y")
-        if px is not None and py is not None:
+        if not ring and px is not None and py is not None:
             camp, _ = land.set_camp(key, px, py, t, check=True, session_id=session_id)
             if camp is not None:
                 return camp
@@ -922,6 +1005,9 @@ class WorldState(object):
                 continue
             recs.append(m)
         recs.sort(key=lambda r: r["t"])
+        # DAYS (AGES 2.1): a document with no `days_on_air` yet (schema 2, or a fresh 3) learns every local date in the whole
+        # file once, so the key never depends on where the cursor stood; from then on each record adds its own date below
+        full_scan = S3.chat_scan(self.chat_path, max_bytes=max_bytes) if not self.data["world"].get("days_on_air") else None
         hist_sid, prev_t = None, None
         cur_sid = session_id or self.session_id
         cur_start = None
@@ -958,13 +1044,35 @@ class WorldState(object):
                 out["pairs"] += 1
             if not p.get("last_seen_ts") or (iso_to_epoch(p["last_seen_ts"]) or 0) < t:
                 p["last_seen_ts"] = _iso(t)
+            self._note_day(p, t, live=False)                   # days_seen / days_on_air: the LOCAL date, never an event here
             out["records"] += 1
             cur["last_id"] = m["id"]
         cur["chat_jsonl_offset"] = offset + last_nl + 1
+        if full_scan is not None and full_scan.get("readable") and self.schema >= 2:
+            w = self.data["world"]
+            w["days_on_air"] = sorted(set(w.get("days_on_air") or []) | set(full_scan["dates"]))
+            for key, p in self.data["pips"].items():
+                if not p.get("_test") and full_scan["by_key"].get(key):
+                    p["days_seen"] = sorted(set(p.get("days_seen") or []) | set(full_scan["by_key"][key]))
+            out["days_on_air"] = len(w["days_on_air"])
         self._quarantine_scan(now, out)
         self.data["world"]["hatched_ever"] = self.hatched_ever
         self.dirty = True
+        if self.schema >= 2:
+            wr = self.recompute_wishes(now)                    # IDLEWORLD 2.1: the ledger replay rides the same boot walk
+            out["wishes_added"], out["wishes_present"] = int(wr.get("added") or 0), int(wr.get("present") or 0)
         return out
+
+    def recompute_wishes(self, now: Optional[float] = None) -> Dict[str, Any]:
+        """IDLEWORLD 2.1 boot replay: chat.jsonl from `cursor.wishes_offset` -> $RUN_DIR/wishes.jsonl rows (`src: replay`)
+        for every record the ledger keeps whose id is missing; idempotent by id; logs `wishes: +N replay rows, M already
+        present`. Returns schema3.recompute_wishes's report."""
+        cur = self.data.setdefault("cursor", {"chat_jsonl_offset": 0, "last_id": None, "wishes_offset": 0})
+        cur.setdefault("wishes_offset", 0)
+        res = S3.recompute_wishes(self.run_dir, self.chat_path, cur, self.builders, log=self.log)
+        if res.get("ok"):
+            self.dirty = True
+        return res
 
     def _quarantine_scan(self, now: float, out: Dict[str, int]) -> None:
         try:
@@ -1048,6 +1156,53 @@ class WorldState(object):
                 len(new["pips"]), report.get("camps", 0), report.get("flowers", 0), report.get("nests", 0)))
         elif not ok:
             self.log("world.json migration REFUSED (%d problem%s): %s" % (len(problems), "" if len(problems) == 1 else "s", "; ".join(problems[:5])))
+        self.migration, self.migration_ok = report, ok
+        return report
+
+    # ------------------------------------------------------------------ schema 2 -> 3 migration (AGES 5, IDLEWORLD 6.3)
+    def migrate_v3(self, now: Optional[float] = None, dry_run: bool = False, write_bak: bool = True) -> Dict[str, Any]:
+        """Migrate the loaded schema-2 document to schema 3 ON A COPY (schema3.migrate_v3_doc over this run dir's
+        chat.jsonl), print-log every 6.3 gate (schema3.verify_v3), then adopt the copy. On a failed gate nothing changes:
+        `schema` stays 2, `migration_ok` is False and the report lists the problems, so the scene refuses to boot and the
+        panel keeps the last good frame. With `write_bak` the pre-migration file is copied to `world.json.bak-pre-idle-<ts>`
+        first (never pruned). `dry_run` verifies without adopting."""
+        if self.schema >= 3:
+            self.migration = {"ok": True, "skipped": True, "reason": "already schema %d" % self.schema}
+            self.migration_ok = True
+            return self.migration
+        if self.schema < 2:
+            self.migration = {"ok": False, "problems": ["schema %d: migrate to 2 first" % self.schema], "from_schema": self.schema, "to_schema": 3}
+            self.migration_ok = False
+            return self.migration
+        old = self.data
+        now_t = float(now if now is not None else (iso_to_epoch(old.get("updated_ts")) or 0.0))
+        new, report = S3.migrate_v3_doc(old, self.chat_path, now_t or None, log=self.log)
+        ok, problems, gates = S3.verify_v3(old, new, self.chat_path, now_t or None)
+        S3.print_gates(gates, out=self.log)
+        report.update({"ok": ok, "problems": problems, "gates": gates, "dry_run": bool(dry_run)})
+        if ok and not dry_run:
+            if write_bak and os.path.exists(self.path):
+                stamp = _dt.datetime.fromtimestamp(now_t, tz=_dt.timezone.utc).strftime("%Y%m%dT%H%M%S") if now_t else "unknown"
+                bak = self.path + ".bak-pre-idle-" + stamp
+                try:
+                    if not os.path.exists(bak):
+                        with open(self.path, "rb") as src, open(bak + ".tmp", "wb") as dst:
+                            dst.write(src.read())
+                        os.replace(bak + ".tmp", bak)
+                    report["bak"] = bak
+                except Exception as e:
+                    self.log("pre-migration backup failed (%r): NOT migrating" % (e,))
+                    report.update({"ok": False, "problems": problems + ["pre-migration backup failed: %r" % (e,)]})
+                    self.migration, self.migration_ok = report, False
+                    return report
+            self.data = new
+            self._land = None
+            self.dirty = True
+            self.log("world.json migrated schema 2 -> 3: %d pips, %d camps (%d lifted), people %s · stones %s · days %s -> age %s (%s)" % (
+                report.get("pips", 0), report.get("camps", 0), report.get("camps_lifted", 0), report.get("people"), report.get("stones"),
+                report.get("days"), report.get("age"), report.get("age_name")))
+        elif not ok:
+            self.log("world.json migration 2 -> 3 REFUSED (%d problem%s): %s" % (len(problems), "" if len(problems) == 1 else "s", "; ".join(problems[:5])))
         self.migration, self.migration_ok = report, ok
         return report
 
@@ -1217,9 +1372,9 @@ def migrate_v2_doc(old: Dict[str, Any], moot: Tuple[float, float] = LAND.DEFAULT
     `digs` kept as history. Identity fields are copied, never rebuilt. Returns (new_doc, report)."""
     log = log or (lambda m: None)
     src = copy.deepcopy(old)
-    report: Dict[str, Any] = {"from_schema": int(src.get("schema") or 1), "to_schema": SCHEMA, "pips": 0, "camps": 0,
+    report: Dict[str, Any] = {"from_schema": int(src.get("schema") or 1), "to_schema": SCHEMA_V2, "pips": 0, "camps": 0,
                               "flowers": 0, "flowers_dropped": 0, "nests": 0, "nests_dropped": 0}
-    new = _default_data(SCHEMA)
+    new = _default_data(SCHEMA_V2)
     for k in ("updated_ts", "cursor", "sessions", "banished", "quarantine"):
         if k in src:
             new[k] = src[k]
@@ -1300,7 +1455,7 @@ def migrate_v2_doc(old: Dict[str, Any], moot: Tuple[float, float] = LAND.DEFAULT
     w2["marks"] = marks
     w2["fields"] = []
     w2["hatched_ever"] = sum(1 for p in pips2.values() if not p.get("_test") and p.get("state") not in ("seed", "hatching"))
-    new["schema"] = SCHEMA
+    new["schema"] = SCHEMA_V2
     return new, report
 
 
@@ -1330,8 +1485,8 @@ def verify_migration(old: Dict[str, Any], new: Dict[str, Any]) -> Tuple[bool, Li
     for blk in ("banished", "quarantine"):
         if set((old.get(blk) or {}).keys()) != set((new.get(blk) or {}).keys()):
             problems.append("%s keys changed" % blk)
-    if int(new.get("schema") or 0) != SCHEMA:
-        problems.append("new schema is %r, not %d" % (new.get("schema"), SCHEMA))
+    if int(new.get("schema") or 0) != SCHEMA_V2:
+        problems.append("new schema is %r, not %d" % (new.get("schema"), SCHEMA_V2))
     w2 = new.get("world") or {}
     mw, mh = int(w2.get("map_w") or LAND.MAP_W), int(w2.get("map_h") or LAND.MAP_H)
     for key, p in np_.items():
@@ -1363,27 +1518,110 @@ def verify_migration(old: Dict[str, Any], new: Dict[str, Any]) -> Tuple[bool, Li
     return (not problems), problems
 
 
-def migrate_copy(src_path: str, out_path: Optional[str] = None, moot: Optional[Tuple[float, float]] = None) -> Dict[str, Any]:
-    """CLI helper: read `src_path` (never written), migrate, verify, optionally write the schema-2 copy to `out_path`
-    (must not be a canonical live dir). Returns the report with `ok`."""
+def _canonical_path(path: str) -> bool:
+    """True for anything under a live run dir (~/.local/share/kick-live/run-live | run): never written by a CLI helper."""
+    rp = os.path.realpath(path)
+    canon = [os.path.realpath(os.path.expanduser(p)) for p in ("~/.local/share/kick-live/run-live", "~/.local/share/kick-live/run")]
+    return any(rp.startswith(c + os.sep) or rp == c for c in canon)
+
+
+def migrate_copy(src_path: str, out_path: Optional[str] = None, moot: Optional[Tuple[float, float]] = None, to: int = SCHEMA_V2,
+                 chat_path: Optional[str] = None, forge: Optional[str] = None, replay: bool = False,
+                 out: Optional[Callable[[str], None]] = None, now: Optional[float] = None) -> Dict[str, Any]:
+    """CLI helper: read `src_path` (never written), migrate to `to` (2, or 3 via 2), print every gate, optionally write
+    the copy to `out_path` (never a canonical live dir, never over the source). `--to 3` needs the CHAT COPY (`chat_path`)
+    for the DAYS key; it then reloads the written copy through WorldState (the `save() round-trips schema 3` gate) and,
+    with `replay`, runs the wish ledger replay into the copy's dir. `forge` (a pip key) flips one identity byte in the
+    migrated document BEFORE the verify, so the guard's refusal is demonstrable (test only). Returns the report with `ok`."""
+    import time as _time
+    out = out or print
+    now_t = float(now if now is not None else _time.time())
     with open(src_path, "r", encoding="utf-8") as fh:
         old = WorldState._adopt(json.load(fh))
-    if int(old.get("schema") or 1) >= 2:
+    sch = int(old.get("schema") or 1)
+    if sch >= int(to):
         return {"ok": True, "skipped": True, "reason": "source is already schema %s" % old.get("schema")}
-    new, report = migrate_v2_doc(old, moot=tuple(moot) if moot else LAND.DEFAULT_MOOT)
-    ok, problems = verify_migration(old, new)
-    report.update({"ok": ok, "problems": problems, "src": src_path})
+    report: Dict[str, Any] = {"src": src_path, "from_schema": sch, "to_schema": int(to)}
+    doc = old
+    if sch < 2:
+        new2, rep2 = migrate_v2_doc(doc, moot=tuple(moot) if moot else LAND.DEFAULT_MOOT)
+        ok2, pr2 = verify_migration(doc, new2)
+        report["v2"] = dict(rep2, ok=ok2, problems=pr2)
+        if not ok2:
+            report.update({"ok": False, "problems": pr2})
+            return report
+        doc = WorldState._adopt(new2)
+        if int(to) == 2:
+            new, ok, problems = new2, ok2, pr2
+            report.update(rep2)
+    if int(to) >= 3:
+        new, rep3 = S3.migrate_v3_doc(doc, chat_path, now_t, log=out)
+        if forge:
+            fk = str(forge).lower()
+            if fk in new.get("pips", {}):
+                g = new["pips"][fk].setdefault("genome", {})
+                g["salt"] = int(g.get("salt") or 0) + 1              # one identity byte, forged on purpose
+                out("[migrate] FORGED identity byte on pip %r (genome.salt +1): the guard must refuse" % fk)
+            else:
+                out("[migrate] --forge-identity %r: no such pip, nothing forged" % fk)
+        ok, problems, gates = S3.verify_v3(doc, new, chat_path, now_t)
+        S3.print_gates(gates, out=out)
+        report.update(rep3)
+        report["gates"] = [(g[0], g[2]) for g in gates]
+        out("[migrate] computed: people %s · stones %s · days %s -> age %s (%s)%s" % (
+            rep3.get("people"), rep3.get("stones"), rep3.get("days"), rep3.get("age"), rep3.get("age_name"),
+            "" if not rep3.get("camps_lifted") else " · %d camp%s lifted by the floor" % (rep3["camps_lifted"], "" if rep3["camps_lifted"] == 1 else "s")))
+    report.update({"ok": ok, "problems": problems})
     if out_path:
         rp = os.path.realpath(out_path)
-        canon = [os.path.realpath(os.path.expanduser(p)) for p in ("~/.local/share/kick-live/run-live", "~/.local/share/kick-live/run")]
-        if any(rp.startswith(c + os.sep) or rp == c for c in canon) or os.path.realpath(src_path) == rp:
+        if _canonical_path(rp) or os.path.realpath(src_path) == rp:
             report.update({"ok": False, "problems": problems + ["refusing to write into a live run dir or over the source"]})
             return report
         if ok:
             os.makedirs(os.path.dirname(rp) or ".", exist_ok=True)
             write_state_atomic(rp, new)
             report["out"] = rp
+            if int(to) >= 3:
+                # the round trip: the written copy loads as schema 3 with the migration skipped, saves, loads again identical
+                rd = os.path.dirname(rp)
+                ws = WorldState(rd, log=lambda m: None, schema=3)
+                ws.dirty = True
+                saved = ws.save(now_t, force=True)
+                ws2 = WorldState(rd, log=lambda m: None, schema=3)
+                same_ident = all(_ident((new["pips"][k] or {}).get(f)) == _ident((ws2.pips.get(k) or {}).get(f))
+                                 for k in new["pips"] for f in IDENTITY_FIELDS)
+                rt_ok = (ws.schema == 3 and bool((ws.migration or {}).get("skipped")) and saved and ws2.schema == 3
+                         and len(ws2.pips) == len(new["pips"]) and same_ident and ws2.data["world"].get("age") == new["world"].get("age"))
+                S3.print_gates([("save() round-trips schema 3", "load %d -> save -> load %d, %d pips, age %s" % (
+                    ws.schema, ws2.schema, len(ws2.pips), ws2.data["world"].get("age")), rt_ok)], out=out)
+                if not rt_ok:
+                    report.update({"ok": False, "problems": problems + ["save() round trip failed"]})
+                if replay and rt_ok:
+                    cp = chat_path or os.path.join(rd, "chat.jsonl")
+                    res = S3.recompute_wishes(rd, cp, ws2.data.setdefault("cursor", {}), ws2.builders, log=out)
+                    ws2.dirty = True
+                    ws2.save(now_t, force=True)
+                    report["wishes"] = res
     return report
+
+
+def replay_wishes_dir(run_dir: str, chat_path: Optional[str] = None, out: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """CLI helper: the boot replay on a /tmp run dir's world.json + chat copy (prints `wishes: +N replay rows, M already
+    present`; a second call prints `+0`). Refuses a canonical live dir."""
+    import time as _time
+    out = out or print
+    if _canonical_path(run_dir):
+        out("[wishes] refusing to touch a live run dir: %s" % run_dir)
+        return {"ok": False, "added": 0, "present": 0}
+    ws = WorldState(run_dir, log=lambda m: None)
+    if chat_path:
+        ws.chat_path = chat_path
+    res = ws.recompute_wishes(_time.time())
+    out("wishes: +%d replay rows, %d already present" % (int(res.get("added") or 0), int(res.get("present") or 0)))
+    if res.get("ok"):
+        ws.dirty = True
+        ws.save(_time.time(), force=True)
+    return res
 
 
 def _fixture_v1(now: float) -> Dict[str, Any]:
@@ -1537,6 +1775,157 @@ def _self_test() -> bool:
     on_green = ws3.ensure_camp("greeny", now, "sess-1")
     check(on_green is None, "ensure_camp refuses an unknown pip")
 
+    # 8. schema 3 (AGES 5 / IDLEWORLD 6.3): the 2 -> 3 gates on a fixture, days from the chat copy, camps by days with the
+    #    age floor, last_told round trip, save round trip, _adopt on both schemas, the forged byte, the wish replay
+    d3 = tempfile.mkdtemp(prefix="lg-state-v3-", dir="/tmp")
+    doc2, _ = migrate_v2_doc(_fixture_v1(now))
+    doc2 = WorldState._adopt(doc2)
+    for k, n_st in (("sami", 6), ("atleastonce", 4), ("kai_dnb", 2)):
+        for i in range(n_st):
+            doc2["world"]["stones"].append({"by": k, "ts": _iso(now - 3600 * (i + 1)), "cairn_id": "moot"})
+    doc2["pips"]["sami"]["state"] = "asleep"                           # the old name on disk: the load map must take it
+    write_state_atomic(os.path.join(d3, "world.json"), doc2)
+    day = 86400.0
+    fixture_chat = [("c1", "atleastonce", "hello land", now - 3 * day), ("c2", "atleastonce", "A", now - 3 * day + 5),
+                    ("c3", "atleastonce", "build a castle here", now - 1 * day), ("c4", "Sami", "!idea a lantern by the ford", now - 1 * day + 9),
+                    ("c5", "Sami", "!pause", now - 1 * day + 20), ("c6", "Kai_DnB", "stack stone", now - 60), ("c7", "Sami", "b", now - 50),
+                    ("c8", "atleastonce", "pause bot", now - 40), ("c9", "Kai_DnB", "!help", now - 30), ("c10", "Sami", "kick colours", now - 20),
+                    ("c6", "Kai_DnB", "stack stone", now - 60)]       # c6 twice: the two record shapes of one message
+    with open(os.path.join(d3, "chat.jsonl"), "w") as fh:
+        for mid, nm, tx, t in fixture_chat:
+            fh.write(json.dumps({"id": mid, "username": nm, "content": tx, "ts": _iso(t), "badges": []}) + "\n")
+        fh.write(json.dumps({"id": "w1", "user_id": 5, "content": "webhook test", "ts": _iso(now), "type": "test"}) + "\n")
+    want_dates = sorted({LAND.local_date(t) for _, _, _, t in fixture_chat})
+    eligible = {"c1", "c3", "c4", "c6", "c10"}                        # not c2 / c7 (votes), c5 (mod), c8 (ops phrase), c9 (!help)
+    ws4 = WorldState(d3, log=lambda m: None, schema=3, now=now)
+    rep = ws4.migration or {}
+    check(ws4.schema == 3 and ws4.migration_ok, "schema=3 migrates a v2 file under the 6.3 gates: ok=%s problems=%s" % (rep.get("ok"), rep.get("problems")))
+    check(all(g[2] for g in rep.get("gates") or []) and len(rep.get("gates") or []) >= 20, "%d gates printed, all passed" % len(rep.get("gates") or []))
+    check(bool(rep.get("bak")) and ".bak-pre-idle-" in (rep.get("bak") or "") and os.path.exists(rep.get("bak") or ""), "pre-idle copy written: %s" % os.path.basename(rep.get("bak") or "?"))
+    w4 = ws4.data["world"]
+    check(w4["days_on_air"] == want_dates and len(want_dates) == 3, "days_on_air == distinct local chat dates %s" % w4["days_on_air"])
+    check(ws4.pips["atleastonce"]["days_seen"] == want_dates and len(ws4.pips["sami"]["days_seen"]) == 2 and len(ws4.pips["kai_dnb"]["days_seen"]) == 1,
+          "days_seen per pip 3 / 2 / 1 from the chat copy")
+    check(w4["age"] == 1 and w4["age_built"] == 0 and [r["idx"] for r in w4["age_history"]] == [0, 1] and w4["age_history"][1]["raised_by"][0] == "sami",
+          "people 3 · stones 12 · days 3 -> age 1 (the Camp), age_built 0, history rows 0-1 with top stackers first")
+    check(w4["wish_post"] == [] and w4["placed"] == [] and w4["placed_seq"] == 0 and w4["age_build"] is None, "wish_post [] · placed [] · placed_seq 0 · age_build None")
+    c_a, c_s, c_k = ws4.pips["atleastonce"]["camp"], ws4.pips["sami"]["camp"], ws4.pips["kai_dnb"]["camp"]
+    check(c_a["sessions"] == doc2["pips"]["atleastonce"]["camp"]["nights"] and c_a["nights"] == c_a["sessions"], "camp.nights -> camp.sessions (values copied, nights readable)")
+    check(c_a["tiers"][0] == {"tier": 1, "ts": c_a["built_ts"]} and c_k["tiers"][0]["tier"] == 0 and c_k["tiers"][-1]["tier"] == 1 and len(c_k["tiers"]) == 2,
+          "camp.tiers seeded from the stored tier; the floor's lift is a second row (%s)" % c_k["tiers"])
+    check(c_a["tier"] == 1 and c_s["tier"] == 1 and c_k["tier"] == 1 and rep.get("camps_lifted") == 1, "tiers 1/1/1: kai's hollow lifted to a tent by the Camp's floor (never lower)")
+    check(ws4.pips["sami"]["state"] == "idle" and "nights_streak" not in ws4.pips["sami"], "asleep -> idle on the way in; nights_streak dropped")
+    lt = ws4.pips["sami"]["last_told"]
+    check(isinstance(lt, dict) and tuple(sorted(lt)) == tuple(sorted(S3.LAST_TOLD_KEYS)) and lt["age"] == 0 and lt["people"] == 3 and lt["stones"] == 12,
+          "last_told seeded on every pip with the eight keys (%s)" % sorted(lt or {}))
+    check(ws4.land.age == 1 and ws4.land.age_check() is None and ws4.land.age_forward() == [("people", 2), ("stones", 18), ("days", 2)] and ws4.land.pile() == 7,
+          "Land.age / age_check / age_forward / pile read the counts (forward %s, pile %d)" % (ws4.land.age_forward(), ws4.land.pile()))
+    # the wish replay rides the boot walk: one row per eligible record (votes / mod / ops / webhook / duplicates excluded), then +0
+    ws4.begin_session("sess-v3", now)
+    rc4 = ws4.recompute_from_chat(now, "sess-v3")
+    check(rc4.get("records") == 10 and rc4.get("wishes_added") == len(eligible) and rc4.get("wishes_present") == 0,
+          "recompute_from_chat walks 10 records (1 duplicate id, 1 webhook row skipped) and replays +%s wishes (%r)" % (rc4.get("wishes_added"), rc4))
+    wp = os.path.join(d3, "wishes.jsonl")
+    rows = [json.loads(ln) for ln in open(wp, encoding="utf-8") if ln.strip()] if os.path.exists(wp) else []
+    check({r["id"] for r in rows} == eligible and all(r["src"] == "replay" and r["class"] == "pending" for r in rows),
+          "recompute_wishes: +%d replay rows == the eligible set %s" % (len(rows), sorted(r["id"] for r in rows)))
+    kinds = {r["id"]: r["kind"] for r in rows}
+    check(kinds.get("c4") == "idea" and kinds.get("c10") == "theme" and kinds.get("c1") == "plain" and next(r for r in rows if r["id"] == "c4")["text"] == "a lantern by the ford",
+          "ledger kinds plain / idea / theme and the idea's arg (%s)" % kinds)
+    wr2 = ws4.recompute_wishes(now)
+    check(wr2.get("added") == 0 and wr2.get("ok") and ws4.data["cursor"]["wishes_offset"] == os.path.getsize(os.path.join(d3, "chat.jsonl")),
+          "a second replay adds +0 (cursor at the last full line)")
+    # last_told round trip + save() round-trips schema 3 (no silent up- or downgrade)
+    ws4.pips["sami"]["last_told"]["age"] = 1
+    ws4.pips["sami"]["last_told"]["camp_tier"] = 2
+    ws4.save(now + 2, force=True)
+    ws5 = WorldState(d3, log=lambda m: None, schema=3)
+    check(ws5.schema == 3 and (ws5.migration or {}).get("skipped") and ws5.pips["sami"]["last_told"] == ws4.pips["sami"]["last_told"],
+          "last_told round-trips through save + load; a v3 file skips the migration")
+    with open(ws5.path) as fh:
+        raw3 = json.load(fh)
+    check(raw3["schema"] == 3 and raw3["world"]["age"] == 1 and raw3["cursor"]["wishes_offset"] > 0 and raw3["pips"]["kai_dnb"]["camp"]["sessions"] == c_k["sessions"],
+          "save() writes schema 3 with the age, the wishes cursor and camp.sessions")
+    ws6 = WorldState(d3, log=lambda m: None, schema=2)
+    check(ws6.schema == 3, "schema=2 over a v3 file keeps schema 3 (never a downgrade)")
+    # _adopt maps schema 2 AND 3 states and fills the 6.1 defaults
+    a2 = WorldState._adopt({"schema": 2, "pips": {"X": {"state": "asleep"}, "y": {"state": "burrowed"}}})
+    a3 = WorldState._adopt({"schema": 3, "pips": {"z": {"state": "curled", "camp": {"x": 1, "y": 2, "tier": 0, "nights": ["s1"]}}}})
+    check(a2["pips"]["x"]["state"] == "idle" and a2["pips"]["y"]["state"] == "hidden" and "days_on_air" not in a2["world"],
+          "_adopt schema 2: asleep -> idle, burrowed -> hidden, no schema-3 keys invented")
+    check(a3["pips"]["z"]["state"] == "idle" and a3["pips"]["z"]["days_seen"] == [] and a3["pips"]["z"]["last_told"] is None
+          and a3["pips"]["z"]["camp"]["sessions"] == ["s1"] and a3["world"]["age"] == 0 and a3["world"]["days_on_air"] == [] and a3["cursor"]["wishes_offset"] == 0,
+          "_adopt schema 3: curled -> idle, days_seen / last_told / camp.sessions / world keys filled")
+    # the forged identity byte: verify_v3 refuses (the CLI exits 1 on the same path)
+    forged, _ = S3.migrate_v3_doc(doc2, os.path.join(d3, "chat.jsonl"), now)
+    forged["pips"]["sami"]["genome"]["salt"] = int(forged["pips"]["sami"]["genome"].get("salt") or 0) + 1
+    f_ok, f_problems, f_gates = S3.verify_v3(doc2, forged, os.path.join(d3, "chat.jsonl"), now)
+    check(not f_ok and any(g[0] == "identity bytes per pip" and not g[2] for g in f_gates), "verify_v3 refuses a forged identity byte: %s" % f_problems[:1])
+    lowered, _ = S3.migrate_v3_doc(doc2, os.path.join(d3, "chat.jsonl"), now)
+    lowered["pips"]["atleastonce"]["camp"]["tier"] = 0
+    l_ok, l_problems, _ = S3.verify_v3(doc2, lowered, os.path.join(d3, "chat.jsonl"), now)
+    check(not l_ok and any("lowered" in p for p in l_problems), "verify_v3 refuses a lowered camp tier: %s" % l_problems[:1])
+    # camp_tier_for: the AGES 1.2 table (days OR minutes, floor from the age, one rung ahead at most, never lower)
+    ct = LAND.camp_tier_for
+    check(ct({"days_seen": ["d"], "minutes_present": 0}, 0) == 0 and ct({"days_seen": ["a", "b", "c"], "minutes_present": 336}, 1) == 2
+          and ct({"days_seen": ["a"], "minutes_present": 20}, 1) == 1 and ct({"days_seen": list("abcdefgh"), "minutes_present": 0}, 1) == 2
+          and ct({"days_seen": [], "minutes_present": 0, "camp": {"tier": 3}}, 0) == 3 and ct({"days_seen": list("abcd"), "minutes_present": 700}, 4) == 3,
+          "camp_tier_for: hollow at 1 day · hut at 336 min in the Camp · floor lifts 20 min to a tent · ceiling age+1 · stored 3 never lowers")
+    check(LAND.age_gate(4, 18, 4) == 1 and LAND.age_gate(3, 16, 3) == 1 and LAND.age_gate(5, 30, 5) == 2 and LAND.age_gate(1, 0, 1) == 0
+          and LAND.age_gate(0, 0, 0) == 0 and LAND.age_gate(100, 900, 60) == 5 and LAND.age_need(5) == (50, 400, 50) and LAND.age_name(5) == "the 1st Century"
+          and LAND.age_forward(4, 18, 4) == [("people", 1), ("stones", 12), ("days", 1)],
+          "age_gate: 4/18/4 -> 1 · 3/16/3 -> 1 · 5/30/5 -> 2 · 1/0/1 -> 0 · 100/900/60 -> 5 (the 1st Century); forward 4/18/4 = 1 · 12 · 1")
+    # camp at hatch at the ring spot (never where the seed landed), record_visit, the day_turn queue
+    p_new, created = ws5.ensure_pip("newcomer_7", "Newcomer_7", "Newcomer_7", 11, now + 10)
+    p_new["state"] = "idle"
+    ws5.set_pos("newcomer_7", ws5.land.moot[0] + 3, ws5.land.moot[1] + 2)     # standing on the green: a legal camp spot it is not
+    ws5.session_id = "sess-v3"
+    camp_n = ws5.ensure_camp("newcomer_7", now + 10, "sess-v3", ring=True)
+    taken0 = [(c["x"], c["y"]) for c in ws5.land.camps() if c["key"] != "newcomer_7"]
+    ring_spot = LAND.hashed_camp_spot("newcomer_7", ws5.land.moot, taken0, ws5.land.passable, ws5.land.water)
+    check(isinstance(camp_n, dict) and (camp_n["x"], camp_n["y"]) == ring_spot and 24 <= ((camp_n["x"] - ws5.land.moot[0]) ** 2 + (camp_n["y"] - ws5.land.moot[1]) ** 2) ** 0.5 <= 60
+          and camp_n["tier"] == 1 and camp_n["sessions"] == ["sess-v3"] and camp_n["nights"] == ["sess-v3"],
+          "ensure_camp(ring=True) at hatch pitches at the hashed Steading-ring spot %s, tier 1 (the Camp's floor), sessions [sid]" % (ring_spot,))
+    nt = ws5.record_visit("newcomer_7", now + 11, "sess-v3")
+    check(nt is None and ws5.pips["newcomer_7"]["days_seen"] == [LAND.local_date(now + 11)], "record_visit: today joins days_seen, the tier holds (idempotent)")
+    ws5.pips["newcomer_7"]["minutes_present"] = 200.0
+    evs = ws5.visit_events("newcomer_7", now + 12, "sess-v3")
+    check(len(evs) == 1 and evs[0]["type"] == "camp_raised" and evs[0]["tier"] == 2 and evs[0]["word"] == "hut" and evs[0]["days"] == 1
+          and ws5.pips["newcomer_7"]["camp"]["tiers"][-1]["tier"] == 2, "visit_events: 200 min in the Camp -> hut, one camp_raised row with days (a len())")
+    ws5.record_message("newcomer_7", now + 12, "sess-v3", "hello")                  # today: already on air today -> no turn
+    far = now + 5 * day
+    ws5.record_message("newcomer_7", far, "sess-v3", "back again")                  # a new local date, live -> one day_turn
+    ws5.record_message("newcomer_7", far + 1, "sess-v3", "still here")
+    turns = ws5.take_day_turns()
+    check(len(turns) == 1 and turns[0]["type"] == "day_turn" and turns[0]["date"] == LAND.local_date(far) and turns[0]["days"] == len(ws5.data["world"]["days_on_air"])
+          and ws5.take_day_turns() == [] and LAND.local_date(far) in ws5.data["world"]["days_on_air"],
+          "day_turn: one event on the first live record of a new local date, none for the second, the queue drains")
+    ws5.record_message("atleastonce", far + 2 * day, "sess-v3", "history", history=True)
+    check(ws5.take_day_turns() == [] and LAND.local_date(far + 2 * day) in ws5.data["world"]["days_on_air"], "a history record adds its date but never a day_turn")
+    # the camp plate: `N days here`, never a night count; every composed string passes the copy gate
+    pl = ws5.land.plate("newcomer_7")
+    plate_texts = []
+    for c in ws5.land.camps():
+        n_days = int(c.get("days") or 0) or int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)
+        plate_texts.append(("@%s's %s · %d day%s here" % (c["display_name"], c["word"], n_days, "" if n_days == 1 else "s")) if n_days > 0 else "@%s's %s" % (c["display_name"], c["word"]))
+    try:
+        from stream.compositor import Compositor as _Comp
+        hits = _Comp.banned_copy_hits(plate_texts)
+    except Exception:
+        hits = [t for t in plate_texts if re.search(r"(?<![a-z0-9_])day \d+", t.lower())]
+    check(pl is not None and "night" not in pl and pl["days"] == 2 and pl["sessions"] == 1 and all("night" not in t for t in plate_texts) and hits == [],
+          "plate: days 2 · sessions 1, no `night` key or word; %d composed plate lines pass banned_copy_hits" % len(plate_texts))
+    panel_src = os.path.join(_ROOT, "stream", "panels", "world.py")
+    try:
+        with open(panel_src, encoding="utf-8") as fh:
+            src_txt = fh.read()
+        check("night %d" not in src_txt and "night %s" not in src_txt, "panels/world.py composes no `night N` plate")
+    except OSError:
+        pass
+    check(not ws5.land.provenance_violations(), "no provenance violations after the camp at hatch")
+    ws5.backup(now + 3 * day)
+    check(os.path.exists(rep.get("bak") or ""), "backup() never prunes the .bak-pre-idle copy")
+
     for n in notes:
         print("[state] " + n)
     print("[state] self-test %s (%s)" % ("PASS" if ok else "FAIL", run_dir))
@@ -1547,18 +1936,26 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="world.json schema tools (OPENWORLD.md 5.4)")
     ap.add_argument("--self-test", action="store_true")
-    ap.add_argument("--migrate-copy", metavar="SRC", help="read this world.json (never written), migrate 1 -> 2 in memory, verify the guard")
+    ap.add_argument("--migrate-copy", metavar="SRC", help="read this world.json (never written), migrate in memory, print every gate")
+    ap.add_argument("--to", type=int, default=SCHEMA_V2, choices=(2, 3), help="target schema (2, or 3 via 2; 3 needs --chat)")
+    ap.add_argument("--chat", metavar="CHAT", help="the chat.jsonl COPY the DAYS key and the wish replay read")
     ap.add_argument("--out", metavar="PATH", help="write the migrated copy here (refused inside a live run dir)")
+    ap.add_argument("--replay", action="store_true", help="with --to 3 --out: run the wish ledger replay into the copy's dir")
+    ap.add_argument("--replay-wishes", metavar="RUN_DIR", help="the boot replay alone on a /tmp run dir (prints +N, then +0)")
+    ap.add_argument("--forge-identity", metavar="KEY", help="TEST: flip one identity byte on this pip before the verify (must exit 1)")
     ap.add_argument("--moot", metavar="X,Y", help="Moot centre in cells for camp placement (default map centre)")
     args = ap.parse_args()
     rc = 0
     if args.migrate_copy:
         moot = tuple(float(v) for v in args.moot.split(",")) if args.moot else None
-        r = migrate_copy(args.migrate_copy, args.out, moot)
-        print(json.dumps({k: v for k, v in r.items()}, indent=1, default=str))
-        rc = 0 if r.get("ok") else 2
+        r = migrate_copy(args.migrate_copy, args.out, moot, to=args.to, chat_path=args.chat, forge=args.forge_identity, replay=args.replay)
+        print(json.dumps({k: v for k, v in r.items() if k not in ("gates", "days_on_air")}, indent=1, default=str))
+        rc = 0 if r.get("ok") else 1
+    if args.replay_wishes:
+        r = replay_wishes_dir(args.replay_wishes, args.chat)
+        rc = rc or (0 if r.get("ok") else 1)
     if args.self_test:
         rc = rc or (0 if _self_test() else 1)
-    if not args.self_test and not args.migrate_copy:
+    if not args.self_test and not args.migrate_copy and not args.replay_wishes:
         ap.print_help()
     sys.exit(rc)

@@ -28,6 +28,7 @@ decay, camps are never dismantled except by `!banish`, which keeps an audit reco
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import hashlib
 import math
 import zlib
@@ -64,10 +65,27 @@ MARK_GAP = 4
 MARK_CAP_LIFETIME = 40
 TREE_STAGES = ((0.0, "sapling"), (3.0, "young"), (14.0, "canopy"))
 
-# stones / raisings (10)
+# stones / raisings (10): STONE_LADDER / RAISING_NAMES leave the gate role (AGES 2.2) and serve the `!idea` raising line one
+# release more; the three structures are contents of ages now
 STONE_LADDER = (20, 60, 150)
 RAISING_NAMES = ("the Ford bridge", "the well", "the hall")
 CAIRN_NAME_AT = 3                 # a cairn is NAMED when 3 distinct real people have stacked
+
+# ages (AGES 2.1-2.2, IDLEWORLD 1.2): three keys, ALL required, each a len(): PEOPLE = hatched_ever, STONES = len(stones),
+# DAYS = len(world.days_on_air) (distinct LOCAL dates with a moderated record). Constants and PURE functions only: the
+# sequencer that writes `age` / `age_history` / `age_build` (the 90 s build on air) is the ages module's, never this file's.
+AGE_LADDER = ((1, 0, 1), (3, 10, 2), (5, 30, 5), (10, 80, 10), (25, 200, 25))
+AGE_NAMES = ("the Clearing", "the Camp", "the Steading", "the Village", "the Town")
+AGE_KEYS = ("people", "stones", "days")
+AGE_CENTURY_STEP = (25, 200, 25)  # beyond the table: (25 + 25 k, 200 + 200 k, 25 + 25 k) named `the Nth Century`
+AGE_PILE_BASE = 5                 # pile() = len(stones) - 5 - sum(stones_placed): the cairn keeps its first five
+
+# camps (AGES 1.2): tier by distinct LOCAL days seen (pip.days_seen) OR minutes present, whichever is further; floored by
+# the age (the Camp lifts every hollow to a tent), at most one rung ahead of the place, never lower than stored
+CAMP_DAYS_LADDER = (1, 2, 4, 8)
+CAMP_MINUTES_LADDER = (0, 30, 180, 600)
+CAMP_FLOOR_BY_AGE = (0, 1, 1, 2, 3)   # the Clearing -> hollow, the Camp -> tent, the Village -> hut, the Town -> chimney
+CAMP_TIER_MAX = 3
 
 WEATHER_STATES = ("clear", "breeze", "overcast", "rain", "gale", "fog", "snow")
 NATURAL_POINTS = ("ford", "fell", "shore")
@@ -83,14 +101,103 @@ def name_hash(key: str, salt: str = "") -> int:
 
 
 def camp_tier_for_sessions(sessions_seen: int) -> int:
-    """The camp ladder 5.3: 1 session -> 0 hollow, 2 -> 1 tent, 5 -> 2 hut, 10 -> 3 hut with a chimney. Never shrinks
-    (sessions_seen never shrinks either); a pip with 0 sessions has no camp."""
+    """The OLD camp ladder 5.3 (schema 1 -> 2 migration only): 1 session -> 0 hollow, 2 -> 1 tent, 5 -> 2 hut, 10 -> 3
+    hut with a chimney; a pip with 0 sessions has no camp. Live camps read `camp_tier_for` (AGES 1.2)."""
     n = int(sessions_seen or 0)
     t = -1
     for i, need in enumerate(CAMP_LADDER):
         if n >= need:
             t = i
     return t
+
+
+def _rung(ladder: Sequence[float], value: float) -> int:
+    t = 0
+    for i, need in enumerate(ladder):
+        if value >= need:
+            t = i
+    return t
+
+
+def camp_floor(age: int) -> int:
+    """The camp tier the age guarantees everyone (AGES 1.2 `floor from the age`)."""
+    a = max(0, int(age or 0))
+    return CAMP_FLOOR_BY_AGE[a] if a < len(CAMP_FLOOR_BY_AGE) else CAMP_TIER_MAX
+
+
+def camp_tier_for(p: Optional[Dict], age: int = 0) -> int:
+    """AGES 1.2: `shown = max(stored, clamp(max(tier_by_days, tier_by_minutes), floor(age), age + 1))`. Days = len(distinct
+    local dates in `p["days_seen"]`); minutes = `minutes_present`; never lower than the stored tier; a person may stand one
+    rung ahead of the place, never two. Pure: reads the row, writes nothing."""
+    p = p or {}
+    days = len(set(p.get("days_seen") or []))
+    mins = float(p.get("minutes_present") or 0.0)
+    by_days = _rung(CAMP_DAYS_LADDER, days) if days > 0 else 0
+    by_mins = _rung(CAMP_MINUTES_LADDER, mins)
+    a = max(0, int(age or 0))
+    lo, hi = camp_floor(a), min(CAMP_TIER_MAX, a + 1)
+    want = max(lo, min(hi, max(by_days, by_mins)))
+    camp = p.get("camp") if isinstance(p.get("camp"), dict) else {}
+    stored = int(camp.get("tier") or 0)
+    return max(0, min(CAMP_TIER_MAX, max(stored, want)))
+
+
+def local_date(t: Optional[float]) -> Optional[str]:
+    """ISO calendar date of an epoch in the machine's LOCAL zone (the DAYS key and `days_seen` count local dates, AGES 2.1).
+    Pure in `t`: the caller passes the clock."""
+    if t is None:
+        return None
+    try:
+        return _dt.datetime.fromtimestamp(float(t)).date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def age_need(idx: int) -> Tuple[int, int, int]:
+    """(people, stones, days) the rung `idx` asks for; beyond the table each Century adds AGE_CENTURY_STEP."""
+    i = max(0, int(idx))
+    if i < len(AGE_LADDER):
+        return AGE_LADDER[i]
+    k = i - (len(AGE_LADDER) - 1)
+    base = AGE_LADDER[-1]
+    return (base[0] + AGE_CENTURY_STEP[0] * k, base[1] + AGE_CENTURY_STEP[1] * k, base[2] + AGE_CENTURY_STEP[2] * k)
+
+
+def age_name(idx: int) -> str:
+    i = max(0, int(idx))
+    if i < len(AGE_NAMES):
+        return AGE_NAMES[i]
+    n = i - (len(AGE_NAMES) - 1)
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return "the %d%s Century" % (n, suffix)
+
+
+def age_gate(people: int, stones: int, days: int) -> int:
+    """The highest rung whose three keys are ALL met (AND of three: nothing ages while nobody comes, one busy night cannot
+    skip the labour, one regular cannot age the land alone). Pure; the caller passes len()s."""
+    p, s, d = int(people or 0), int(stones or 0), int(days or 0)
+    idx = 0
+    while True:
+        np_, ns, nd = age_need(idx + 1)
+        if p >= np_ and s >= ns and d >= nd:
+            idx += 1
+            if idx > 4096:
+                break
+        else:
+            break
+    np0, ns0, nd0 = age_need(0)
+    if not (p >= np0 and s >= ns0 and d >= nd0):
+        return 0
+    return idx
+
+
+def age_forward(people: int, stones: int, days: int, age: Optional[int] = None) -> List[Tuple[str, int]]:
+    """[(key, short_by)] for the rung after `age` (default: the gate over the counts): the plate's forward form
+    `2 more people · 14 more stones · 2 more days`; [] when the next rung is already met."""
+    a = int(age if age is not None else age_gate(people, stones, days))
+    need = age_need(a + 1)
+    have = (int(people or 0), int(stones or 0), int(days or 0))
+    return [(k, need[i] - have[i]) for i, k in enumerate(AGE_KEYS) if need[i] - have[i] > 0]
 
 
 def clamp_cell(x: float, y: float, margin: int = EDGE_MARGIN) -> Tuple[float, float]:
@@ -425,16 +532,19 @@ class Land(object):
         return p.get("camp") if p else None
 
     def camps(self) -> List[Dict]:
-        """Derived: one entry per real pip with a camp: {key, x, y, tier, kind, built_ts, nights, last_seen_ts,
-        sessions_seen, colour, display_name}. A `len()` over this is the `N camps` count."""
+        """Derived: one entry per real pip with a camp: {key, x, y, tier, kind, word, built_ts, sessions, days, nights,
+        last_seen_ts, sessions_seen, colour, display_name}. `days` = len(pip.days_seen) (the plate's `N days here`, AGES
+        1.2); `sessions` = len(camp.sessions) (`nights` mirrors it one release). A `len()` over this is the `N camps` count."""
         out = []
         for k, p in self.pips.items():
             c = p.get("camp")
             if p.get("_test") or not isinstance(c, dict):
                 continue
             tier = int(c.get("tier") or 0)
+            sessions = c.get("sessions") if c.get("sessions") is not None else (c.get("nights") or [])
             out.append({"key": k, "x": c.get("x"), "y": c.get("y"), "tier": tier, "kind": CAMP_KINDS[min(3, max(0, tier))],
-                        "word": CAMP_WORDS[min(3, max(0, tier))], "built_ts": c.get("built_ts"), "nights": len(c.get("nights") or []),
+                        "word": CAMP_WORDS[min(3, max(0, tier))], "built_ts": c.get("built_ts"), "sessions": len(sessions),
+                        "nights": len(sessions), "days": len(set(p.get("days_seen") or [])),
                         "last_seen_ts": p.get("last_seen_ts"), "sessions_seen": int(p.get("sessions_seen") or 0),
                         "colour": p.get("colour"), "display_name": p.get("display_name") or p.get("name") or k})
         return out
@@ -472,8 +582,9 @@ class Land(object):
 
     def set_camp(self, key: str, x: float, y: float, t: float, tier: Optional[int] = None, check: bool = True,
                  session_id: Optional[str] = None) -> Tuple[Optional[Dict], str]:
-        """Pitch or move the camp to (x, y). Tier = the ladder over sessions_seen unless given; the old spot keeps its
-        wear. `home` follows the camp. Bumps bake_ver (a hut lives in the painted ground)."""
+        """Pitch or move the camp to (x, y). Tier = `camp_tier_for(p, age)` (AGES 1.2) unless given, never below the old
+        tier; the old spot keeps its wear. `home` follows the camp. `camp.sessions` (history of session ids; `nights` mirrors
+        it one release) and `camp.tiers` ({tier, ts} history) carry over. Bumps bake_ver (a hut lives in the painted ground)."""
         k = (key or "").lower()
         p = self.real_pip(k)
         if p is None:
@@ -483,60 +594,81 @@ class Land(object):
             if not ok:
                 return None, reason
         old = p.get("camp") if isinstance(p.get("camp"), dict) else None
-        nights = list(old.get("nights") or []) if old else []
-        if session_id and session_id not in nights:
-            nights.append(session_id)
+        sessions = list((old.get("sessions") if old.get("sessions") is not None else old.get("nights")) or []) if old else []
+        if session_id and session_id not in sessions:
+            sessions.append(session_id)
         if tier is None:
-            tier = max(0, camp_tier_for_sessions(p.get("sessions_seen") or 0))
+            tier = camp_tier_for(p, self.age)
             if old is not None:
                 tier = max(tier, int(old.get("tier") or 0))
-        camp = {"x": int(round(x)), "y": int(round(y)), "tier": int(tier),
-                "built_ts": (old or {}).get("built_ts") or self.ws.iso(t), "nights": nights}
+        built_ts = (old or {}).get("built_ts") or self.ws.iso(t)
+        tiers = list((old or {}).get("tiers") or [])
+        if not tiers or int(tiers[-1].get("tier", -1)) != int(tier):
+            tiers.append({"tier": int(tier), "ts": self.ws.iso(t) if old else built_ts})
+        camp = {"x": int(round(x)), "y": int(round(y)), "tier": int(tier), "built_ts": built_ts,
+                "sessions": sessions, "nights": list(sessions), "tiers": tiers}
         p["camp"] = camp
         p["home"] = [camp["x"], camp["y"]]
         self.bump_bake("camp %s" % ("moved" if old else "pitched"))
         self._dirty()
         return camp, "ok"
 
-    def record_night(self, key: str, session_id: Optional[str], t: float) -> Optional[int]:
-        """The owner slept at their camp this session: `nights` gains the session id and the tier is re-read from the
-        ladder. Returns the new tier when it rose (the scene raises the upgrade over 12 frames), else None."""
+    def record_visit(self, key: str, session_id: Optional[str], t: float) -> Optional[int]:
+        """AGES 1.2: the owner is HERE at their camp (at hatch, and on the first `here` of each local day; never on a
+        lie-down): `camp.sessions` gains the session id (`nights` mirrors it), `days_seen` gains the local date, and the
+        tier is re-read through `camp_tier_for`. Returns the new tier when it rose (the scene raises it over 12 frames),
+        else None. Idempotent within a (session, date)."""
         p = self.real_pip(key)
-        if p is None or not session_id:
+        if p is None:
             return None
         camp = p.get("camp")
         if not isinstance(camp, dict):
             return None
-        nights = camp.setdefault("nights", [])
-        if session_id not in nights:
-            nights.append(session_id)
+        if camp.get("sessions") is None:
+            camp["sessions"] = list(camp.get("nights") or [])
+        if session_id and session_id not in camp["sessions"]:
+            camp["sessions"].append(session_id)
+            camp["nights"] = list(camp["sessions"])
             self._dirty()
-        return self.upgrade_camp(key)
+        d = local_date(t)
+        if d is not None:
+            seen = p.setdefault("days_seen", [])
+            if d not in seen:
+                seen.append(d)
+                seen.sort()
+                self._dirty()
+        return self.upgrade_camp(key, t)
 
-    def upgrade_camp(self, key: str) -> Optional[int]:
-        """Re-read the ladder over sessions_seen; raise the tier when it crossed a threshold (never lowers)."""
+    record_night = record_visit      # the old name (the sleep era), kept one release for its callers
+
+    def upgrade_camp(self, key: str, t: Optional[float] = None) -> Optional[int]:
+        """Re-read `camp_tier_for(p, age)`; raise the tier when it crossed a rung (never lowers) and append a `tiers` row."""
         p = self.real_pip(key)
         camp = p.get("camp") if p else None
         if not isinstance(camp, dict):
             return None
-        want = max(0, camp_tier_for_sessions(p.get("sessions_seen") or 0))
+        want = camp_tier_for(p, self.age)
         if want > int(camp.get("tier") or 0):
             camp["tier"] = want
+            camp.setdefault("tiers", []).append({"tier": int(want), "ts": self.ws.iso(t) if t is not None else None})
             self.bump_bake("camp tier")
             self._dirty()
             return want
         return None
 
     def plate(self, key: str, now: Optional[float] = None) -> Optional[Dict]:
-        """Data for the camp plate: {word, night, built_night, last_seen_ts}; the text layer renders the words and runs
-        the display name through the filter. `night` = len(nights) (or sessions_seen when nights is empty)."""
+        """Data for the camp plate: {word, tier, days, sessions, built_ts, last_seen_ts, ...}; the text layer renders the
+        words (`@name's tent · 2 days here`, never a night count) and runs the display name through the filter. `days` =
+        len(pip.days_seen); `sessions` = len(camp.sessions) (or sessions_seen when the history is empty)."""
         p = self.real_pip(key)
         camp = p.get("camp") if p else None
         if not isinstance(camp, dict):
             return None
-        nights = len(camp.get("nights") or []) or int(p.get("sessions_seen") or 0)
+        sess = camp.get("sessions") if camp.get("sessions") is not None else (camp.get("nights") or [])
+        sessions = len(sess) or int(p.get("sessions_seen") or 0)
         return {"key": (key or "").lower(), "word": CAMP_WORDS[min(3, int(camp.get("tier") or 0))], "tier": int(camp.get("tier") or 0),
-                "night": nights, "built_ts": camp.get("built_ts"), "last_seen_ts": p.get("last_seen_ts"),
+                "days": len(set(p.get("days_seen") or [])), "sessions": sessions, "first_seen_ts": p.get("first_seen_ts"),
+                "built_ts": camp.get("built_ts"), "last_seen_ts": p.get("last_seen_ts"),
                 "colour": p.get("colour"), "x": camp.get("x"), "y": camp.get("y")}
 
     # ------------------------------------------------------------------ fields (`sow` / `harvest`)
@@ -772,8 +904,51 @@ class Land(object):
 
     @property
     def days(self) -> int:
-        """`day 6 of Longgrass` = len(distinct session ids seen)."""
+        """DAYS = len(world.days_on_air): distinct LOCAL dates with a moderated record (AGES 2.1). Falls back to the
+        distinct session ids only for a document that has no `days_on_air` yet (a session is not a calendar clock)."""
+        d = self.world.get("days_on_air")
+        if d:
+            return len(set(d))
         return len({s.get("id") for s in (self.ws.data.get("sessions") or []) if s.get("id")})
+
+    # ------------------------------------------------------------------ ages (AGES 2, pure readers; the sequencer writes)
+    @property
+    def age(self) -> int:
+        """The earned rung, as stored (monotonic; written only by the age sequencer at gate time)."""
+        try:
+            return max(0, int(self.world.get("age") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def age_keys(self) -> Dict[str, int]:
+        """{people, stones, days}: the three len()s the gate reads."""
+        return {"people": int(getattr(self.ws, "hatched_ever", 0) or 0), "stones": self.stock, "days": self.days}
+
+    @staticmethod
+    def age_gate(people: int, stones: int, days: int) -> int:
+        return age_gate(people, stones, days)
+
+    def age_check(self) -> Optional[int]:
+        """The rung the counts have earned when it is ABOVE the stored age, else None. Reads only; the ages module
+        advances `age` and plays the build."""
+        k = self.age_keys()
+        g = age_gate(k["people"], k["stones"], k["days"])
+        return g if g > self.age else None
+
+    def age_forward(self) -> List[Tuple[str, int]]:
+        """[(key, short_by)] toward the rung after the stored age (the plate's forward form)."""
+        k = self.age_keys()
+        return age_forward(k["people"], k["stones"], k["days"], self.age)
+
+    def pile(self) -> int:
+        """The loose pile beside the cairn = len(stones) - 5 - sum(age_history[].stones_placed), never negative."""
+        placed = 0
+        for row in self.world.get("age_history") or []:
+            try:
+                placed += int((row or {}).get("stones_placed") or 0)
+            except (TypeError, ValueError):
+                pass
+        return max(0, self.stock - AGE_PILE_BASE - placed)
 
     def counts(self, now: float) -> Dict[str, int]:
         """Every number a strip may draw, each a len(): camps, fields, fields_gold, trees, flowers, stones, marks, days, settled."""
@@ -866,5 +1041,7 @@ class Land(object):
 
 __all__ = ["Land", "MAP_W", "MAP_H", "MAP_SEED", "EDGE_MARGIN", "STEADING_RING", "DEFAULT_MOOT", "CAMP_LADDER",
            "CAMP_KINDS", "CAMP_WORDS", "STONE_LADDER", "RAISING_NAMES", "FIELD_STAGES", "TREE_STAGES", "MARK_TYPES",
-           "WEATHER_STATES", "name_hash", "camp_tier_for_sessions", "hashed_camp_spot", "spot_beside", "stage_by_days",
+           "WEATHER_STATES", "AGE_LADDER", "AGE_NAMES", "AGE_KEYS", "CAMP_DAYS_LADDER", "CAMP_MINUTES_LADDER",
+           "CAMP_FLOOR_BY_AGE", "name_hash", "camp_tier_for_sessions", "camp_tier_for", "camp_floor", "local_date",
+           "age_need", "age_name", "age_gate", "age_forward", "hashed_camp_spot", "spot_beside", "stage_by_days",
            "encode_wear", "decode_wear", "dilate_square", "clamp_cell"]

@@ -93,7 +93,8 @@ NAME = "steading"
 SCREEN = (1280, 720)          # the world region = the whole frame (full-bleed land, journal 034; was 456)
 PPC = 4                                   # bake px per cell at 1x
 SAVE_S = 5.0
-FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "hatch", "cairn_named")
+FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "hatch", "cairn_named",
+                     "day_turn")                                         # W3 hook: a new local date reaches world.json at once
 HISTORY_S = 60.0                          # a record older than this when first seen is boot/deploy history (ChatBridge.HISTORY_S)
 SEED_SINK_S = HOLD_S + 4.0
 HEARTBEAT_FRESH_S = 120.0
@@ -425,7 +426,7 @@ class SteadingScene(object):
         T = self.terrain
         moot = (float(T.site[0]), float(T.site[1]))
         self.world = WorldState(self.run_dir, log=self.log, name_filter=self._name_filter or self._default_filter(),
-                                schema=2, moot=moot, passable=T.passable, water=T.water, now=now)
+                                schema=3, moot=moot, passable=T.passable, water=T.water, now=now)   # W3 hook: schema 3 (AGES 5), the 6.3 gates at boot
         if not self.world.migration_ok or self.world.schema < 2:
             self.refused = "schema 2 migration failed: %s" % ((self.world.migration or {}).get("problems") or "unknown")
             self.log("REFUSING TO BOOT (5.4): %s; keeping the last good frame" % self.refused)
@@ -815,6 +816,8 @@ class SteadingScene(object):
             if e.state not in ("seed", "hatching") and (p.get("x") != int(round(x)) or p.get("y") != int(round(y))):
                 fx, fy = self._facing_of(e)
                 w.set_pos(e.key, x, y, (fx, fy))
+        for ev2 in w.take_day_turns():                                    # W3 hook: the first live record of a new local date (AGES 1.2)
+            b.events.append(ev2)
         for ev in events:
             typ = ev.get("type")
             key = ev.get("pip") or ev.get("key")
@@ -829,7 +832,13 @@ class SteadingScene(object):
                 p = w.pip(key)
                 if p is not None:
                     p["state"] = "idle"
+                    if not p.get("_test") and not isinstance(p.get("camp"), dict):      # W3 hook: camp at hatch (AGES 1.2), at the
+                        camp_h = w.ensure_camp(key, now, self.session_id, ring=True)     # hashed Steading-ring spot; a plot in minute one
+                        if isinstance(camp_h, dict):
+                            b.set_camp(key, camp_h["x"], camp_h["y"])
+                    b.events.extend(w.visit_events(key, now, self.session_id))          # W3 hook: record_visit at hatch
             elif typ == "return":                                    # away -> here (the old wake): care log, gap, camp, fire
+                b.events.extend(w.visit_events(key, now, self.session_id))              # W3 hook: the first `here` of a local day
                 care = w.take_care_log(key)
                 ev["care_log"] = care
                 p = w.pip(key)
