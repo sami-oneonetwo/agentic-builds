@@ -40,6 +40,7 @@ numpy + pillow only, Python 3.9.
 from __future__ import annotations
 
 import ctypes
+import importlib  # W5 hook: lazy ledger import (hot-reload safe)
 import math
 import os
 import sys
@@ -169,6 +170,17 @@ def blit_add(dst: np.ndarray, spr: np.ndarray, x: int, y: int) -> None:
     add = (s[..., :3].astype(np.uint16) * s[..., 3:4].astype(np.uint16)) // 255
     d = dst[y0:y1, x0:x1]
     d[...] = np.minimum(255, d.astype(np.uint16) + add).astype(np.uint8)
+
+
+def _drift_clumps(fx: int, fy: int, var: int, blooms: int):
+    """W5 hook: the clump offsets of a flower drift from stream.world.ledger (lazy, hot-reload safe); the mark's own
+    clump alone when the module is absent or the mark is under 2 real days old."""
+    if blooms <= 1:
+        return ((0.0, 0.0, int(var)),)
+    try:
+        return importlib.import_module("stream.world.ledger").drift_clumps(fx, fy, var, blooms)
+    except Exception:
+        return ((0.0, 0.0, int(var)),)
 
 
 def put(dst: np.ndarray, spr: np.ndarray, gx: int, gy: int) -> None:
@@ -382,7 +394,7 @@ class GroundBake:
         for f in self.marks.get("flowers", ()):
             fx, fy = int(f["x"]), int(f["y"])
             if x0 - m <= fx < x1 + m and y0 - m <= fy < y1 + m:
-                objs.append((fy, "flower", (fx, fy, int(f.get("variant", 0)), f.get("owner") or "")))
+                objs.append((fy, "flower", (fx, fy, int(f.get("variant", 0)), f.get("owner") or "", int(f.get("blooms") or 1))))   # W5 hook: blooms
         objs.sort(key=lambda o: o[0])
         return objs
 
@@ -427,8 +439,9 @@ class GroundBake:
                 spr, (dx, dy) = buildings.render("hut", bt, colour, None, False, sun)
                 blit(dst, self._sprite(spr), hx * px - dx * px // CELL - px0, hy * px - dy * px // CELL - py0)
             elif kind == "flower":
-                fx, fy, var, owner = data
-                put(dst, self._sprite(props.flowers(var, BAKE_WIND_PHASE)), fx * px + px // 2 - px0, fy * px + px - 1 - py0)
+                fx, fy, var, owner = data[:4]
+                for dx, dy, v in _drift_clumps(fx, fy, var, int(data[4]) if len(data) > 4 else 1):   # W5 hook: 1 / 3 / 5-clump drift (ledger)
+                    put(dst, self._sprite(props.flowers(v, BAKE_WIND_PHASE)), int(round((fx + dx) * px)) + px // 2 - px0, int(round((fy + dy) * px)) + px - 1 - py0)
             n += 1
         return n
 

@@ -74,6 +74,7 @@ class. The scene class is `steading.SteadingScene` when that module imports, els
 """
 from __future__ import annotations
 
+import importlib  # W5 hook: lazy ledger import (hot-reload safe)
 import math
 import os
 import re
@@ -1201,7 +1202,11 @@ class WorldPanel(Panel):
                         self._notice(now, "@%s is back in the Hollow · %s" % (nm, _time.strftime("%H:%M", _time.localtime(now))), accent,
                                      dur=FIRST_LIGHT_S, prio=PRIO_LIGHT)
                 elif typ in ("wake", "return"):                    # away -> here (AGES 1.1): the care log, `back after N days`
-                    self._care_line(sc, ev, now)
+                    if land_mode and ev.get("told_line"):              # W5 hook: the ledger's diff line (validated at write) at PRIO_YOU
+                        self._notice(now, str(ev["told_line"]), accent, dur=6.0, prio=PRIO_YOU, key=ev.get("pip"))
+                        self._cairn_pin_until = max(self._cairn_pin_until, now + float(ev.get("plate_pin_s") or CAIRN_PIN_S))
+                    else:
+                        self._care_line(sc, ev, now)
                     if ev.get("only_light") and ev.get("pip") and not land_mode:
                         self._only_light = (ev["pip"], now + ONLY_ONE_S)
                 elif typ == "tier_up":
@@ -1544,6 +1549,10 @@ class WorldPanel(Panel):
                     stones = int(n)
             if stones:
                 parts.append("%d stone%s" % (stones, "" if stones == 1 else "s"))
+            try:                                                   # W5 hook: `1 stands` when the person's placed rows exist (ledger)
+                parts.extend(importlib.import_module("stream.world.ledger").stats_extra(sc.world.pip(key), sc.world))
+            except Exception:
+                pass
             e = sc.behaviour.get(key)
             mins = int(round(float(getattr(e, "minutes_tonight", 0.0) or 0.0))) if e is not None else 0
             if mins:
@@ -2546,7 +2555,7 @@ class WorldPanel(Panel):
             pin_ids.append("cairn:walkers" if (stop.get("kind") == "moot" or sid == "moot") else sid)
         if now < self._cairn_pin_until:
             pin_ids.append("cairn:walkers")
-        pin_ids += [m[0] for m in in_view if m[1] == "raising"]
+        pin_ids += [m[0] for m in in_view if m[1] in ("raising", "board")]     # W5 hook: the nightly board rides pinned (ledger)
         for pid in pin_ids:
             if pid in picked_ids:
                 continue
@@ -2652,6 +2661,10 @@ class WorldPanel(Panel):
             fw, fh = CAMP_FOOTPRINT.get(int(c.get("tier") or 0), (10, 8))
             days = int(c.get("days") or 0) or int(c.get("nights") or 0) or int(c.get("sessions_seen") or 0)   # W3 hook: len(days_seen) first (AGES 1.2), never `night N`
             text = ("@%s's %s · %d day%s here" % (nm, c["word"], days, "" if days == 1 else "s")) if days > 0 else ("@%s's %s" % (nm, c["word"]))
+            try:                                                   # W5 hook: ` · first here 26 Sep` (ledger; first_seen_ts)
+                text += importlib.import_module("stream.world.ledger").camp_plate_suffix(sc.world.pip(c["key"]))
+            except Exception:
+                pass
             marks.append(("camp:" + c["key"], "camp", float(c["x"]) + fw / 2.0, float(c["y"]) + fh, c["key"], text))
         for f in self._fields:
             nm = self._shown(sc, f["owner"])
@@ -2690,6 +2703,12 @@ class WorldPanel(Panel):
         walkers = self._cairn_plate_text(sc)
         if walkers:
             marks.append(("cairn:walkers", "cairn", cx_, cy_ + 3.0, None, walkers))
+        try:                                                       # W5 hook: the nightly board plate at the cairn for 10 min after day_turn (ledger)
+            board = importlib.import_module("stream.world.ledger").board_plate(sc, now)
+            if board:
+                marks.append(("cairn:board", "board", cx_, cy_ + 3.0, None, str(board)))
+        except Exception:
+            pass
         if ld.stock:
             top = [(self._shown(sc, k), n) for k, n in ld.plaque("moot", 3)]
             names = " ".join("@" + nm for nm, _n in top if nm)

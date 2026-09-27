@@ -55,6 +55,7 @@ the wind.
 from __future__ import annotations
 
 import hashlib
+import importlib  # W5 hook: lazy ledger import (hot-reload safe)
 import math
 import os
 import queue
@@ -1174,6 +1175,10 @@ class SteadingScene(object):
                         if isinstance(camp_h, dict):
                             b.set_camp(key, camp_h["x"], camp_h["y"])
                     b.events.extend(w.visit_events(key, now, self.session_id))          # W3 hook: record_visit at hatch
+                try:                                                     # W5 hook: last_told at hatch (ledger; schema-gated)
+                    importlib.import_module("stream.world.ledger").on_hatch(self, key, now)
+                except Exception as ex:
+                    self.log("ledger hatch: %r" % (ex,))
             elif typ == "return":                                    # away -> here (the old wake): care log, gap, camp, fire
                 b.events.extend(w.visit_events(key, now, self.session_id))              # W3 hook: the first `here` of a local day
                 care = w.take_care_log(key)
@@ -1186,6 +1191,10 @@ class SteadingScene(object):
                 ev["camp"] = dict(camp) if isinstance(camp, dict) else None
                 if key in self._fires:
                     self._fires[key] = now                          # the fire relights
+                try:                                                     # W5 hook: the return diff line + last_told rewrite (ledger)
+                    importlib.import_module("stream.world.ledger").on_return(self, ev, key, now)
+                except Exception as ex:
+                    self.log("ledger return: %r" % (ex,))
             elif typ == "first_light":
                 w.woke(key, now)
                 ev["alias"] = "first_breath"                         # LONGGRASS name (3.1); the type stays for its consumers
@@ -1298,8 +1307,14 @@ class SteadingScene(object):
         camps = land.camps()
         flowers = land.marks_of_type("flower")
         fields = land.fields()
+        blooms = {}
+        try:                                                     # W5 hook: flower drift stage by real days (ledger; a day boundary rebuilds)
+            _LG = importlib.import_module("stream.world.ledger")
+            blooms = {m["id"]: _LG.flower_drift_stage(m, now) for m in flowers}
+        except Exception:
+            blooms = {}
         sig = (land.bake_ver, tuple(sorted((c["key"], c["x"], c["y"], c["tier"]) for c in camps)),
-               tuple((m["id"], m["x"], m["y"]) for m in flowers),
+               tuple((m["id"], m["x"], m["y"], blooms.get(m["id"], 1)) for m in flowers),
                tuple((f["owner"], f["x"], f["y"], land.field_stage(self.world.pip(f["owner"]).get("field") or {}, now)[0]) for f in fields
                      if self.world.pip(f["owner"]) is not None))
         if sig == self._marks_sig and self._marks:
@@ -1315,7 +1330,8 @@ class SteadingScene(object):
                  "huts": huts,
                  "fields": [{"x": f["x"], "y": f["y"], "owner": f["owner"], "stage": sig[3][i][3]} for i, f in enumerate(
                      [f for f in fields if self.world.pip(f["owner"]) is not None])],
-                 "flowers": [{"x": m["x"], "y": m["y"], "owner": m["owner"], "variant": LAND.name_hash(m["owner"], "flower") % 5} for m in flowers],
+                 "flowers": [{"x": m["x"], "y": m["y"], "owner": m["owner"], "variant": LAND.name_hash(m["owner"], "flower") % 5,
+                              "blooms": blooms.get(m["id"], 1)} for m in flowers],      # W5 hook: blooms -> bake drift clumps
                  "stones": []}
         self._marks, self._marks_sig = marks, sig
         self._marks_ver += 1
@@ -1403,7 +1419,7 @@ class SteadingScene(object):
         for f in self._marks.get("fields", ()):
             regs.append((f["x"] - 1, f["y"] - 1, f["x"] + 5, f["y"] + 4))
         for m in self._marks.get("flowers", ()):
-            regs.append((m["x"] - 3, m["y"] - 4, m["x"] + 4, m["y"] + 2))
+            regs.append((m["x"] - 5, m["y"] - 5, m["x"] + 6, m["y"] + 2))      # W5 hook: room for a 5-clump drift (ledger.drift_clumps)
         return regs
 
     # worker jobs (never on the frame thread)
@@ -1545,6 +1561,10 @@ class SteadingScene(object):
             self.behaviour.night = NAT.night_amount(self.nature.hour(now))   # the errand table's day / night weights
             self.behaviour.rain = 1.0 if self.nature.weather.state_at(now) == "rain" else 0.0   # home x2, water x0.3
             ev = self.behaviour.tick(now, dt)
+            try:                                                     # W5 hook: return mutter + day_turn / nightly board (ledger)
+                importlib.import_module("stream.world.ledger").frame_hook(self, ev, now)
+            except Exception as ex:
+                self.log("ledger frame: %r" % (ex,))
             self._idle_life(ev, now)
             self._layout(now)
             self._persist(ctx, now, ev, dt)
