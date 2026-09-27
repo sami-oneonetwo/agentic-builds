@@ -1209,3 +1209,15 @@ In flight: lane W (W2 idle life + ROAM, W3 schema 3, W4 ages core, W5 return bea
 scale) serial in the worktree, S1 (stack un-refused, wish ledger, props.post) in parallel; each slice deploys to the
 snapshot only after its two reviews pass, by the recipe above, and the journal records each. Harness cleanup freed
 4 GB of stale frame dumps first (40 GB free).
+
+Tick 10:15 (probe, first tick): health green (10/10 processes, honesty 0/0 at frame 30000, fps p95 13.9 ms, disk
+39 GB, relay connected, rank #2 of the category, followers 3). Keys people 3 / stones 17 / days 4, age the Camp;
+forward 2 people, 13 stones, 1 day; one expedition stone since the relaunch (Sami, 10:04). Chat since the relaunch: 9
+lines from the staff account 10:06-10:08 (camp, go river, go plains, go far north, vote c, and `!idea the a,b,c options
+are generated from selected chat message options ...` = i-0008, pending), 0 first-time chatters. Board: p-0002
+proposed (`chat asks become ballot options`, tier 3, score 1.5; it tracks the S1 + W6 work already in flight, source
+i-0008). p-0001 closed by the gate (a fix may only be tier 0-1) but the finding stands and is folded into the S1
+deploy: since row 1 the `follow the newest voice` / `pips spread across the land` cards (colony_rule follow / scatter)
+name an effect behaviour no longer performs (only huddle survives), and the board drew and shipped `follow` at 10:13
+with 0 votes; AGES 3's `gathering at the Moot` card replaces them in rounds.py before the S1 child restart. Nothing
+deployed this tick; S1 and W2 still implementing.
