@@ -1273,3 +1273,12 @@ fps p95 13.9 -> 20.9 over four ticks. `ps` puts the cause on the box, not in the
 and 114 % CPU (the Kick player watching the stream on the streaming Mac), the compositor at 52 %, ffmpeg 41 %, load
 4.6-5.7, plus the W2 fix harness runs. Watching the stream on another device while the harnesses run would spare the
 encoder. No new idea; board top p-0002. W2 fix still running; nothing deployed this tick.
+
+Tick 11:35 (probe): 10/10 processes, honesty 0/0, 1 viewer, rank #5, followers 4. The owner's account voted `a` at
+11:25 (the first record since S1): `acks.jsonl` recorded it with a 168 ms ack, and the vote picked `hauling day` at
+11:27 (the first voted ship since the relaunch; nobody typed `stack` during its 3 minutes). `gathering at the Moot`
+shipped for the first time at 11:24 (`4 gathered`). The ledger stays empty by design (votes are not wishes).
+Compositor render avg 18.3 ms p95 22.4, +65 repeated frames this tick: the four parallel build harnesses now share
+the box (Chrome is off the top of the CPU list); under the 25 ms gate but close, so the integration gates will run
+niced and serially. No new idea; board top p-0002. W2 fix still running; W3/W4/W5/W6 building in parallel. Nothing
+deployed this tick.
