@@ -2580,24 +2580,31 @@ class WorldPanel(Panel):
         in_view.sort(key=lambda m: m[0])
         pick: List[Tuple] = []
         picked_ids: set = set()
-        stop = cam.drift_stop if cam.mode == "DRIFT" else None
+        stop = cam.drift_stop if cam.mode == "DRIFT" else ({"id": "moot", "kind": "moot"} if getattr(cam, "roam_moot", False) else None)
+        # ONE plate at a time (IDLEWORLD 0.1 / 3.1): the pins in priority order, the first one in view wins, else the
+        # 5 s rotation over the rest. Person beats first (a placed thing 20 s at the ship, the post 10 s after a wish
+        # while <= 10 are here), then the age plaque (the plaque step + 20 s), then the camera's DRIFT stop, then the
+        # cairn's 10 s hatch / stone pin (the monument plate takes it when the age plate is in view), then a raising
+        # at its site and the nightly board.
         pin_ids: List[str] = []
+        try:                                                        # W6 hook: placed:<id> then post:wished
+            from stream.world import wishes as _W
+            w6_pins = list(_W.plate_pins(sc, now, _present_count(sc)))
+            pin_ids += [p for p in w6_pins if p.startswith("placed:")] + [p for p in w6_pins if not p.startswith("placed:")]
+        except Exception:
+            pass
+        ag = getattr(sc, "ages", None)                              # W4 hook: the monument plate pins itself through the plaque + 20 s
+        age_in_view = ag is not None and any(m[0] == "age:reached" for m in in_view)
+        if age_in_view and ag.plate_pinned(now):
+            pin_ids.append(ag.plate_id(now))
         if stop is not None:
             sid = str(stop.get("id") or "")
             pin_ids.append("cairn:walkers" if (stop.get("kind") == "moot" or sid == "moot") else sid)
         if now < self._cairn_pin_until:
             pin_ids.append("cairn:walkers")
-        ag = getattr(sc, "ages", None)                              # W4 hook: the monument plate takes the cairn's pins (hatch / stone /
-        if ag is not None and any(m[0] == "age:reached" for m in in_view):   # Moot dwell) and pins itself through the plaque + 20 s
+        if age_in_view:                                             # W4 hook: the cairn's pins (hatch / stone / Moot dwell) show the monument plate
             pin_ids = [ag.plate_id(now) if p == "cairn:walkers" else p for p in pin_ids]
-            if ag.plate_pinned(now) and ag.plate_id(now) not in pin_ids:
-                pin_ids.insert(0, ag.plate_id(now))
         pin_ids += [m[0] for m in in_view if m[1] in ("raising", "board")]     # W5 hook: the nightly board rides pinned (ledger)
-        try:                                                        # W6 hook: the post pins 10 s after a wish, a placed thing 20 s
-            from stream.world import wishes as _W
-            pin_ids += _W.plate_pins(sc, now, _present_count(sc))
-        except Exception:
-            pass
         for pid in pin_ids:
             if pid in picked_ids:
                 continue
@@ -2605,6 +2612,7 @@ class WorldPanel(Panel):
             if pinned is not None:
                 pick.append(pinned)
                 picked_ids.add(pid)
+                break                                               # one plate: the first pin in view
         if static:
             if self._plate_slot is None:
                 self._plate_slot = int(now // PLATE_ROTATE_S)

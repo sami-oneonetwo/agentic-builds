@@ -882,6 +882,10 @@ class AgeDirector(object):
             kp = getattr(self.scene, "keepers", None)
             if kp is not None and getattr(kp, "raising", None):
                 return True, "keeper raising"
+            post = getattr(self.scene, "wishes", None)               # W6 seam: a placed thing rising at its site (RAISE_S 20)
+            rising = getattr(post, "rising", None) if post is not None else None
+            if callable(rising) and rising():
+                return True, "placed raise rising"
         except Exception:
             pass
         return False, ""
@@ -954,10 +958,24 @@ class AgeDirector(object):
             return None
 
     def _clusters(self) -> Dict[str, Set[str]]:
+        """slug -> distinct asker keys for the project clusters (IDLEWORLD 2.3 tier 3): the scene's WishPost when one is
+        attached (W6, `scene.wishes.project_asks()`: the same clusters the post and its plate show), else the ledger scan."""
         w = getattr(self.scene, "world", None)
-        ban = list((getattr(w, "data", {}) or {}).get("banished", {}).keys()) if w is not None else []
+        ban = set(str(k).lower() for k in ((getattr(w, "data", {}) or {}).get("banished", {}) or {}).keys()) if w is not None else set()
+        post = getattr(self.scene, "wishes", None)
+        fn = getattr(post, "project_asks", None) if post is not None else None
+        if callable(fn):
+            try:
+                out: Dict[str, Set[str]] = {}
+                for slug, keys in (fn() or {}).items():
+                    ks = set(str(k).lower() for k in (keys or ()) if k and str(k).lower() not in ban)
+                    if ks:
+                        out[str(slug)] = ks
+                return out
+            except Exception:
+                pass
         try:
-            return project_clusters(getattr(self.scene, "run_dir", "") or "", ban)
+            return project_clusters(getattr(self.scene, "run_dir", "") or "", sorted(ban))
         except Exception:
             return {}
 
@@ -1067,7 +1085,7 @@ class AgeDirector(object):
                 self._boot_t = now
                 self._maybe_test_hook(ctx)
             if self.build is None:
-                if now - self._boot_t >= BOOT_GRACE_S and now >= self._next_build_t:
+                if now - self._boot_t >= BOOT_GRACE_S and now >= self._next_build_t and not self._in_hold(ctx)[0]:
                     if self.age_built < self.age:
                         self.start_build(self.age_built + 1, now)
                     elif self._test_build_due and now - self._boot_t >= self._test_build_at:

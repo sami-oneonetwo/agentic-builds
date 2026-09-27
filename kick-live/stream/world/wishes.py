@@ -584,11 +584,27 @@ class WishPost(object):
             self.log("wishes tail failed: %s" % traceback.format_exc().strip().splitlines()[-1])
         try:
             self._rising_tick(now, out)
-            if self._rising is None:
+            if self._rising is None and not self._age_building():
                 self._place_tick(now, out)
         except Exception:
             self.log("wishes place tick failed: %s" % traceback.format_exc().strip().splitlines()[-1])
         return out
+
+    def rising(self) -> Optional[str]:
+        """The placed row rising right now (its id) or None (W4's age_check holds while one rises)."""
+        return self._rising or next((r.get("id") for r in self.placed() if r.get("status") == "rising"), None)
+
+    def _age_building(self) -> bool:
+        """W4 seam: True while the age director's 90 s build runs (scene.ages.build) or the world block carries an
+        `age_build` in flight (a resumed build before the director's first tick): the place queue waits, nothing lost."""
+        d = getattr(self.scene, "ages", None)
+        try:
+            if d is not None and getattr(d, "build", None) is not None:
+                return True
+        except Exception:
+            pass
+        w = self._wblk()
+        return bool(isinstance(w, dict) and w.get("age_build"))
 
     # -- tails: the probe's re-classes (wish_class.jsonl) and the ledger's ids (wishes.jsonl)
     def _tails(self, now: float, out: List[Dict[str, Any]]) -> None:
