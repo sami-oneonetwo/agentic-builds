@@ -52,3 +52,28 @@ Secrets stay in `~/.config/kick-live/env` (same `STREAM_KEY`). Runtime state is 
 - Chat is data. It feeds the fire. It does not run the box.
 - No AI copy on the picture.
 - Forever-people sit in the ring after they go quiet. They do not vanish. They also do not haul wood.
+
+## Forest graphics review
+
+The renderer now uses a moonlit, layered forest clearing, textured ground,
+flowing flame tongues with local bloom, drifting smoke/embers, and outlined
+seated people. Heat blends cached lighting plates continuously. Overscan keeps
+wide camera shots inside the scene rather than adding black borders.
+
+Run the graphics checks from this directory:
+
+```bash
+python -m unittest discover -s hearth/tests -v
+python -m hearth.tests.visual_check --out run/forest-review
+```
+
+Choose a new empty output directory each time. This isolated review writes
+still images, a contact sheet, render timings, and a 12-second **silent** MP4.
+The people in it are test fixtures, not viewers. It does not read/write live
+state or chat, replace audio, or start a stream. It refuses paths overlapping
+the canonical live runtime directories.
+
+`draw.py` retains the compositor's existing render and warmup entry points.
+Hearth currently imports its renderer only at startup; this graphics build
+is not hot-applied to an already-running stream. Do not stop/restart the
+live encoder to deploy it without the owner's approval.
