@@ -1233,3 +1233,15 @@ that used to pitch one later, so a first-time chatter owns no plot until W3 (cam
 p-0004 (tier 1; W3 is the next slice in lane W). p-0002 stays top. S1 finished (two reviews pass_with_fixes, 0
 blockers); a pre-deploy fix pass is running for the reviewers' suggestions and the dead colony_rule cards; S1 deploys
 after it as ONE relay-held child restart. Nothing deployed this tick.
+
+Tick 10:55 (probe): health green (10/10, honesty 0/0 at frame 100800, fps p95 16.4 ms with the review harnesses
+sharing the CPU, 39 GB); rank #8 of the category (a larger channel entered; was #2), 3 viewers, followers 4. Chat: one
+line since the last tick (Sami `c` at 10:38, which picked fog); 15 min of silence with 3 watching as this tick ran.
+Keys unchanged 4 / 18 / 4. No new idea (nothing the gate would pass that is not already a lane in flight); board top
+stays p-0002. Builds: **W2 (idle life + ROAM) failed both reviews** on real blockers and its fix is running: the D'
+boot-burst gate (no frame > 24 ms after frame 10 with 60 settlers) misses by 1-13 frames at 24-33 ms in the cold-cache
+run; honesty.py imports errand caps from behaviour at module level, and the HotReloader re-executes honesty BEFORE
+behaviour, so the W2 hot-reload would bind against the old behaviour and fall back silently; the idle director never
+avoids the newest speaker although the new honesty `idle` rule asserts it (the build would flag itself). S1's
+pre-deploy fix is in its verify pass. Nothing deployed this tick. Note for every timing gate from now on: the stream
+is ON, so harness timings on this box are noisier than yesterday's.
