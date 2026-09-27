@@ -1,5 +1,7 @@
 # Resuming the live world
 
+> **PAUSED BY OWNER, 2026-09-27 13:59 AEST.** All project streaming processes, monitors, keeper heartbeat, webhook server and ngrok tunnel were stopped. The probe cron was cancelled. Runtime pause_bot.json is present. World and code are preserved. Do not restart, re-arm automation, or deploy until the owner explicitly asks to resume. Earlier live/running descriptions below are historical.
+
 Current handoff: `docs/HANDOFF.md`, top section, updated 2026-09-27. The older plans are design history.
 Active branch: `origin/worktree-idle-world`. No automatic merge to main.
 

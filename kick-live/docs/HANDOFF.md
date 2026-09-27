@@ -1,5 +1,7 @@
 # HANDOFF for a fresh session
 
+> **PAUSED BY OWNER, 2026-09-27 13:59 AEST.** All project streaming processes, monitors, keeper heartbeat, webhook server and ngrok tunnel were stopped. The probe cron was cancelled. Runtime pause_bot.json is present. World and code are preserved. Do not restart, re-arm automation, or deploy until the owner explicitly asks to resume. Earlier live/running descriptions below are historical.
+
 ## Current operational handoff — 2026-09-27 13:36 AEST
 
 This section supersedes the historical handoff below.

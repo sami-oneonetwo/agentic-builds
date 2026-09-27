@@ -1408,3 +1408,9 @@ Remaining limits, not completed: strict cold-boot timing for a 60-person synthet
 validation, later-age artwork, and general new-mechanic generation beyond the closed recipe catalogue. The probe
 loop is active in this session; it proposes only. A real keeper code change still needs tests and a deliberate deploy.
 No new probe proposal in the last tick, so no quiet-tick journal commit was created; this entry records the deployment.
+
+## 041 — 2026-09-27 13:59 — Owner requested a full pause
+
+Owner: stop everything for now and return later. Persistent pause_bot.json written before shutdown; recurring probe job a142f501 cancelled. Verified pidfile command identities, then stopped supervisor/encoder/renderer/relay, API poller, chat listener, category sampler, ops switch and duty heartbeat gracefully. The compositor reported world.json saved on shutdown at 03:59:22Z. All live pidfiles are gone; agent.on_duty is false. Separately verified and stopped the project webhook server and its ngrok tunnel. No project build workflows remain active. The peer design session acknowledged the pause.
+
+Preserved runtime schema 3, four settlers, Camp earned and completed, wish ledgers, snapshots, backups, and branch worktree-idle-world. Incomplete feature/scale tasks remain pending, not cancelled or claimed complete. No automatic restart, deploy, cron re-arm or development until a new owner resume request.
