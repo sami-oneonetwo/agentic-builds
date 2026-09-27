@@ -26,11 +26,15 @@ a 1.5 s / 10-cell dead zone so a wandering pip is not chased; zoom changes only 
 2 cells/s and 20 s after the last change, as a 12-frame crossfade; a 12-cell clamp keeps the map edge off screen.
 Modes in priority order: EVENT (hold 4 s; a hatch at awake <= 2 is a 3 s 1.5x close-up) > MOOT (last 30 s of a
 round with anyone at a waystone) > CLOSE (one or two slow pips inside 60 cells of each other, 1.5x on their centroid)
-> FOLLOW (weighted mean of awake pips with two-axis lead room; 0.75x only when the group does not fit 1x) > DRIFT (a
-4 cells/s survey alternating the Moot (30 s at 1.5x: the sign, the stones, the beacon fill the 320x180 tile) with the
-least-recently-visited real mark / natural point (camps 20 s at 1.5x, else 12 s at 1x), no non-Moot repeat inside
-10 min). Honesty: FOLLOW needs a real entity; DRIFT visits only real marks and fixed points; the camera never writes
-wear or marks. Full-bleed land (journal 034): SCREEN is the whole 1280x720 frame.
+> FOLLOW (weighted mean of HERE pips with two-axis lead room; 0.75x only when the group does not fit 1x) > ROAM (AGES
+1.4: nobody here but settlers on the land: follow the most watchable errand, haul > visit > water > moot > tend > home >
+stroll, for 40-90 s or until that errand ends, ease to the next at <= PAN_CAP, never the same settler twice running,
+every third hold the Moot dwell at 1.5x; `cam.roam_key` names the settler, None during the dwell) > DRIFT (an EMPTY
+land: a 4 cells/s survey alternating the Moot (30 s at 1.5x: the sign, the stones, the beacon fill the 320x180 tile)
+with the least-recently-visited real mark / natural point (camps 20 s at 1.5x, else 12 s at 1x), no non-Moot repeat
+inside 10 min). Honesty: FOLLOW / ROAM need a real entity (ROAM never targets a settler missing from this frame's
+list); DRIFT visits only real marks and fixed points; the camera never writes wear or marks. Full-bleed land (journal
+034): SCREEN is the whole 1280x720 frame. `update(..., roam=[...])` takes the away settlers on the land.
 Python 3.9, stdlib + math only; nothing here reads time.time().
 """
 from __future__ import annotations
@@ -52,7 +56,7 @@ ZOOMS = (0.75, 1.0, 1.5)
 CROP_PX = {0.75: (1707, 960), 1.0: (1280, 720), 1.5: (853, 480)}   # crop of the 4 px/cell bake per zoom (240 / 180 / 120 cells tall)
 WINDOW = {z: (CROP_PX[z][0] / float(PPC), CROP_PX[z][1] / float(PPC)) for z in ZOOMS}   # window in cells
 SCREEN = (1280, 720)                                      # the world region = the whole frame (full-bleed land, journal 034)
-MODES = ("EVENT", "MOOT", "FOLLOW", "CLOSE", "DRIFT")
+MODES = ("EVENT", "MOOT", "FOLLOW", "CLOSE", "ROAM", "DRIFT")
 
 SPRING_TAU_S = 0.8            # time constant; omega = 2 / tau gives ~1.5 s to settle within 10 %
 PAN_CAP = 60.0                # cells/s, enforced on the per-frame displacement
@@ -67,7 +71,18 @@ LEAD_HOLD_S = 2.0             # the lead offset flips only after the facing has 
 EVENT_HOLD_S = 4.0
 HATCH_CLOSE_S = 3.0
 HATCH_CLOSE_MAX_AWAKE = 2     # a hatch is a 1.5x close-up while at most this many are awake (the first-minute case is 1-2 people)
-EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named")
+EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "return", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named")
+# ROAM (AGES 1.4): at 0 here with settlers on the land the camera follows the most watchable errand (haul > visit > water >
+# moot > tend > home > stroll) for 40-90 s or until that errand ends (never under ROAM_MIN_S: an ease takes seconds), eases
+# to the next at <= PAN_CAP, never the same settler twice running; every third hold is the Moot dwell (30 s at 1.5x)
+ROAM_RANK = {"haul": 7, "visit": 6, "water": 5, "moot": 4, "tend": 3, "home": 2, "stroll": 1}
+ROAM_HOLD_S = (40.0, 90.0)
+ROAM_MIN_S = 8.0
+ROAM_MOOT_EVERY = 3
+# ROAM_MOOT_DWELL_S is defined once, after DRIFT_DWELL_MOOT_S below (the ROAM Moot dwell IS the existing Moot dwell)
+ROAM_ARRIVE_CELLS = 4.0                                  # the Moot dwell's 30 s count from arriving this close
+ROAM_ZOOM_LEAD_S = 2.0                                   # the Moot dwell announces its 1.5x (`pending_zoom`) this long before zooming, so the
+                                                         # scene's sheet worker pre-scales the sprites in view for it (the switch is a cache hit)
 MOOT_LAST_S = 30.0
 MOOT_RADIUS = 120.0
 FOLLOW_MARGIN = 24.0          # cells around the group's bounding box (x)
@@ -100,6 +115,7 @@ DRIFT_DWELL_OTHER_S = 12.0    # trees / fields / natural points at 1x
 DRIFT_REPEAT_S = 600.0        # never repeats a non-Moot route inside 10 min (the Moot is exempt: it is every other stop)
 DRIFT_MOOT_ID = "moot"        # land.survey_stops() fixed stop id
 DRIFT_ZOOM = {"moot": 1.5, "camp": 1.5}   # dwell zoom per stop kind (others 1.0); travel keeps the current zoom
+ROAM_MOOT_DWELL_S = DRIFT_DWELL_MOOT_S     # the ROAM Moot dwell is the existing Moot dwell (30 s at 1.5x)
 PERSIST_S = 5.0
 WEIGHT_SPOKE, WEIGHT_WALK, WEIGHT_SEED, WEIGHT_IDLE, SPOKE_WINDOW_S = 3.0, 2.0, 2.0, 1.0, 10.0
 
@@ -176,6 +192,17 @@ class Camera(object):
         self._drift_pt: Optional[Tuple[float, float]] = None
         self._drift_arrived_t: Optional[float] = None
         self._drift_visited: Dict[str, float] = {}
+        # roam (AGES 1.4)
+        self._roam_key: Optional[str] = None       # the away settler followed now (None during the Moot dwell)
+        self._roam_prev: Optional[str] = None      # the one followed before (never the same twice running)
+        self._roam_since: Optional[float] = None   # when this hold began
+        self._roam_hold_s = 0.0
+        self._roam_errand_t: Optional[float] = None   # the followed errand's pick time: a new pick ends the hold
+        self._roam_holds = 0                       # holds so far (every third is the Moot dwell)
+        self._roam_moot = False
+        self._roam_moot_arrived_t: Optional[float] = None
+        self.pending_zoom: Optional[float] = None  # the zoom a dwell will settle at, announced ROAM_ZOOM_LEAD_S early (the scene pre-scales for it)
+        self.roam_holds_log: List[Tuple[float, Optional[str]]] = []   # (t, key or None for the Moot): test evidence, capped
         # bookkeeping
         self.last_t: Optional[float] = None
         self.speed = 0.0
@@ -291,12 +318,14 @@ class Camera(object):
     def update(self, now: float, dt: float, awake: Optional[Sequence[Dict[str, Any]]] = None,
                seeds: Optional[Sequence[Tuple[float, float]]] = None, events: Optional[Sequence[Dict[str, Any]]] = None,
                moot: Optional[Dict[str, Any]] = None, stops: Optional[Sequence[Dict[str, Any]]] = None,
-               lead_key: Optional[str] = None) -> "Camera":
-        """Evaluate the mode ladder, move the spring under the cap, settle zoom. `awake` items: key, x, y, fx, fy,
-        walking (bool), spoke_t (epoch of the last message or None). Returns self."""
+               lead_key: Optional[str] = None, roam: Optional[Sequence[Dict[str, Any]]] = None) -> "Camera":
+        """Evaluate the mode ladder, move the spring under the cap, settle zoom. `awake` items (the HERE settlers): key, x,
+        y, fx, fy, walking (bool), spoke_t (epoch of the last message or None). `roam` items (the AWAY settlers on the
+        land): key, x, y, fx, fy, walking, errand (table name or None), errand_t (the pick time). Returns self."""
         dt = max(1e-3, min(0.25, float(dt)))
         awake = [a for a in (awake or []) if a.get("x") is not None and a.get("y") is not None]
         seeds = [s for s in (seeds or []) if s is not None]
+        roam = [r for r in (roam or []) if r.get("key") and r.get("x") is not None and r.get("y") is not None]
         self._awake_cache = awake
         self._track_history(now, awake)
         for ev in events or []:
@@ -304,7 +333,7 @@ class Camera(object):
                 self._event, self._event_t = dict(ev), now
 
         self._nudge_pts = []
-        mode, desired, want_zoom = self._choose(now, awake, seeds, moot, stops, lead_key)
+        mode, desired, want_zoom = self._choose(now, awake, seeds, moot, stops, lead_key, roam)
         self.mode = mode
         z_eff = want_zoom if self.allow_zoom else 1.0
         # the SAFE band: whatever the mode framed sits between the HUD chips and the place label, never under them
@@ -395,7 +424,7 @@ class Camera(object):
         return WINDOW[z][1] - (HUD_TOP_PX + HUD_BOTTOM_PX) / float(PPC * z)
 
     # ------------------------------------------------------------------ mode ladder (4.4 table)
-    def _choose(self, now, awake, seeds, moot, stops, lead_key) -> Tuple[str, Tuple[float, float], float]:
+    def _choose(self, now, awake, seeds, moot, stops, lead_key, roam=()) -> Tuple[str, Tuple[float, float], float]:
         # 1. EVENT: that point, hold 4 s, 1x (1.5x for a 3 s hatch close-up while at most two pips are awake)
         if self._event is not None and self._event_t is not None:
             age = now - self._event_t
@@ -448,11 +477,112 @@ class Camera(object):
                 self._nudge_pts = [(float(a["x"]), float(a["y"]), _top(a)) for a in awake] + stones_top(1.5)
                 return "CLOSE", (cx_ + lead[0], cy_ + lead[1]), 1.5
             self._drift_stop, self._drift_pt, self._drift_arrived_t = None, None, None
+            self._roam_reset()
             out = self._follow(now, awake, seeds, lead_key)
             self._nudge_pts += stones_top(out[2])
             return out
-        # 5. DRIFT
+        # 5. ROAM: nobody here, settlers on the land (the land moves them): follow the most watchable errand (AGES 1.4)
+        if roam:
+            self._drift_stop, self._drift_pt, self._drift_arrived_t = None, None, None
+            return self._roam(now, roam, stops or [])
+        # 6. DRIFT: an empty land
+        self._roam_reset()
         return self._drift(now, stops or [])
+
+    # ------------------------------------------------------------------ ROAM (0 here, settlers on the land)
+    @property
+    def roam_key(self) -> Optional[str]:
+        """The away settler ROAM follows now (None outside ROAM or during its Moot dwell)."""
+        return self._roam_key if self.mode == "ROAM" else None
+
+    @property
+    def roam_moot(self) -> bool:
+        return self.mode == "ROAM" and self._roam_moot
+
+    def _roam_reset(self) -> None:
+        self.pending_zoom = None
+        if self._roam_key is not None or self._roam_moot:
+            self._roam_prev = self._roam_key or self._roam_prev
+        self._roam_key, self._roam_since, self._roam_errand_t = None, None, None
+        self._roam_moot, self._roam_moot_arrived_t = False, None
+
+    @staticmethod
+    def _roam_rank(r: Dict[str, Any]) -> int:
+        return ROAM_RANK.get(str(r.get("errand") or ""), 0)
+
+    def _roam_pick(self, now, roam) -> Optional[Dict[str, Any]]:
+        """The most watchable away settler: highest errand rank, then one that is moving, then the nearest to the camera;
+        never the settler followed last (unless it is the only one on the land)."""
+        cands = [r for r in roam if r.get("key") != self._roam_prev] or list(roam)
+        if not cands:
+            return None
+        return max(cands, key=lambda r: (self._roam_rank(r), 1 if r.get("walking") or r.get("moving") else 0,
+                                          -_hyp(float(r["x"]), float(r["y"]), self.cx, self.cy), str(r.get("key"))))
+
+    def _roam_begin(self, now, roam) -> None:
+        """Start the next hold: every ROAM_MOOT_EVERY-th one is the Moot dwell, the rest follow a settler for 40-90 s."""
+        self._roam_holds += 1
+        self._roam_since = now
+        self._roam_moot_arrived_t = None
+        if self._roam_holds % ROAM_MOOT_EVERY == 0:
+            self._roam_prev = self._roam_key or self._roam_prev
+            self._roam_key, self._roam_errand_t, self._roam_moot = None, None, True
+            self._roam_hold_s = ROAM_MOOT_DWELL_S
+        else:
+            self._roam_prev = self._roam_key or self._roam_prev      # excluded from the pick: never the same settler twice running
+            pick = self._roam_pick(now, roam)
+            self._roam_moot = False
+            if pick is None:
+                self._roam_key, self._roam_errand_t = None, None
+                return
+            self._roam_key = str(pick["key"])
+            self._roam_errand_t = pick.get("errand_t")
+            h = 0
+            for ch in (self._roam_key + str(self._roam_holds)):
+                h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+            self._roam_hold_s = ROAM_HOLD_S[0] + (h % 1000) / 1000.0 * (ROAM_HOLD_S[1] - ROAM_HOLD_S[0])
+        if len(self.roam_holds_log) < 200:
+            self.roam_holds_log.append((now, self._roam_key))
+
+    def _roam(self, now, roam, stops) -> Tuple[str, Tuple[float, float], float]:
+        by_key = {str(r["key"]): r for r in roam}
+        cur = by_key.get(self._roam_key) if self._roam_key else None
+        if self._roam_since is None:
+            self._roam_begin(now, roam)
+        elif self._roam_moot:
+            if self._roam_moot_arrived_t is not None and now - self._roam_moot_arrived_t >= self._roam_hold_s:
+                self._roam_begin(now, roam)
+        elif cur is None:
+            self._roam_begin(now, roam)                   # the settler left the land (banish / hide): never a missing target
+        else:
+            held = now - self._roam_since
+            ended = self._roam_errand_t is not None and cur.get("errand_t") is not None and cur.get("errand_t") != self._roam_errand_t
+            if held >= self._roam_hold_s or (ended and held >= ROAM_MIN_S):
+                self._roam_begin(now, roam)
+        if self._roam_moot:
+            m = next((s for s in stops if s.get("kind") == "moot" or s.get("id") == DRIFT_MOOT_ID), None)
+            mx, my = (float(m["x"]), float(m["y"])) if m is not None else (self.moot[0], self.moot[1] + 4.0)
+            framed = (self.cx, self.cy + self.safe_dy(self.zoom))
+            if self._roam_moot_arrived_t is None and _hyp(framed[0], framed[1], mx, my) <= ROAM_ARRIVE_CELLS \
+                    and (self.zoom == 1.5 or self._roam_since is None or now - self._roam_since >= ROAM_ZOOM_LEAD_S):
+                self._roam_moot_arrived_t = now           # the 30 s dwell counts from arriving AFTER the zoom lead (a full 30 s at 1.5x)
+            self._nudge_pts = [(float(r["x"]), float(r["y"]), _top(r)) for r in roam
+                               if abs(float(r["x"]) - mx) <= WINDOW[1.5][0] / 2.0 and abs(float(r["y"]) - my) <= WINDOW[1.5][1] / 2.0]
+            if self.zoom != 1.5 and self._roam_since is not None and now - self._roam_since < ROAM_ZOOM_LEAD_S:
+                self.pending_zoom = 1.5                   # announced first: the scene pre-scales the sprites in view for 1.5x ...
+                return "ROAM", (mx, my), self.zoom        # ... while the camera eases in at its current zoom
+            self.pending_zoom = None
+            return "ROAM", (mx, my), 1.5                  # ... then the dwell zooms (at rest, the existing ladder rules)
+        self.pending_zoom = None
+        cur = by_key.get(self._roam_key) if self._roam_key else None
+        if cur is None:                                   # nobody pickable (cannot happen with a non-empty roam list): stay put
+            return "ROAM", (self.cx, self.cy + self.safe_dy(self.zoom)), self.zoom
+        lead = self._lead_room(now, cur, 1.0)
+        cx_, cy_ = float(cur["x"]) + lead[0], float(cur["y"]) + lead[1]
+        ww, wh = self.window(1.0)
+        self._nudge_pts = [(float(r["x"]), float(r["y"]), _top(r)) for r in roam
+                           if abs(float(r["x"]) - cx_) <= ww / 2.0 + 4 and abs(float(r["y"]) - cy_) <= wh / 2.0 + 4]
+        return "ROAM", (cx_, cy_), 1.0
 
     def _follow(self, now, awake, seeds, lead_key) -> Tuple[str, Tuple[float, float], float]:
         pts: List[Tuple[float, float, float]] = []
@@ -736,8 +866,9 @@ class Camera(object):
 
     def stats(self) -> Dict[str, Any]:
         return {"mode": self.mode, "x": round(self.cx, 1), "y": round(self.cy, 1), "zoom": self.zoom,
-                "target_zoom": self.target_zoom, "speed": round(self.speed, 2), "max_speed": round(self.max_step_speed, 2),
-                "cuts": self.cuts, "drift_stop": (self._drift_stop or {}).get("id"), "hud_nudge": round(self.hud_nudge, 2)}
+                "target_zoom": self.target_zoom, "pending_zoom": self.pending_zoom, "speed": round(self.speed, 2), "max_speed": round(self.max_step_speed, 2),
+                "cuts": self.cuts, "drift_stop": (self._drift_stop or {}).get("id"), "hud_nudge": round(self.hud_nudge, 2),
+                "roam_key": self.roam_key, "roam_moot": self.roam_moot, "roam_holds": self._roam_holds}
 
 
 # ---------------------------------------------------------------------------- self-test (OPENWORLD 7.5 gate 3)
@@ -985,6 +1116,93 @@ def _self_test(verbose: bool = True) -> bool:
     sb = bd.sim_to_screen(st3[1][0], st3[1][1])
     check(bd.mode == "MOOT" and sb is not None and sb[1] - STONE_TOP_PX >= HUD_TOP_PX - 1, "moot board: the B stone sits at screen y %s so its %d px stack clears the plank band (%d) at %sx" % (
         None if sb is None else int(sb[1]), int(STONE_TOP_PX), HUD_TOP_PX, bd.zoom))
+
+    # 6. ROAM (AGES 1.4): 0 here, 60 away settlers erranding (synthetic walkers: each picks a table errand every 15-60 s and
+    #    walks 5 cells/s toward a spot near it); 420 s: mode ROAM every frame, pan cap held, 0 cuts, the target is always a
+    #    settler in this frame's list (never missing), never the same settler twice running, every third hold the Moot dwell
+    #    at 1.5x lasting >= 30 s; EVENT outranks ROAM; an empty land is DRIFT
+    rc = Camera()
+    rc.resume(None)
+    mx6, my6 = rc.moot
+    rnd = random.Random(6)
+    names_e = ("haul", "visit", "water", "moot", "tend", "home", "stroll")
+    walkers = []
+    for i in range(60):
+        ang = rnd.random() * 6.283
+        walkers.append({"key": "w%02d" % i, "x": mx6 + math.cos(ang) * rnd.uniform(20, 160), "y": my6 + math.sin(ang) * rnd.uniform(10, 90),
+                        "fx": 1, "fy": 0, "walking": False, "errand": None, "errand_t": None, "tx": None, "ty": None, "next_t": 0.0})
+    t = 10000.0
+    stops6 = [{"id": DRIFT_MOOT_ID, "kind": "moot", "owner": None, "x": mx6, "y": my6 + 4}]
+    modes6 = {}
+    ms6, prev6 = 0.0, (rc.cx, rc.cy)
+    missing = 0
+    frames6 = int(420 * fps)
+    moot_zoom_frames = 0
+    dwell_spans = []
+    dwell_start = None
+    for i in range(frames6):
+        t += dt
+        for w_ in walkers:
+            if t >= w_["next_t"]:
+                w_["errand"], w_["errand_t"] = rnd.choice(names_e), t
+                w_["next_t"] = t + rnd.uniform(15, 60)
+                ang = rnd.random() * 6.283
+                w_["tx"], w_["ty"] = mx6 + math.cos(ang) * rnd.uniform(15, 150), my6 + math.sin(ang) * rnd.uniform(8, 80)
+            dx, dy = w_["tx"] - w_["x"], w_["ty"] - w_["y"]
+            dd = math.hypot(dx, dy)
+            if dd > 0.5:
+                st = min(dd, 5.0 * dt)
+                w_["x"] += dx / dd * st
+                w_["y"] += dy / dd * st
+                w_["fx"], w_["fy"] = (1 if dx > 0 else -1), 0
+                w_["walking"] = True
+            else:
+                w_["walking"] = False
+        roam6 = [{k: w_[k] for k in ("key", "x", "y", "fx", "fy", "walking", "errand", "errand_t")} for w_ in walkers]
+        rc.update(t, dt, roam=roam6, stops=stops6)
+        modes6[rc.mode] = modes6.get(rc.mode, 0) + 1
+        if rc.mode == "ROAM" and not rc.roam_moot and rc.roam_key not in {w_["key"] for w_ in walkers}:
+            missing += 1
+        if rc.roam_moot:
+            if rc.zoom == 1.5 and rc._roam_moot_arrived_t is not None:
+                moot_zoom_frames += 1
+            if dwell_start is None:
+                dwell_start = t
+        elif dwell_start is not None:
+            dwell_spans.append(t - dwell_start)
+            dwell_start = None
+        sp = _hyp(rc.cx, rc.cy, prev6[0], prev6[1]) / dt
+        ms6 = max(ms6, sp)
+        prev6 = (rc.cx, rc.cy)
+    holds = list(rc.roam_holds_log)
+    keys_seq = [k for _, k in holds]
+    same_twice = sum(1 for a, b in zip(keys_seq, keys_seq[1:]) if a is not None and a == b)
+    moot_idx = [i for i, k in enumerate(keys_seq) if k is None]
+    every_third = all((i + 1) % ROAM_MOOT_EVERY == 0 for i in moot_idx) and all(k is None for i, k in enumerate(keys_seq) if (i + 1) % ROAM_MOOT_EVERY == 0)
+    hold_lens = [b - a for (a, _), (b, _) in zip(holds, holds[1:])]
+    check(modes6.get("ROAM", 0) == frames6, "roam: mode ROAM in every frame at 0 here with settlers on the land (%s)" % modes6)
+    check(ms6 <= PAN_CAP + 1e-6 and rc.cuts == 0, "roam: max speed %.2f <= cap %.0f, cuts %d" % (ms6, PAN_CAP, rc.cuts))
+    check(missing == 0, "roam: the target was a settler in the frame's list in every frame (%d frames missing)" % missing)
+    check(len(holds) >= 6 and same_twice == 0, "roam: %d holds, never the same settler twice running (%d repeats): %s" % (len(holds), same_twice, [k or "MOOT" for k in keys_seq]))
+    check(len(moot_idx) >= 2 and every_third, "roam: every third hold is the Moot dwell (moot holds at %s)" % [i + 1 for i in moot_idx])
+    check(moot_zoom_frames >= int(30 * fps) and all(s >= ROAM_MOOT_DWELL_S for s in dwell_spans[:len(moot_idx) - 1]),
+          "roam: the Moot dwell settles at 1.5x (%d frames at 1.5x) and lasts >= 30 s (spans %s)" % (moot_zoom_frames, [round(s, 1) for s in dwell_spans]))
+    settler_holds = [h for h, k in zip(hold_lens, keys_seq) if k is not None]
+    check(all(ROAM_MIN_S - 1e-6 <= h <= ROAM_HOLD_S[1] + 1.0 for h in settler_holds), "roam: settler holds between %.0f and %.0f s (%s)" % (
+        ROAM_MIN_S, ROAM_HOLD_S[1], [round(h, 1) for h in settler_holds]))
+    # EVENT outranks ROAM; FOLLOW outranks ROAM; an empty land is DRIFT
+    rc.update(t + dt, dt, roam=roam6, stops=stops6, events=[{"type": "return", "x": mx6 + 30, "y": my6 + 10}])
+    ev_mode = rc.mode
+    for i in range(int(5 * fps)):
+        t += dt
+        rc.update(t, dt, roam=roam6, stops=stops6)
+    back_mode = rc.mode
+    rc.update(t + dt, dt, roam=roam6, stops=stops6, awake=[{"key": "here1", "x": mx6, "y": my6, "fx": 1, "fy": 0, "walking": False, "spoke_t": t}])
+    fol_mode = rc.mode
+    rc.update(t + 2 * dt, dt, roam=[], stops=stops6)
+    empty_mode = rc.mode
+    check(ev_mode == "EVENT" and back_mode == "ROAM" and fol_mode in ("FOLLOW", "CLOSE") and empty_mode == "DRIFT",
+          "roam: EVENT (return) outranks ROAM (%s), ROAM resumes (%s), a here settler outranks ROAM (%s), an empty land is DRIFT (%s)" % (ev_mode, back_mode, fol_mode, empty_mode))
 
     # 5. persistence round trip: resume keeps the position (no jump)
     d = cam4.to_dict(t)

@@ -125,8 +125,28 @@ SETTLER_SCALE = 1.2
 SETTLER_RENDER_ZOOM = 2
 LETTERS = ("A", "B", "C")
 SPRITE_PRIO_HATCH, SPRITE_PRIO_AWAKE, SPRITE_PRIO_REST = 0, 1, 3
-WORKER_PACE_S = 0.004                     # the worker pauses this long between settler frames (GIL courtesy)
+WORKER_PACE_S = 0.004                     # the worker pauses this long between settler frames (GIL courtesy) ...
+WORKER_PACE_SLOW_S = 0.012                # ... and this long while the scene's last frame took > WORKER_SLOW_MS (AGES 6, bake.py pattern)
+WORKER_HOLD_MS = 15.0                     # above this frame-time EMA a render that would OVERLAP a frame holds (measured: the overlap costs the
+                                          # frame ~x1.6, so 15 x 1.6 = the 24 ms budget; the 1.5x Moot dwell with 60 in view sits at ~14-15 alone)
+WORKER_HOLD_MAX_S = 60.0                  # ... a hold longer than this (a scene that stays slow) lets one render through per
+WORKER_STARVE_TRICKLE_S = 5.0             # ... this many seconds, so sets still land (nobody stays a blob for good)
+WORKER_PERIOD_S = 1.0 / 30.0              # the frame cadence the worker fits renders into: a render starts only when its tier's
+WORKER_DEFER_MAX_S = 0.034                # measured cost fits the gap before the next frame; one that never fits (a 44 ms elder at any
+                                          # cadence) goes after this long: beside a ~12 ms frame that costs ~17 ms, inside the budget
+WORKER_RENDER_EST_S = {0: 0.012, 1: 0.017, 2: 0.028, 3: 0.045}   # per-tier seed for the render-time EMA (measured on the worker)
+WORKER_SLOW_MS = 8.0
 FIRST_FRAMES = ("idle0", "idle1", "walk0", "walk1", "walk2", "walk3", "speak0", "speak1", "blink", "sit")   # no lying pose (AGES 8)
+# Sprite sets (AGES 6): an AWAY settler's body only needs the errand set (idle / blink / look / walk / sit / carry a stone or a
+# tool / wave; 14 frames, 0.4-1.0 MB per octant), a HERE settler the full 23. `idle0` for everyone first so nobody is undrawn
+# more than ~2 s at a 60-settler boot; then the nearest-first director fills the sets from the camera outward, paced by frame
+# time; at most SHEET_LRU_FULL full sets stay resident per octant (the least recently drawn falls back to its errand set).
+ERRAND_FRAMES = ("idle0", "idle1", "blink", "look_l", "look_r", "walk0", "walk1", "walk2", "walk3", "sit", "carry_stone", "carry_tool", "wave0", "wave1")
+SHEET_LRU_FULL = 48
+ZOOMED_CAP_BYTES = 64 * 1024 * 1024        # the scaled sprite copies (every zoom of the ladder x both facings): the oldest go above this
+SHEET_DIRECTOR_EVERY = 10                 # frames between director passes
+SHEET_DIRECTOR_MAX_PENDING = 2            # the director submits only while the worker's queue is this short (nearest first, paced)
+SHEET_DIRECTOR_PER_PASS = 2
 _MOD_CMD_RE = re.compile(r"^\s*!(hide|unhide|pause|resume|kill|unkill|clear|banish|unbanish|rename)\b", re.IGNORECASE)
 
 
@@ -189,6 +209,14 @@ class _Worker(threading.Thread):
     def pending(self) -> int:
         return self.q.qsize()
 
+    def min_prio(self) -> Optional[int]:
+        """The priority number of the most urgent queued job (lowest wins), None when the queue is empty. A read of the heap's
+        head under the GIL: a running job uses it to yield to more urgent work."""
+        try:
+            return int(self.q.queue[0][0])
+        except (IndexError, TypeError, ValueError):
+            return None
+
     def run(self) -> None:
         while True:
             prio, _, fn, args = self.q.get()
@@ -215,6 +243,124 @@ class _Sprites(object):
         self.queued: Set[Tuple[str, int, str, int]] = set()
         self._zoomed: Dict[Tuple, np.ndarray] = {}
         self.requests = 0
+        self.pace = WORKER_PACE_S                     # the scene sets it by frame time (4 ms normally, 12 ms while frames run long)
+        self.frame_idle = threading.Event()           # clear while the scene is inside frame(): the worker renders between frames
+        self.frame_idle.set()
+        self.zoom_hint = 1.0                          # the camera's zoom: the worker pre-scales each rendered frame for it ...
+        self.prescale_zooms: Tuple[float, ...] = (1.0,)   # ... and for every zoom the camera's ladder can step to (a zoom switch would
+                                                      # otherwise re-scale every sprite in view on the frame thread in ONE frame: +8 ms)
+        self._zoomed_bytes = 0                        # bytes held by _zoomed (capped at ZOOMED_CAP_BYTES: the oldest go, never a clear())
+        self.zoomed_over_cap = 0                      # inserts that found nothing evictable (every copy at a zoom in use): the cap gave way
+        self.frame_scales = 0                         # scaled copies built ON THE FRAME PATH (get() misses): the pre-scale's miss count
+        self.hold = False                             # the scene raises it while frames run long (> WORKER_HOLD_MS EMA): renders hold
+        self.defer_forced = False                     # the scene raises it while the bake thread paints: only renders that fit a gap go
+        self._hold_since: Optional[float] = None
+        self._last_render_t = 0.0
+        self.frame_start_t = 0.0                      # perf_counter when the scene's frame began / ended (frame_begin / frame_end)
+        self.frame_end_t = 0.0
+        self.render_est: Dict[int, float] = dict(WORKER_RENDER_EST_S)   # per-tier render seconds, an EMA of what this box measures
+        self.fit_renders = 0                          # renders that fitted the gap before the next frame (no overlap)
+        self.forced_renders = 0                       # renders that never fitted and went after WORKER_DEFER_MAX_S (overlap a frame)
+        self.held_renders = 0                         # renders that waited on the hold (evidence for D')
+        self.tick = 0                                 # the scene's frame counter (LRU age)
+        self.full_sets: Dict[Tuple[str, int, int], int] = {}   # (key, tier, octant) -> last frame drawn, for the full sets requested
+        self.evictions = 0
+
+    def frame_begin(self) -> None:
+        self.frame_start_t = _time.perf_counter()
+        self.frame_idle.clear()
+
+    def frame_end(self) -> None:
+        self.frame_end_t = _time.perf_counter()
+        self.frame_idle.set()
+
+    def _await_slot(self, tier: int, urgent: bool = False) -> bool:
+        """Block the worker until a render of this tier fits, True: after the scene's frame has ended, when the render's measured
+        cost fits the gap before the next frame is due (frame_start_t + WORKER_PERIOD_S); a render that does not fit waits for the
+        next gap, up to WORKER_DEFER_MAX_S, then goes anyway (a frame beside a render at 1x costs ~17 ms, inside the budget).
+        While the scene holds (frame EMA > WORKER_HOLD_MS: the 1.5x dwell with a crowd in view, where that same overlap costs
+        > 24 ms) returns False at once (the caller re-queues its job and yields: a HATCH-prio job is never stuck behind a held
+        one), except one render per WORKER_STARVE_TRICKLE_S once the hold has lasted WORKER_HOLD_MAX_S."""
+        est = self.render_est.get(int(tier), WORKER_RENDER_EST_S[3])
+        deferred_since = None
+        while True:
+            self.frame_idle.wait(0.05)
+            now = _time.perf_counter()
+            next_start = self.frame_start_t + WORKER_PERIOD_S
+            if self.frame_idle.is_set() and now + est <= next_start - 0.0005:
+                self.fit_renders += 1                     # ends before the next frame starts: harmless at any frame time, hold or not
+                return True
+            if deferred_since is None:
+                deferred_since = now
+            elif now - deferred_since >= WORKER_DEFER_MAX_S and self.frame_idle.is_set():
+                # this render never fits a gap (an elder's 44 ms at 30 fps): it will overlap a frame and cost it ~x1.6 (measured)
+                if self.hold and not urgent:              # ... which is over the 24 ms budget while frames run long (WORKER_HOLD_MS); the
+                                                          # standing frame (HATCH prio: nobody undrawn, AGES 6) never waits on the hold
+                    if self._hold_since is None:
+                        self._hold_since = now
+                    if now - self._hold_since < WORKER_HOLD_MAX_S or now - self._last_render_t < WORKER_STARVE_TRICKLE_S:
+                        self.held_renders += 1
+                        _time.sleep(0.02)                 # the re-queue cycle breathes (never a spin through the queue)
+                        return False
+                else:
+                    self._hold_since = None
+                if self.defer_forced:                     # the bake thread is painting (boot, a repaint): a render that overlaps a frame
+                    _time.sleep(0.02)                     # would be the third thread on it; this job yields, the fitting ones go on
+                    return False
+                self.forced_renders += 1
+                return True
+            wait = next_start - now                   # sleep past the next frame's start, then wait for its end (frame_idle)
+            _time.sleep(max(0.001, min(0.05, wait + 0.001)))
+
+    def has_set(self, key: str, tier: int, octant: int, frames: Sequence[str]) -> bool:
+        """Every frame of `frames` is rendered at this octant."""
+        key = (key or "").lower()
+        tier = int(tier)
+        for f in frames:
+            if octant not in self.ready.get((key, tier, f), ()):
+                return False
+        return True
+
+    def reserve_full(self, key: str, tier: int, octant: int, evictable=None) -> bool:
+        """A full set is about to be requested: keep at most SHEET_LRU_FULL full sets per octant by dropping the least
+        recently drawn one's non-errand frames (its errand set stays). Only a set whose settler `evictable(key)` says is
+        far from the camera (> 1.5 windows, AGES 6) may go; with the cap full and nobody far, returns False and the caller
+        settles for the errand set (no thrash: an in-view set is never dropped to make room for another in-view one).
+        `evictable=None` evicts the least recently drawn regardless (a harness)."""
+        key = (key or "").lower()
+        k = (key, int(tier), int(octant))
+        if k in self.full_sets:
+            self.full_sets[k] = self.tick
+            return True
+        same = [kk for kk in self.full_sets if kk[2] == int(octant)]
+        while len(same) >= SHEET_LRU_FULL:
+            cands = same if evictable is None else [kk for kk in same if evictable(kk[0])]
+            if not cands:
+                return False
+            victim = min(cands, key=lambda kk: self.full_sets[kk])
+            self._evict(victim)
+            same.remove(victim)
+        self.full_sets[k] = self.tick
+        return True
+
+    def _evict(self, k: Tuple[str, int, int]) -> None:
+        key, tier, octant = k
+        self.full_sets.pop(k, None)
+        self.evictions += 1
+        sun_b = creatures._sun_bucket(self.sun_of(octant))
+        for f in creatures.FRAMES:
+            if f in ERRAND_FRAMES:
+                continue
+            octs = self.ready.get((key, tier, f))
+            if octs:
+                octs.discard(octant)
+            for ws in (True, False):
+                creatures._CACHE.pop((key, tier, f, SETTLER_RENDER_ZOOM, sun_b, ws), None)
+        # list() first: one atomic C-level snapshot of the keys. The worker's _prescale inserts into this dict concurrently and a
+        # Python-level iteration over the live dict would raise "dictionary changed size during iteration" on the frame path
+        for zk in list(self._zoomed):
+            if zk[0] == key and zk[1] == tier and zk[3] == octant and zk[2] not in ERRAND_FRAMES:
+                self._pop_zoomed(zk)
 
     @staticmethod
     def sun_of(octant: int) -> Tuple[float, float]:
@@ -230,21 +376,111 @@ class _Sprites(object):
         for f in todo:
             self.queued.add((key, tier, f, octant))
         self.requests += len(todo)
-        self.worker.submit(prio, self._render_many, key, tier, octant, tuple(todo))
+        self.worker.submit(prio, self._render_many, key, tier, octant, tuple(todo), int(prio))
 
-    def _render_many(self, key: str, tier: int, octant: int, frames: Sequence[str]) -> None:
+    def _render_many(self, key: str, tier: int, octant: int, frames: Sequence[str], prio: int = SPRITE_PRIO_REST) -> None:
         sun = self.sun_of(octant)
-        for f in frames:
-            _time.sleep(WORKER_PACE_S)                    # hand the GIL back between 32 ms renders: frames breathe
+        for i, f in enumerate(frames):
+            _time.sleep(WORKER_PACE_S if prio <= SPRITE_PRIO_HATCH else self.pace)   # hand the GIL back between renders (the standing
+            mp = self.worker.min_prio()                   # frame at HATCH prio keeps the short pace: nobody undrawn for long at a boot burst)
+            if (mp is not None and mp < prio and i > 0) or not self._await_slot(tier, urgent=prio <= SPRITE_PRIO_HATCH):
+                # more urgent work waits (a pre-scale for the zoom ahead, a standing frame), or the scene holds (frames near the
+                # budget): this job yields its remaining frames back to the queue at its own priority
+                self.worker.submit(prio, self._render_many, key, tier, octant, tuple(frames[i:]), int(prio))
+                return
+            t_r = _time.perf_counter()
+            self._last_render_t = t_r
             try:
                 if f in HOP_BODY_FRAMES:
                     creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, 1, sun, with_shadow=False)
                     creatures.shadow(tier, f, SETTLER_RENDER_ZOOM, sun)
                 else:
                     creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, 1, sun)
+                self._prescale(key, tier, f, octant, sun)  # the zoomed copies the frame path would otherwise build on its first blit
                 self.ready.setdefault((key, tier, f), set()).add(octant)
             finally:
                 self.queued.discard((key, tier, f, octant))
+                took = _time.perf_counter() - t_r         # the measured cost feeds the per-tier estimate (cache hits shrink it: fine,
+                if took > 0.002:                          # a hit is not a render; only real renders (> 2 ms) move the EMA)
+                    self.render_est[int(tier)] = 0.7 * self.render_est.get(int(tier), took) + 0.3 * took
+
+    def _prescale(self, key: str, tier: int, f: str, octant: int, sun) -> None:
+        """Build the BOX-downsampled copies for both facings at the camera's zoom AND at every zoom of the camera's ladder
+        (prescale_zooms) on the worker: a zoom switch (the Moot dwell at 1.5x, FOLLOW wide at 0.75x) is then a cache hit for
+        every sprite in view instead of ~60 resizes on the frame thread in one frame."""
+        body_only = f in HOP_BODY_FRAMES
+        zooms = [self.zoom_hint] + [z for z in self.prescale_zooms if z != self.zoom_hint]
+        for facing in (1, -1):
+            base = None
+            for zoom in zooms:
+                zk = (key, tier, f, octant, facing, zoom)
+                if zk in self._zoomed:
+                    continue
+                if base is None:
+                    base = creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, facing, sun, with_shadow=not body_only)
+                self._put_zoomed(zk, self._scaled(base, self.factor(zoom)))
+
+    def _put_zoomed(self, zk: Tuple, arr: np.ndarray) -> None:
+        """Insert one scaled copy; above ZOOMED_CAP_BYTES the OLDEST entries at a zoom NOT in use (not the camera's zoom, not the
+        one it is heading to: prescale_zooms) go until 3/4 of the cap is left. A copy at a zoom in use is never evicted (an
+        eviction there is a re-scale on the frame path next frame), so with everything in use the cap gives way (counted)."""
+        old = self._zoomed.get(zk)
+        if old is not None:
+            self._zoomed_bytes -= old.nbytes
+        self._zoomed[zk] = arr
+        self._zoomed_bytes += arr.nbytes
+        if self._zoomed_bytes > ZOOMED_CAP_BYTES:
+            keep = set(self.prescale_zooms) | {self.zoom_hint}
+            freed = False
+            for k_ in list(self._zoomed):
+                if self._zoomed_bytes <= ZOOMED_CAP_BYTES * 3 // 4:
+                    break
+                if k_[-1] in keep:
+                    continue
+                self._pop_zoomed(k_)
+                freed = True
+            if not freed:
+                self.zoomed_over_cap += 1
+
+    def request_zoom(self, key: str, tier: int, octant: int, frames: Sequence[str], zoom: float, prio: int) -> None:
+        """The camera is heading to `zoom` (target_zoom leads zoom by the travel time): build this settler's scaled copies at
+        that zoom on the worker now, so the switch frame is a cache hit for every sprite in view."""
+        key = (key or "").lower()
+        tier = int(tier)
+        todo = [f for f in frames if octant in self.ready.get((key, tier, f), ())
+                and any((key, tier, f, octant, fc, zoom) not in self._zoomed for fc in (1, -1))]
+        if todo:
+            self.worker.submit(prio, self._rescale_many, key, tier, octant, tuple(todo), float(zoom))
+
+    def _rescale_many(self, key: str, tier: int, octant: int, frames: Sequence[str], zoom: float) -> None:
+        sun = self.sun_of(octant)
+        self.frame_idle.wait(0.05)
+        for f in frames:                                  # cache hits on the 2x render + one small resize each (~0.2 ms)
+            body_only = f in HOP_BODY_FRAMES
+            for facing in (1, -1):
+                zk = (key, tier, f, octant, facing, zoom)
+                if zk in self._zoomed:
+                    continue
+                base = creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, facing, sun, with_shadow=not body_only)
+                self._put_zoomed(zk, self._scaled(base, self.factor(zoom)))
+
+    def _pop_zoomed(self, zk: Tuple) -> None:
+        arr = self._zoomed.pop(zk, None)
+        if arr is not None:
+            self._zoomed_bytes -= arr.nbytes
+
+    def resident_bytes(self, octant: int) -> int:
+        """Bytes of settler frames resident in the art cache at this octant: the 2x renders creatures._CACHE holds, the figure
+        AGES 6 budgets (<= 96 MB per octant). A sum of nbytes: every number a len(). The scaled copies are zoomed_bytes()."""
+        sun_b = creatures._sun_bucket(self.sun_of(octant))
+        n = 0
+        for k_, arr in list(creatures._CACHE.items()):
+            if len(k_) >= 5 and k_[4] == sun_b and hasattr(arr, "nbytes"):
+                n += arr.nbytes
+        return n
+
+    def zoomed_bytes(self) -> int:
+        return self._zoomed_bytes
 
     def has(self, key: str, tier: int, frame: str) -> bool:
         return bool(self.ready.get((key, tier, frame)))
@@ -264,6 +500,11 @@ class _Sprites(object):
         """A cache hit for (key, tier, frame) at this octant (else any rendered octant, else idle0), or None. The hit is
         the atlas's 2x render BOX-downsampled to SETTLER_SCALE x zoom (cached per zoom); nothing is rendered here."""
         key = (key or "").lower()
+        fs = self.full_sets
+        if fs:
+            k = (key, tier, octant)
+            if k in fs:
+                fs[k] = self.tick                             # drawn this frame: the LRU's age
         for f in (frame, "idle0"):
             octs = self.ready.get((key, tier, f))
             if not octs:
@@ -272,12 +513,11 @@ class _Sprites(object):
             body_only = f in HOP_BODY_FRAMES
             zk = (key, tier, f, o, facing, zoom)
             arr = self._zoomed.get(zk)
-            if arr is None:
+            if arr is None:                                       # the safety net (a zoom off the ladder): one small resize here
                 base = creatures.render(key, tier, f, SETTLER_RENDER_ZOOM, facing, self.sun_of(o), with_shadow=not body_only)
                 arr = self._scaled(base, self.factor(zoom))
-                if len(self._zoomed) > 4000:
-                    self._zoomed.clear()
-                self._zoomed[zk] = arr
+                self._put_zoomed(zk, arr)
+                self.frame_scales += 1
             return arr, f
         return None
 
@@ -288,7 +528,7 @@ class _Sprites(object):
         if arr is None:
             base = creatures.shadow(int(tier), frame, SETTLER_RENDER_ZOOM, self.sun_of(octant))
             arr = self._scaled(base, self.factor(zoom))
-            self._zoomed[zk] = arr
+            self._put_zoomed(zk, arr)
         return arr
 
 
@@ -401,6 +641,8 @@ class SteadingScene(object):
         self.worker = _Worker(self.log)
         self.worker.start()
         self.sprites = _Sprites(self.worker)
+        self._ms_ema: Optional[float] = None                            # frame-time EMA (the sheet worker's hold, WORKER_HOLD_MS)
+        self._prescaled_for: Optional[float] = None                     # the zoom the worker was last asked to pre-scale for (target_zoom)
         self._terrain_thread = threading.Thread(target=self._gen_terrain, name="steading-terrain", daemon=True)
         self._terrain_err: Optional[str] = None
         self._terrain_thread.start()                  # 390 ms once per process: never inside a frame
@@ -473,10 +715,10 @@ class SteadingScene(object):
                                              x=p.get("x"), y=p.get("y"), last_seen=(last if here else None))
             self._restore_pose(e, p, now)
             self.world.set_state(key, e.state, e.x, e.y)
-            self.sprites.request(key, e.tier, self._octant, ("idle0",), SPRITE_PRIO_HATCH)   # the standing frame first
-            self.sprites.request(key, e.tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-        for key, e in self.behaviour.entities.items():
-            self.sprites.request(key, e.tier, self._octant, creatures.FRAMES, SPRITE_PRIO_REST)
+            self.sprites.request(key, e.tier, self._octant, ("idle0",), SPRITE_PRIO_HATCH)   # the standing frame first; the
+                                                                                             # director fills the sets nearest-first
+        self.behaviour.fires = self._fire_cell                       # the errand table's `sit by the fire side if a ring exists`
+        self.behaviour.walk_ready = self._walk_ready                 # standing errands until the walk frames are rendered
         self.test_pips = test_pips_allowed(self.run_dir, ctx)
         if os.environ.get("KL_SLEEP_AFTER_S") and test_pips_allowed(self.run_dir, ctx, dict(os.environ, KL_TEST_PIPS="1")):
             try:                                                    # TEST HOOK: a short awake window so a harness sees FOLLOW -> DRIFT -> FOLLOW
@@ -527,6 +769,86 @@ class SteadingScene(object):
         tier = int(e.tier) if e is not None else 0
         return self.sprites.has(key, tier, "idle0")
 
+    def _walk_ready(self, key: str) -> bool:
+        """The idle director asks before an errand walk: are the walk frames rendered at the current octant? A settler
+        without them does standing errands (AGES 6: everyone standing at their camp until their sheet lands)."""
+        e = self.behaviour.get(key) if self.behaviour is not None else None
+        if e is None:
+            return False
+        return self.sprites.has_set(key, int(e.tier), self._octant, ("walk0", "walk1", "walk2", "walk3"))
+
+    def _fire_cell(self, key: str) -> Optional[Tuple[float, float]]:
+        """The owner's lit camp fire (burning while here, embers EMBERS_S after), as the errand table's fire ring; None otherwise."""
+        lit_t = self._fires.get(key)
+        if lit_t is None or self.land is None:
+            return None
+        c = self.land.camp_of(key)
+        if not isinstance(c, dict) or c.get("x") is None:
+            return None
+        e = self.behaviour.get(key)
+        now = self._last_now or 0.0
+        if not ((e is not None and e.is_present(now)) or now - lit_t < EMBERS_S):
+            return None
+        return self._fire_xy(c)
+
+    def _sheet_director(self, now: float) -> None:
+        """Nearest-first sheet requests, paced by frame time (AGES 6): every SHEET_DIRECTOR_EVERY frames, while the worker's
+        queue is short, the settlers nearest the camera that lack their set (errand set when away, the full set when
+        here) are queued, SHEET_DIRECTOR_PER_PASS at a time; a full set reserves an LRU slot (<= 48 per octant)."""
+        self.sprites.tick = self.frames
+        self.sprites.pace = WORKER_PACE_SLOW_S if self.last_ms > WORKER_SLOW_MS else WORKER_PACE_S
+        self._ms_ema = self.last_ms if self._ms_ema is None else 0.85 * self._ms_ema + 0.15 * self.last_ms
+        self.sprites.hold = self._ms_ema > WORKER_HOLD_MS               # frames near the budget: renders hold (WORKER_HOLD_MS)
+        self.sprites.defer_forced = bool(self.bakes is not None and self.bakes.baking)   # the bake paints: only gap-fitting renders
+        cam = self.camera
+        self.sprites.zoom_hint = cam.zoom
+        pz = getattr(cam, "pending_zoom", None)                         # a dwell's zoom announced ROAM_ZOOM_LEAD_S early (camera.py)
+        tz = float(pz if pz is not None else cam.target_zoom) if cam.allow_zoom else float(cam.zoom)
+        self.sprites.prescale_zooms = (float(cam.zoom), tz) if tz != cam.zoom else (float(cam.zoom),)
+        b, oct_ = self.behaviour, self._octant
+        if tz != cam.zoom and tz != self._prescaled_for:                # the camera is heading to another zoom (target_zoom leads zoom by the
+            self._prescaled_for = tz                                    # travel time in ROAM / DRIFT): scaled copies for it land on the worker now
+            for k, e in b.entities.items():
+                if e.state in ("seed", "hatching"):
+                    continue
+                self.sprites.request_zoom(k, e.tier, oct_, creatures.FRAMES, tz, SPRITE_PRIO_HATCH)
+        elif tz == cam.zoom:
+            self._prescaled_for = None
+        if self.frames % SHEET_DIRECTOR_EVERY or self.worker.pending() >= SHEET_DIRECTOR_MAX_PENDING:
+            return
+        cx, cy = cam.cx, cam.cy
+        todo: List[Tuple[float, str, int, bool]] = []
+        for k, e in b.entities.items():
+            if e.state in ("seed", "hatching"):
+                continue
+            here = e.is_present(now)
+            frames = creatures.FRAMES if here else ERRAND_FRAMES
+            if self.sprites.has_set(k, e.tier, oct_, frames):
+                continue
+            if here and self.sprites.has_set(k, e.tier, oct_, ERRAND_FRAMES) and (k, int(e.tier), oct_) not in self.sprites.full_sets \
+                    and sum(1 for kk in self.sprites.full_sets if kk[2] == oct_) >= SHEET_LRU_FULL:
+                continue                                              # settled for the errand set while the full slots are all in view
+            d = (e.x - cx) ** 2 + (e.y - cy) ** 2
+            if not self.sprites.has(k, e.tier, "idle0"):
+                d -= 1e9                                             # nobody undrawn: the standing frame outranks distance
+            todo.append((d, k, int(e.tier), here))
+        if not todo:
+            return
+        todo.sort()
+        ww, wh = cam.window()
+        far_r2 = (1.5 * max(ww, wh)) ** 2                              # > 1.5 windows from the camera: an evictable set
+
+        def far(key: str) -> bool:
+            o = b.entities.get(key)
+            return o is None or (o.x - cx) ** 2 + (o.y - cy) ** 2 > far_r2
+        for _, k, tier, here in todo[:SHEET_DIRECTOR_PER_PASS]:
+            if not self.sprites.has(k, tier, "idle0"):
+                self.sprites.request(k, tier, oct_, ("idle0",), SPRITE_PRIO_HATCH)
+            if here and self.sprites.reserve_full(k, tier, oct_, evictable=far):
+                self.sprites.request(k, tier, oct_, creatures.FRAMES, SPRITE_PRIO_REST)
+            else:                                                     # away, or the 48 full slots are held by settlers in view
+                self.sprites.request(k, tier, oct_, ERRAND_FRAMES, SPRITE_PRIO_REST)
+
     def _restore_pose(self, e, p: Dict[str, Any], now: float) -> None:
         """Deploy continuity (journal 011): the settler keeps the facing world.json saved and, when its person is here and
         it was STANDING at a stone, walks back to that letter. No event, no hop: nothing happened to the person."""
@@ -566,9 +888,13 @@ class SteadingScene(object):
         """TEST ONLY (guarded by test_pips_allowed): synthetic pips (origin 'test') spread over passable land around
         the Moot, hatched by the behaviour as their sheets land. Never persisted as real rows (`_test`), never counted,
         never given camps (land.real_pip refuses them)."""
-        self.log("TEST HOOK: KL_TEST_PIPS=%d synthetic pips (run_dir %s, test mode)" % (self.test_pips, self.run_dir))
+        boot_away = os.environ.get("KL_TEST_BOOT") == "away"      # TEST HOOK (with KL_TEST_PIPS only): a boot burst of AWAY
+        self.log("TEST HOOK: KL_TEST_PIPS=%d synthetic pips (run_dir %s, test mode%s)" % (
+            self.test_pips, self.run_dir, ", placed standing and away at hashed camp spots" if boot_away else ""))
         T = self.terrain
         sx, sy = T.site
+        moot = (float(sx), float(sy))
+        taken: List[Tuple[int, int]] = []
         for i in range(self.test_pips):
             key = "test-pip-%02d" % i
             p, created = self.world.ensure_pip(key, key, "test pip %d" % i, None, now - 10.0)
@@ -582,11 +908,19 @@ class SteadingScene(object):
                 if T.is_passable(x, y):
                     break
             tier = int(p.get("tier") or i % 4)
+            if boot_away:
+                # the C5 / D' shape (AGES 6): everyone already hatched, standing at its (behaviour-level, never recorded) camp
+                # spot on the Steading ring, away; the land moves them from the first frame
+                cx_, cy_ = LAND.hashed_camp_spot(key, moot, taken, T.passable, T.water)
+                taken.append((cx_, cy_))
+                self.behaviour.place_settler(key, tier, 0.4 + 0.6 * ((i * 7) % 10) / 10.0, int(p["genome"]["salt"]), (cx_, cy_),
+                                             "test pip %d" % i, origin="test", t=now, last_seen=None)
+                self.sprites.request(key, tier, self._octant, ("idle0",), SPRITE_PRIO_HATCH)
+                continue
             self.behaviour.seed_drop(key, now - self.hold_s - 1.0, x, y, origin="test")
             self.behaviour.hold_cleared(key, now - self.hold_s - 1.0, "test pip %d" % i, tier,
                                         0.4 + 0.6 * ((i * 7) % 10) / 10.0, int(p["genome"]["salt"]), created)
             self.sprites.request(key, tier, self._octant, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-            self.sprites.request(key, tier, self._octant, creatures.FRAMES, SPRITE_PRIO_REST)
 
     def _u(self, a: float, b: float) -> float:
         return float(a + (b - a) * self.rng.random())
@@ -675,6 +1009,7 @@ class SteadingScene(object):
                 if e is None:
                     b.get(key).seed_t = now - self.hold_s      # the raw record was missed: hatch now, hold already served
                 self.sprites.request(key, int(p.get("tier") or 0), self._octant, FIRST_FRAMES, SPRITE_PRIO_HATCH)
+                self.sprites.reserve_full(key, int(p.get("tier") or 0), self._octant)       # a here settler: the full set (LRU slot)
                 self.sprites.request(key, int(p.get("tier") or 0), self._octant, creatures.FRAMES, SPRITE_PRIO_REST)
             elif not e.is_present(now):
                 b.message(key, now, seen_t=t)                     # the raw record was missed: the moderated one makes them here
@@ -685,6 +1020,8 @@ class SteadingScene(object):
             newt = w.update_tier(p)
             if newt is not None:
                 b.set_tier(key, newt, now)
+                self.sprites.request(key, newt, self._octant, ("idle0",), SPRITE_PRIO_HATCH)
+                self.sprites.reserve_full(key, newt, self._octant)
                 self.sprites.request(key, newt, self._octant, creatures.FRAMES, SPRITE_PRIO_AWAKE)
             if m.get("kind") == "vote" and m.get("letter"):
                 p["votes_cast"] = int(p.get("votes_cast") or 0) + 1
@@ -878,7 +1215,7 @@ class SteadingScene(object):
                 nt = w.update_tier(p)
                 if nt is not None:
                     b.set_tier(e.key, nt, now)
-                    self.sprites.request(e.key, nt, self._octant, creatures.FRAMES, SPRITE_PRIO_AWAKE)
+                    self.sprites.request(e.key, nt, self._octant, ("idle0",), SPRITE_PRIO_HATCH)   # the director fills the new tier's set
         w.touch_session(now)
         if self.camera is not None:
             self.camera.maybe_persist(land, now)
@@ -1175,6 +1512,7 @@ class SteadingScene(object):
         w, h = int(size[0]), int(size[1])
         self.size = (w, h)
         t0 = _time.perf_counter()
+        self.sprites.frame_begin()                                   # the sheet worker renders between frames, not across them
         try:
             if ctx is None:
                 ctx = _Ctx(now=_time.time(), frame=0)
@@ -1205,6 +1543,7 @@ class SteadingScene(object):
             self._ingest(ctx, now)
             self._honesty_check(now)
             self.behaviour.night = NAT.night_amount(self.nature.hour(now))   # the errand table's day / night weights
+            self.behaviour.rain = 1.0 if self.nature.weather.state_at(now) == "rain" else 0.0   # home x2, water x0.3
             ev = self.behaviour.tick(now, dt)
             self._idle_life(ev, now)
             self._layout(now)
@@ -1212,13 +1551,13 @@ class SteadingScene(object):
             self.events.extend(ev)
             t2 = _time.perf_counter()
             self._camera(ctx, now, dt, ev)
+            self._sheet_director(now)
             self.nature.update(now, self.chat_rate(now))
             oct_ = BK.sun_octant(self.nature.sun(now))
             if oct_ != self._octant:
-                self._octant = oct_                                  # ~every 1.75 h: sheets re-render on the worker
-                for k, e in self.behaviour.entities.items():
-                    self.sprites.request(k, e.tier, oct_, FIRST_FRAMES, SPRITE_PRIO_AWAKE)
-                    self.sprites.request(k, e.tier, oct_, creatures.FRAMES, SPRITE_PRIO_REST)
+                self._octant = oct_                                  # ~every 1.75 h: sheets re-render on the worker, standing frame
+                for k, e in self.behaviour.entities.items():         # first, the sets nearest-first by the director
+                    self.sprites.request(k, e.tier, oct_, ("idle0",), SPRITE_PRIO_HATCH)
             self._bake_sync(now)
             t3 = _time.perf_counter()
             rgb = self._ground(ctx, now, w, h)
@@ -1241,6 +1580,8 @@ class SteadingScene(object):
                 self.log("frame failed (%d): %s" % (self.errors, traceback.format_exc().strip().splitlines()[-1]))
             self.events = [{"type": "world_error", "count": self.errors}]
             return self._fallback(w, h, float(getattr(ctx, "now", None) or _time.time()))
+        finally:
+            self.sprites.frame_end()
 
     def _idle_life(self, ev: List[Dict[str, Any]], now: float) -> None:
         """Between messages: an idle HERE pip mutters one of ITS OWNER'S real tokens (allowlist + blocklist). An away body
@@ -1285,9 +1626,11 @@ class SteadingScene(object):
                 natural.append({"kind": kind, "x": p["x"], "y": p["y"], "name": p.get("label")})
         stops = self.land.survey_stops(natural)
         cam.allow_zoom = self.allow_zoom and self.degrade_level < 6
-        # a `return` is the old wake for the camera's EVENT hold (camera.py is untouched in this slice: ROAM is row 2)
-        cam_ev = [(dict(e_, type="wake") if e_.get("type") == "return" else e_) for e_ in ev]
-        cam.update(now, dt, awake=inp["awake"], seeds=inp["seeds"], events=cam_ev, moot=inp["moot"], stops=stops, lead_key=b.newest_speaker)
+        for r in inp["roam"]:                                   # the away bodies (ROAM, AGES 1.4): head heights for the dead zone
+            ent = b.get(r.get("key"))
+            r["top"] = self._head_cells(int(ent.tier) if ent is not None else 3)
+        cam.update(now, dt, awake=inp["awake"], seeds=inp["seeds"], events=ev, moot=inp["moot"], stops=stops, lead_key=b.newest_speaker,
+                   roam=inp["roam"])                            # `return` is in the camera's EVENT_TYPES (the wake shim is gone)
         if self.force_zoom in CAM.ZOOMS and self.test_pips:
             cam.zoom = cam.zoom_prev = cam.target_zoom = self.force_zoom
             cam._clamp_pos()
@@ -1560,12 +1903,15 @@ class SteadingScene(object):
             return
         facing = -1 if int(getattr(e, "side", 1) or 1) < 0 else 1
         hit = self.sprites.get(e.key, int(e.tier), frame, self._octant, facing, zoom)
-        if hit is None:
-            self._blit_tuft(rgb, e, now, sx, sy, zoom, phase=1)      # sheet not ready: the tuft one more beat, never a stall
-            return
-        spr, used = hit
         k = self.sprites.factor(zoom)                                # atlas (2x) px -> screen px
         ax, ay = creatures.anchor(int(e.tier), SETTLER_RENDER_ZOOM)
+        if hit is None:
+            # no sheet yet (AGES 6): the shadow blob alone where the settler stands (the text layer keeps its label); never a
+            # wrong sprite, never a render on the frame path, never a stall
+            sh = self.sprites.shadow(int(e.tier), "idle0", self._octant, zoom)
+            BK.blit(rgb, sh, int(round(sx - ax * k)), int(round(sy - ay * k)))
+            return
+        spr, used = hit
         lift = 0.0
         if used in HOP_BODY_FRAMES:                                  # body up the parabola, the shadow stays on the ground
             sh = self.sprites.shadow(int(e.tier), used, self._octant, zoom)
@@ -1600,12 +1946,9 @@ class SteadingScene(object):
 
     # ------------------------------------------------------------------ output
     def _to_image(self, rgb: np.ndarray) -> Image.Image:
-        h, w = rgb.shape[:2]
-        if self._rgba is None or self._rgba.shape[:2] != (h, w):
-            self._rgba = np.empty((h, w, 4), np.uint8)
-            self._rgba[..., 3] = 255
-        self._rgba[..., :3] = rgb
-        return Image.fromarray(self._rgba, "RGBA")
+        """RGBA with alpha 255. PIL's RGB -> RGBA convert (one C pass, 0.9 ms at 720p) replaces the strided numpy write
+        into a 4-channel buffer (3.4 ms): byte-identical output, measured in the W2 review (frame_prof / resize_bench)."""
+        return Image.fromarray(np.ascontiguousarray(rgb)).convert("RGBA")
 
     def _fallback(self, w: int, h: int, now: float) -> Image.Image:
         if self.last_good is not None and self.last_good.size == (w, h):
@@ -1769,8 +2112,22 @@ class SteadingScene(object):
                   "baking": bool(self.bakes.baking), "degrade": self.degrade, "zoom": self.camera.zoom, "booted": True})
         return d
 
+    def _sprite_mb_octant(self) -> Optional[float]:
+        """Resident settler sprite memory at the current sun octant in MB (AGES 6 budget: <= 96 MB per octant), a sum of
+        nbytes recomputed at most once per 30 frames (stats() may be read every second)."""
+        if not self.booted:
+            return None
+        c = self._sprite_mb_cache
+        if c is None or self.frames - c[0] >= 30:
+            c = (self.frames, round(self.sprites.resident_bytes(self._octant) / (1024.0 * 1024.0), 2))
+            self._sprite_mb_cache = c
+        return c[1]
+
+    _sprite_mb_cache: Optional[Tuple[int, float]] = None
+
     def stats(self) -> Dict[str, Any]:
         arr = np.array(self._all_ms[-300:]) if self._all_ms else None
+        bst = self.behaviour.stats() if self.booted else None                # ONE O(n) pass, not one per key
         return {"frames": self.frames, "errors": self.errors, "last_ms": round(self.last_ms, 2),
                 "avg_ms": round(sum(self._ms) / len(self._ms), 2) if self._ms else None,
                 "avg300_ms": round(float(arr.mean()), 2) if arr is not None else None,
@@ -1782,6 +2139,10 @@ class SteadingScene(object):
                 "hatched_ever": self.hatched_ever(),
                 "honesty_violations": self.honesty_violations, "test_pips": self.test_pips,
                 "sprite_cache": creatures.cache_stats(), "sprites_ready": sum(len(v) for v in self.sprites.ready.values()),
+                "full_sets": len(self.sprites.full_sets), "sheet_evictions": self.sprites.evictions,
+                "sprite_mb_octant": self._sprite_mb_octant(), "zoomed_mb": round(self.sprites.zoomed_bytes() / (1024.0 * 1024.0), 2),
+                "frame_scales": self.sprites.frame_scales, "held_renders": self.sprites.held_renders,
+                "idle": ({k: bst[k] for k in ("picks", "deferred", "reactions", "speaker_skips", "errands") if k in bst} if bst else None),
                 "worker": {"pending": self.worker.pending(), "done": self.worker.done, "errors": self.worker.errors},
                 "camera": self.camera.stats() if self.camera else None,
                 "bake": self.bakes.current.stats() if (self.bakes and self.bakes.current) else None,
@@ -2245,7 +2606,9 @@ def _self_test() -> bool:                                       # pragma: no cov
     check(wear_at_away is not None and mon.wear_added_total == wear_at_away and mon.wear_steps_total == steps_at_away,
           "wear delta 0 while nobody is here (added %s -> %d, steps %s -> %d)" % (wear_at_away, mon.wear_added_total, steps_at_away, mon.wear_steps_total))
     check(len(sc.land.camps()) == camps_before, "no camp pitched by the quiet (camps %d -> %d)" % (camps_before, len(sc.land.camps())))
-    check(sc.camera.mode == "DRIFT", "0 present: the camera surveys (mode %s, stop %s)" % (sc.camera.mode, (sc.camera.drift_stop or {}).get("id")))
+    check(sc.camera.mode == "ROAM" and (sc.camera.roam_moot or sc.camera.roam_key in {e["key"] for e in ents}),
+          "0 present with settlers on the land: the camera ROAMs after an away body (mode %s, following %s, holds %d; DRIFT is for an empty land)" % (
+              sc.camera.mode, sc.camera.roam_key or "the Moot dwell", sc.camera._roam_holds))
     check(mon_bad2 == 0 and sc.honesty_violations == 0, "0 honesty violations over the quiet (%d monitor, %d scene)" % (mon_bad2, sc.honesty_violations))
     # AGES 1.1 / 4.1 defence in depth: no caller moves an away body or writes a record in its name through the scene API
     stock_q = sc.land.stock
@@ -2427,6 +2790,10 @@ def _self_test() -> bool:                                       # pragma: no cov
     check(img5 is not None and img5.size == size, "the refusal path still returns a frame of the right size")
     results["D"] = {"refused": sc5.refused, "migration": sc5.world.migration if sc5.world else None}
 
+    # ------------------------------------------------------------------ C5 / D' (AGES 6, IDLEWORLD 8 row 5): the idle life on air
+    ok_idle = _self_test_idle(run_dir, results)
+    ok_all = ok_all and ok_idle
+
     with open(os.path.join(run_dir, "selftest.json"), "w") as fh:
         json.dump(results, fh, indent=1, default=str)
     print("wrote %s" % os.path.join(run_dir, "selftest.json"))
@@ -2434,7 +2801,373 @@ def _self_test() -> bool:                                       # pragma: no cov
     return ok_all
 
 
+def _self_test_idle(run_dir: str, results: Dict[str, Any]) -> bool:            # pragma: no cover - a harness
+    """C5: 60 settlers, 0 here, 5 min of world time: 0 stuck twice, 0 in water, 0 wear added, 0 honesty violations, the camera
+    in ROAM never targeting a missing settler, every mover with its walk frames rendered, the errand table in use. D': a
+    boot burst of 60 settlers standing at their camps: no frame > 24 ms after frame 10, everyone standing until its sheet
+    lands, the nearest-first director filling the sets. Both under KL_TEST_PIPS=60 KL_TEST_BOOT=away (test mode, /tmp)."""
+    from stream.state_store import epoch_to_iso
+    from stream.world.honesty import HonestyMonitor
+    ok_all = True
+    fps = 30.0
+    size = SCREEN
+
+    def check(cond, msg):
+        nonlocal ok_all
+        print("  [%s] %s" % ("ok" if cond else "FAIL", msg))
+        if not cond:
+            ok_all = False
+
+    def local_today(hour: float) -> float:
+        lt = _time.localtime()
+        midnight = _time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst))
+        return midnight + hour * 3600.0
+
+    sid = "selftest-idle-%d" % int(_time.time())
+    now0 = local_today(15.0)
+
+    def mkctx(now, frame, hb=None):
+        return _Ctx(now=now, frame=frame, session={"id": sid, "started_ts": epoch_to_iso(now0), "ending": False},
+                    micro={"canvas_seed": 4471}, preset="kick", chat_raw=[], chat=[], recent_votes=[],
+                    round={"number": 1}, round_remaining=120.0, mod={"hidden_users": []}, mod_paused=False,
+                    agent={"heartbeat_ts": epoch_to_iso(hb) if hb else None}, macro={}, compositor_live={"selftest": True}, selftest=True)
+
+    os.environ["KL_TEST_PIPS"] = "60"
+    os.environ["KL_TEST_BOOT"] = "away"
+    which = set((os.environ.get("KL_IDLE_WHICH") or "C5,D,L,N").split(","))   # harness knob: run one section alone (C5 | D | L | N)
+    run_dir = os.path.join(run_dir, "idle")                           # fresh land: the shared dir carries earlier sections' HERE chatters
+    os.makedirs(run_dir, exist_ok=True)
+    for f_ in ("world.json", "world.json.tmp", "chat.jsonl"):
+        if os.path.exists(os.path.join(run_dir, f_)):
+            os.remove(os.path.join(run_dir, f_))
+    try:
+      if "C5" in which:
+        # ---- C5
+        print("[C5] 60 settlers, 0 here, 5 min: idle life + ROAM, honesty 0, wear 0")
+        sc = SteadingScene(run_dir=run_dir, seed=21, log=lambda m: print("    scene: " + m), sleep_after_s=1200.0)
+        t_boot = _time.perf_counter()
+        k = 0
+        while not sc.booted and _time.perf_counter() - t_boot < 30:
+            sc.frame(mkctx(now0 + k / fps, k), size)
+            k += 1
+            _time.sleep(0.005)
+        check(sc.booted and not sc.refused and sc.test_pips == 60, "booted with 60 placed test settlers (refused=%r) in %.0f ms" % (sc.refused, sc._boot_ms))
+        b = sc.behaviour
+        check(sc.present_count() == 0 and len(sc.on_land()) == 60 and all(e.camp is not None for e in b.entities.values()),
+              "0 present, 60 on the land, everyone with a (behaviour-level) camp spot")
+        # warm: the standing frames + the errand sets land on the worker (never the frame path); the frames keep running
+        t_w = _time.perf_counter()
+        while _time.perf_counter() - t_w < 120 and not all(sc.sprites.has(e.key, e.tier, "idle0") for e in b.entities.values()):
+            sc.frame(mkctx(now0 + k / fps, k), size)
+            k += 1
+            _time.sleep(0.005)
+        warm_idle_ms = (_time.perf_counter() - t_w) * 1000
+        while sc.bakes.baking:
+            sc.frame(mkctx(now0 + k / fps, k), size)
+            k += 1
+            _time.sleep(0.005)
+        mon = HonestyMonitor(sc, enforce=True, log=lambda m: print("    honesty: " + m))
+        now = now0 + k / fps
+        DT5 = 0.2
+        n5 = int(300 / DT5)
+        modes: Dict[str, int] = {}
+        missing = 0
+        present_frames = 0
+        movers_no_walk = 0
+        ms5: List[float] = []
+        holds0 = sc.camera._roam_holds
+        in_water_max = 0
+        saved = []
+        t_start5 = _time.perf_counter()
+        for i in range(n5):
+            now += DT5
+            k += 1
+            ctx = mkctx(now, k)
+            lag = t_start5 + i / fps - _time.perf_counter()          # paced at 30 fps like the compositor on air: the sheet worker
+            if lag > 0:                                              # renders in the gaps (back-to-back frames would leave none)
+                _time.sleep(lag)
+            t1 = _time.perf_counter()
+            img = sc.frame(ctx, size)
+            ms5.append((_time.perf_counter() - t1) * 1000)
+            rep = mon.check(ctx, now)
+            cam = sc.camera
+            modes[cam.mode] = modes.get(cam.mode, 0) + 1
+            if cam.mode == "ROAM" and not cam.roam_moot:
+                tgt = b.get(cam.roam_key or "")
+                if tgt is None or not tgt.is_on_land() or tgt.is_present(now):
+                    missing += 1
+            if sc.present_count():
+                present_frames += 1
+            for e in b.entities.values():
+                if e.is_moving() and not sc._walk_ready(e.key):
+                    movers_no_walk += 1
+                    break
+            if i % 50 == 0:
+                in_water_max = max(in_water_max, b.in_water_count())
+            if i in (n5 // 4, n5 // 2, n5 - 1):
+                p = os.path.join(run_dir, "C5_%04d.png" % i)
+                img.save(p)
+                saved.append(p)
+        twice = [e for e in b.entities.values() if e.stuck_total >= 2]
+        st = b.stats()
+        hs = mon.summary()
+        arr5 = np.array(ms5[10:])
+        print("    C5: picks %d deferred %d reactions %d routes %d local %d stuck %d; errands now %r; roam holds %d (%s); sheets ready %d, evictions %d; frame avg %.2f p95 %.2f max %.2f ms (dt %.1f s)" % (
+            st["picks"], st["deferred"], st["reactions"], st["routes"], st["local_paths"], st["stuck"], st["errands"], sc.camera._roam_holds - holds0,
+            [(k_ or "MOOT") for _, k_ in sc.camera.roam_holds_log[-8:]], sc.stats()["sprites_ready"], sc.sprites.evictions, arr5.mean(), np.percentile(arr5, 95), arr5.max(), DT5))
+        check(len(twice) == 0 and st["stuck"] <= 60, "C5: 0 settlers stuck twice (%d stuck events)" % st["stuck"])
+        check(in_water_max == 0 and b.in_water_count() == 0, "C5: 0 in water")
+        check(mon.wear_added_total == 0 and mon.wear_steps_total == 0, "C5: 0 wear added while nobody is here (added %d, steps %d)" % (mon.wear_added_total, mon.wear_steps_total))
+        check(hs["violations"] == 0 and sc.honesty_violations == 0, "C5: 0 honesty violations (%d monitor, %d scene; by_rule %r)" % (hs["violations"], sc.honesty_violations, hs["by_rule"]))
+        check(present_frames == 0 and modes.get("ROAM", 0) == n5, "C5: present_count 0 in every frame and the camera in ROAM in every frame (%s)" % modes)
+        check(missing == 0 and sc.camera._roam_holds - holds0 >= 3, "C5: ROAM never targeted a missing / here settler (%d frames), %d holds" % (missing, sc.camera._roam_holds - holds0))
+        check(sc.camera.cuts == 0 and sc.camera.max_step_speed <= CAM.PAN_CAP + 1e-6, "C5: camera never cut (cuts %d, max speed %.1f <= %.0f)" % (sc.camera.cuts, sc.camera.max_step_speed, CAM.PAN_CAP))
+        check(movers_no_walk == 0, "C5: every moving settler had its walk frames rendered (%d frames with a mover without)" % movers_no_walk)
+        check(st["picks"] >= 200 and len(st["errands"]) >= 4, "C5: the errand table ran (%d picks, %d distinct errands in use now)" % (st["picks"], len(st["errands"])))
+        check(sc.errors == 0, "C5: frame errors 0 (%d)" % sc.errors)
+        results["C5"] = {"picks": st["picks"], "deferred": st["deferred"], "reactions": st["reactions"], "stuck": st["stuck"], "errands": st["errands"],
+                         "roam_holds": sc.camera._roam_holds - holds0, "modes": modes, "honesty": hs["violations"], "wear_added": mon.wear_added_total,
+                         "warm_idle_ms": round(warm_idle_ms), "avg_ms": round(float(arr5.mean()), 2), "p95_ms": round(float(np.percentile(arr5, 95)), 2),
+                         "max_ms": round(float(arr5.max()), 2), "saved": saved, "camera": sc.camera.stats()}
+        sc.save_now(now)
+
+      if "D" in which:
+        # ---- D'
+        print("[D'] boot burst: 60 settlers standing at their camps; no frame > 24 ms after frame 10; sheets nearest-first")
+        sc2 = SteadingScene(run_dir=run_dir, seed=22, log=lambda m: print("    scene: " + m), sleep_after_s=1200.0)
+        t_boot = _time.perf_counter()
+        k = 0
+        now = now0 + 1.0
+        while not sc2.booted and _time.perf_counter() - t_boot < 30:
+            sc2.frame(mkctx(now + k / fps, k), size)
+            k += 1
+            _time.sleep(0.005)
+        check(sc2.booted and sc2.test_pips == 60, "D': booted with 60 placed settlers in %.0f ms" % sc2._boot_ms)
+        b2 = sc2.behaviour
+        msd: List[float] = []
+        zoom_d: List[float] = []
+        movers_no_walk = 0
+        moved_before_sheet = 0
+        idle0_landed = sets_landed = None
+        n_d = 900
+        t_start = _time.perf_counter()
+        for i in range(n_d):
+            now += 1.0 / fps
+            k += 1
+            lag = t_start + i / fps - _time.perf_counter()           # paced at 30 fps like the compositor on air (the worker
+            if lag > 0:                                              # renders in the gaps; back-to-back frames would leave none)
+                _time.sleep(lag)
+            t1 = _time.perf_counter()
+            img = sc2.frame(mkctx(now, k), size)
+            msd.append((_time.perf_counter() - t1) * 1000)
+            zoom_d.append(float(sc2.camera.zoom))
+            if i >= 10 and msd[-1] > 24.0:
+                print("    D' frame %d: %.1f ms sections %s saved=%s worker_busy=%s pending=%d in_view=%d" % (
+                    i, msd[-1], {kk: round(vv, 1) for kk, vv in sc2.sections.items()}, sc2._last_save == now, sc2.worker.busy, sc2.worker.pending(),
+                    sum(1 for e in b2.entities.values() if sc2.camera.in_view(e.x, e.y, 24))))
+            for e in b2.entities.values():
+                if e.is_moving() and not sc2._walk_ready(e.key):
+                    movers_no_walk += 1
+                    break
+            if idle0_landed is None and all(sc2.sprites.has(e.key, e.tier, "idle0") for e in b2.entities.values()):
+                idle0_landed = i
+            if sets_landed is None and all(sc2.sprites.has_set(e.key, e.tier, sc2._octant, ERRAND_FRAMES) for e in b2.entities.values()):
+                sets_landed = i
+            if i == 5:
+                img.save(os.path.join(run_dir, "Dp_boot_005.png"))
+            if i == n_d - 1:
+                img.save(os.path.join(run_dir, "Dp_boot_end.png"))
+        arr_d = np.array(msd)
+        over = [(i, round(v, 1)) for i, v in enumerate(msd) if i >= 10 and v > 24.0]
+        print("    D': frame avg %.2f p95 %.2f max(after 10) %.2f ms; idle0 for all 60 by frame %s (%.1f s), errand sets for all by frame %s; worker done %d pending %d; ladder level %d" % (
+            arr_d.mean(), np.percentile(arr_d, 95), arr_d[10:].max(), idle0_landed, (idle0_landed or 0) / fps, sets_landed, sc2.worker.done, sc2.worker.pending(), sc2.degrade_level))
+        by_zoom: Dict[float, List[float]] = {}
+        for i, v in enumerate(msd):
+            if i >= 10:
+                by_zoom.setdefault(zoom_d[i], []).append(v)
+        print("    D': per zoom %s; scaled copies built on the frame path %d (over-cap inserts %d); renders: %d fitted the gap, %d forced after %.0f s, %d waited on the hold; render est ms %s; sprite MB at octant %d: %.1f renders (AGES 6 <= 96) + %.1f scaled copies" % (
+            {z: "n %d avg %.1f p95 %.1f max %.1f" % (len(v), np.mean(v), np.percentile(v, 95), max(v)) for z, v in sorted(by_zoom.items())},
+            sc2.sprites.frame_scales, sc2.sprites.zoomed_over_cap, sc2.sprites.fit_renders, sc2.sprites.forced_renders, WORKER_DEFER_MAX_S, sc2.sprites.held_renders,
+            {t_: round(v * 1000, 1) for t_, v in sorted(sc2.sprites.render_est.items())}, sc2._octant,
+            sc2.sprites.resident_bytes(sc2._octant) / (1024.0 * 1024.0), sc2.sprites.zoomed_bytes() / (1024.0 * 1024.0)))
+        check(not over, "D': no frame > 24 ms after frame 10 (%d over: %s)" % (len(over), over[:6]))
+        check(sc2.sprites.resident_bytes(sc2._octant) <= 96 * 1024 * 1024, "D': resident sprite memory at the octant <= 96 MB (%.1f MB)" % (sc2.sprites.resident_bytes(sc2._octant) / (1024.0 * 1024.0)))
+        check(movers_no_walk == 0, "D': nobody moved before its walk frames landed (standing at the camp until the sheet lands; %d frames otherwise)" % movers_no_walk)
+        check(idle0_landed is not None and idle0_landed <= int(4 * fps), "D': every settler had its standing frame within 4 s of boot (frame %s)" % idle0_landed)
+        check(sc2.errors == 0 and sc2.honesty_violations == 0, "D': errors 0, honesty 0")
+        results["D'"] = {"avg_ms": round(float(arr_d.mean()), 2), "p95_ms": round(float(np.percentile(arr_d, 95)), 2), "max_after_10_ms": round(float(arr_d[10:].max()), 2),
+                         "over_24": over[:20], "idle0_all_frame": idle0_landed, "errand_sets_all_frame": sets_landed, "boot_ms": round(sc2._boot_ms),
+                         "per_zoom": {str(z): {"n": len(v), "avg_ms": round(float(np.mean(v)), 2), "p95_ms": round(float(np.percentile(v, 95)), 2), "max_ms": round(max(v), 2)} for z, v in by_zoom.items()},
+                         "frame_scales": sc2.sprites.frame_scales, "sprite_mb_octant": round(sc2.sprites.resident_bytes(sc2._octant) / (1024.0 * 1024.0), 1),
+                         "zoomed_mb": round(sc2.sprites.zoomed_bytes() / (1024.0 * 1024.0), 1), "renders": {"fit": sc2.sprites.fit_renders, "forced": sc2.sprites.forced_renders, "held": sc2.sprites.held_renders},
+                         "render_est_ms": {str(t_): round(v * 1000, 1) for t_, v in sc2.sprites.render_est.items()},
+                         "worker": {"done": sc2.worker.done, "pending": sc2.worker.pending()}, "degrade": sc2.degrade_level}
+
+      if "L" in which:
+        # ---- L: the sprite LRU (AGES 6): <= 48 full sets per octant; the least recently drawn falls back to its errand set (its
+        # non-errand frames leave `ready`, the art cache and the scaled copies; the errand frames stay); far-only eviction
+        print("[L] sprite LRU: 48 full sets per octant, errand frames kept, far-only eviction")
+        sp = _Sprites(_Worker(lambda m: None))                        # never started: nothing renders; `ready` is filled by hand
+        octant = 3
+        sun_b = creatures._sun_bucket(sp.sun_of(octant))
+        keys = ["lru-settler-%02d" % i for i in range(50)]
+        planted = []
+        for i, k_ in enumerate(keys):
+            sp.tick = i                                               # older keys were drawn longer ago
+            for f_ in creatures.FRAMES:
+                sp.ready.setdefault((k_, 1, f_), set()).update({octant, 0})
+                ck = (k_, 1, f_, SETTLER_RENDER_ZOOM, sun_b, True)
+                creatures._CACHE[ck] = np.zeros((2, 2, 4), np.uint8)
+                planted.append(ck)
+                sp._put_zoomed((k_, 1, f_, octant, 1, 1.0), np.zeros((2, 2, 4), np.uint8))
+            sp.reserve_full(k_, 1, octant)
+        resident = sum(1 for kk in sp.full_sets if kk[2] == octant)
+        victims = [k_ for k_ in keys if (k_, 1, octant) not in sp.full_sets]
+        v = victims[0] if victims else keys[0]
+        lost = [f_ for f_ in creatures.FRAMES if f_ not in ERRAND_FRAMES and octant in sp.ready.get((v, 1, f_), ())]
+        kept = [f_ for f_ in ERRAND_FRAMES if octant in sp.ready.get((v, 1, f_), ())]
+        other_oct = [f_ for f_ in creatures.FRAMES if 0 in sp.ready.get((v, 1, f_), ())]
+        cache_left = [f_ for f_ in creatures.FRAMES if (v, 1, f_, SETTLER_RENDER_ZOOM, sun_b, True) in creatures._CACHE]
+        zoomed_left = [zk[2] for zk in sp._zoomed if zk[0] == v]
+        check(resident == SHEET_LRU_FULL and sp.evictions == 2 and victims == keys[:2], "L: 50 full sets reserved -> %d resident, %d evicted, the two oldest (%s)" % (resident, sp.evictions, victims))
+        check(not lost and len(kept) == len(ERRAND_FRAMES) and len(other_oct) == len(creatures.FRAMES),
+              "L: the victim keeps its %d errand frames at octant %d, loses the %d others (%d left), its other octant untouched" % (len(kept), octant, len(creatures.FRAMES) - len(ERRAND_FRAMES), len(lost)))
+        check(sorted(cache_left) == sorted(ERRAND_FRAMES) and sorted(zoomed_left) == sorted(ERRAND_FRAMES) and sp._zoomed_bytes == sum(a.nbytes for a in sp._zoomed.values()),
+              "L: the art cache and the scaled copies dropped the victim's non-errand frames (%d / %d left; byte count consistent)" % (len(cache_left), len(zoomed_left)))
+        sp.tick = 1000
+        sp.full_sets[(keys[2], 1, octant)] = sp.tick                  # drawn just now (get() refreshes the age this way)
+        sp.reserve_full("lru-settler-new", 1, octant)
+        check((keys[2], 1, octant) in sp.full_sets and (keys[3], 1, octant) not in sp.full_sets, "L: a set drawn recently survives the next eviction; the next-oldest goes")
+        for ck in planted:
+            creatures._CACHE.pop(ck, None)
+        sp2 = _Sprites(_Worker(lambda m: None))
+        for i in range(SHEET_LRU_FULL):
+            sp2.tick = i
+            sp2.reserve_full("near-%02d" % i, 1, 0)
+        refused = sp2.reserve_full("newcomer", 1, 0, evictable=lambda k_: False)
+        n_after = sum(1 for kk in sp2.full_sets if kk[2] == 0)
+        took = sp2.reserve_full("newcomer", 1, 0, evictable=lambda k_: k_ == "near-05")
+        check(refused is False and n_after == SHEET_LRU_FULL and took and ("near-05", 1, 0) not in sp2.full_sets and ("newcomer", 1, 0) in sp2.full_sets,
+              "L: cap full and every holder in view -> the newcomer is refused (settles for the errand set); one far holder -> that one goes")
+        check("sleep" not in ERRAND_FRAMES and len(ERRAND_FRAMES) == 14 and all(f_ in ERRAND_FRAMES for f_ in ("idle0", "idle1", "blink", "look_l", "look_r", "walk0", "walk1", "walk2", "walk3", "sit", "carry_stone", "wave0", "wave1")),
+              "L: ERRAND_FRAMES = the 13 spec frames + carry_tool, no lying pose")
+        results["L"] = {"resident": resident, "evictions": sp.evictions, "victims": victims, "far_only_refused": refused is False}
+
+      if "N" in which:
+        # ---- N: the label density rule (AGES 1.5 / IDLEWORLD 3.1) through the WORLD PANEL: above 24 settlers in view the AWAY
+        # settlers lose the floating label, a HERE settler keeps its own; under 24 in view nothing is withheld
+        print("[N] label density: above 24 in view the away labels wait; a here settler keeps its label; sparse view untouched")
+        wp_res: Dict[str, Any] = {}
+        for n_pips, sub in ((60, "density60"), (20, "density20")):
+            rd_n = os.path.join(run_dir, sub)
+            os.makedirs(rd_n, exist_ok=True)
+            for f_ in ("world.json", "world.json.tmp", "chat.jsonl"):
+                if os.path.exists(os.path.join(rd_n, f_)):
+                    os.remove(os.path.join(rd_n, f_))
+            env_prev = os.environ.get("RUN_DIR")
+            os.environ["RUN_DIR"], os.environ["KL_TEST_PIPS"] = rd_n, str(n_pips)
+            try:
+                from stream.panels import world as W                  # (first import builds its scene from $RUN_DIR = this sub-dir)
+                if getattr(W.scene(), "run_dir", None) != rd_n or getattr(W.scene(), "booted", False):
+                    W._PKG._WORLD_SCENE = None                        # a fresh scene for this run dir (never a second live one)
+                scn = W._make_scene()
+            finally:
+                if env_prev is None:
+                    os.environ.pop("RUN_DIR", None)
+                else:
+                    os.environ["RUN_DIR"] = env_prev
+            panel = W.WorldPanel()
+            nowp = now0 + 100.0
+            kp = 0
+
+            def pctx(now_, frame_):
+                c = mkctx(now_, frame_)
+                c.round_opened_t, c.chat_display = None, True
+                return c
+            t_b = _time.perf_counter()
+            while not scn.booted and _time.perf_counter() - t_b < 30:
+                panel.render(pctx(nowp + kp / fps, kp), size)
+                kp += 1
+                _time.sleep(0.005)
+            check(scn.booted and scn.test_pips == n_pips and W.scene() is scn, "N: the panel's scene booted with %d placed away settlers in %s" % (n_pips, sub))
+            scn.allow_zoom = True
+            scn.force_zoom = 0.75                                     # test hook: the ring in one wide frame
+            while kp < 600 and not all(scn.sprites.has(e.key, e.tier, "idle0") for e in scn.behaviour.entities.values()):
+                panel.render(pctx(nowp + kp / fps, kp), size)
+                kp += 1
+                _time.sleep(0.005)
+            best = None
+            pms: List[float] = []
+            for i in range(90):
+                t1 = _time.perf_counter()
+                img = panel.render(pctx(nowp + kp / fps, kp), size)
+                pms.append((_time.perf_counter() - t1) * 1000)
+                kp += 1
+                if best is None or panel.last_in_view > best[0]:
+                    best = (panel.last_in_view, panel.last_away_labels_dropped, list(W._DRAWN))
+            n_view, dropped, drawn = best
+            labels_drawn = [s for s in drawn if s.startswith("@test pip")]
+            row = {"in_view": n_view, "dropped": dropped, "labels_drawn": len(labels_drawn), "panel_avg_ms": round(sum(pms) / len(pms), 2), "panel_max_ms": round(max(pms), 2)}
+            if n_pips > W.AWAY_LABEL_MAX_IN_VIEW:
+                check(n_view > W.AWAY_LABEL_MAX_IN_VIEW and dropped >= n_view and len(labels_drawn) == 0,
+                      "N: dense (%d in view > %d): every away label withheld (%d), none drawn (%d)" % (n_view, W.AWAY_LABEL_MAX_IN_VIEW, dropped, len(labels_drawn)))
+                bN = scn.behaviour
+                ent = min((e for e in bN.entities.values() if scn.camera.in_view(e.x, e.y)), key=lambda e: (e.x - scn.camera.cx) ** 2 + (e.y - scn.camera.cy) ** 2)
+                bN.message(ent.key, nowp + kp / fps)                  # one person's word: its settler is here, its label returns
+                found = 0
+                for i in range(30):
+                    img = panel.render(pctx(nowp + kp / fps, kp), size)
+                    kp += 1
+                    if any(s == "@" + (ent.display_name or "") for s in W._DRAWN):
+                        found += 1
+                check(found >= 25 and panel.last_in_view > W.AWAY_LABEL_MAX_IN_VIEW and panel.last_away_labels_dropped >= panel.last_in_view - 1,
+                      "N: dense: the here settler keeps its label (%d/30 frames) while %d away labels stay withheld" % (found, panel.last_away_labels_dropped))
+                row["here_label_frames"] = found
+                img.save(os.path.join(run_dir, "N_dense_here.png"))
+            else:
+                check(n_view <= W.AWAY_LABEL_MAX_IN_VIEW and dropped == 0 and len(labels_drawn) >= min(10, n_view // 2),
+                      "N: sparse (%d in view): nothing withheld (%d), %d away labels drawn" % (n_view, dropped, len(labels_drawn)))
+                img.save(os.path.join(run_dir, "N_sparse.png"))
+            print("    N: %s -> %r" % (sub, row))
+            wp_res[sub] = row
+        W._PKG._WORLD_SCENE = None                                    # the harness scenes never outlive the harness
+        results["N"] = wp_res
+    finally:
+        os.environ.pop("KL_TEST_PIPS", None)
+        os.environ.pop("KL_TEST_BOOT", None)
+        # cleanup (IDLEWORLD 5.2 / 8): the single frames and the bake arrays this harness wrote go; selftest text stays
+        removed = 0
+        for root_, _dirs, files_ in os.walk(run_dir):
+            for f_ in files_:
+                if f_.endswith(".png") or f_.endswith(".npy"):
+                    try:
+                        os.remove(os.path.join(root_, f_))
+                        removed += 1
+                    except OSError:
+                        pass
+        print("    cleanup: %d png / npy removed under %s" % (removed, run_dir))
+    return ok_all
+
+
 if __name__ == "__main__":
+    if "--idle-only" in sys.argv:                                   # C5 + D' alone (RUN_DIR under /tmp, MODE=test, a bake may exist)
+        import json as _json
+        rd = os.environ.get("RUN_DIR") or "/tmp/lg-scene"
+        rp_ = os.path.realpath(rd)
+        if not (rp_.startswith("/tmp/") or rp_.startswith("/private/tmp/")) or os.environ.get("MODE") != "test":
+            print("REFUSED: RUN_DIR under /tmp and MODE=test required", file=sys.stderr)
+            sys.exit(2)
+        os.makedirs(rd, exist_ok=True)
+        for f_ in ("world.json", "world.json.tmp"):
+            if os.path.exists(os.path.join(rd, f_)):
+                os.remove(os.path.join(rd, f_))
+        res: Dict[str, Any] = {}
+        ok_ = _self_test_idle(rd, res)
+        with open(os.path.join(rd, "selftest-idle.json"), "w") as fh_:
+            _json.dump(res, fh_, indent=1, default=str)
+        print("wrote %s" % os.path.join(rd, "selftest-idle.json"))
+        print("IDLE SELF-TEST %s" % ("PASS" if ok_ else "FAIL"))
+        sys.exit(0 if ok_ else 1)
     if "--self-test" in sys.argv:
         sys.exit(0 if _self_test() else 1)
     print(__doc__)

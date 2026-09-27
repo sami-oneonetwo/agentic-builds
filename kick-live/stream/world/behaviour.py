@@ -53,14 +53,25 @@ name, or [x, y]: an errand's `to` is always the cell pair) and `then` (`vote`, `
 `credits`, `pickup:...`, `place:...`); `arrive` carries `at` (letter / then-tag), `gave_up` when the stuck detector
 ended a walk and `short` when the target lay across water and the pip stopped on the nearest reachable bank cell.
 
-IDLE LIFE (AGES 1.3, the minimal table): once per dwell end (never per frame) `_pick_idle` draws an errand for a
-here or away settler alike: home (its camp door; 25 day / 55 night), moot (a free cell on the Moot ring 10-24 cells
-out; 20 / 10), water (the nearest bank within 160 cells, 50 % sit; 15 / 5), stroll (the old +/-8-40 cell hop with
-30 % Moot gravity and the 200-cell cap; 15). Never the same errand twice running; every weight shifts +/-30 % per
-name and a per-name `tempo` 0.75-1.3 scales the dwell and the 4-6 cells/s errand speed, so twenty idlers desync for
-free. An errand is the land's, not the person's: `then` = `errand:<name>` (or `sit`), `last_active_t` is untouched,
-no wear is laid unless the person is here, nothing is said, no stone is stood at. `huddle` (rounds) is kept one
-release: every errand aims at the Moot; `follow` and `scatter` are gone.
+IDLE LIFE (AGES 1.3, the full table): once per dwell end (never per frame) `_pick_idle` draws an errand for a here
+or away settler alike: home (its camp door, or a sit by its lit fire when `b.fires(key)` gives one; 25 day / 55
+night, x2 in rain), moot (a free cell on the Moot ring 10-24 cells out, never a stone or a standing row; 20 / 10),
+water (the nearest bank within 160 cells, 50 % sit; 15 / 5, x0.3 in rain), visit (the nearest other camp's door,
+never the same twice running; 15 / 10; the resident at home and the visitor face each other 3 s), tend (its own
+field / tree / flower from the land's records or `b.owned(key)`; carry_tool en route to a field; 10 when owned),
+stroll (the old +/-8-40 cell hop with 30 % Moot / haunt gravity and the 200-cell cap; 15), haul (pile -> site with
+a stone, state `hauling`, one stone per trip, event `haul`; 100 while `b.build = {"pile", "site"}` is set, else 0).
+Personality per name: a `haunt` (camp / Moot edge / Ford / Wood / Orchard: its errand +30 %, the stroll's pull), a
+`tempo` 0.75-1.3 scaling dwell and the 4-6 cells/s errand speed, +/-30 % on every weight. Variety caps: never the
+same errand twice running (a build's haul may), <= 30 % of the away settlers on the Moot ring, <= 2 visitors per
+door, <= 4 sitting at one fire, <= 2 route plans started per frame across everyone (a third pick waits a frame), a
+sit is sticky 20-90 s and ends at once on the person's own message or `round_event()`. Reactions every 6th tick over
+16-cell buckets (<= 8 neighbours each): a pair passing within 6 cells face each other 1 s, a walker passing the build
+site looks 2 s. An errand is the land's, not the person's: `then` = `errand:<name>` (or `sit`), `last_active_t` is
+untouched, no wear is laid unless the person is here, nothing is said, no stone is stood at, no record is written
+(honesty rule `idle` asserts it). `huddle` (rounds) is kept one release: every errand aims at the Moot; `follow` and
+`scatter` are gone. `b.walk_ready(key)` (the scene's art cache) gates walks: a settler without walk frames does
+standing errands. `camera_inputs()` adds `roam`: the away bodies for the camera's ROAM.
 
 PATHING: terrain.route() on the 60x28 block grid (a block is open at >= 50 % passable, so a river or the Wood's edge
 can still cut a leg); a clear straight line up to 48 cells skips it; the route is string-pulled; a leg the line cannot
@@ -120,12 +131,36 @@ TUFT_FRAMES = ("tuft0", "tuft1", "tuft2")   # drifting, settled, splitting (1 Hz
 
 SPEED_MIN, SPEED_MAX = 5.0, 10.0            # cells/s default for a plain walk_to (a verb's walk; the old wander range)
 ERRAND_SPEED = (4.0, 6.0)                   # cells/s for the land's errands (x tempo), slower than `go` (AGES 1.3)
-ERRANDS = ("home", "moot", "water", "stroll")
-ERRAND_WEIGHTS = {"home": (25.0, 55.0), "moot": (20.0, 10.0), "water": (15.0, 5.0), "stroll": (15.0, 15.0)}   # day / night
-ERRAND_DWELL = {"home": (30.0, 90.0), "moot": (10.0, 30.0), "water": (15.0, 40.0), "stroll": (1.0, 3.0)}      # s, x tempo
-SIT_DWELL = (20.0, 90.0)                    # s a sit from an errand is sticky (x tempo)
+ERRANDS = ("home", "moot", "water", "visit", "tend", "stroll", "haul")                                        # AGES 1.3, the full table
+ERRAND_WEIGHTS = {"home": (25.0, 55.0), "moot": (20.0, 10.0), "water": (15.0, 5.0), "visit": (15.0, 10.0),
+                  "tend": (10.0, 10.0), "stroll": (15.0, 15.0), "haul": (100.0, 100.0)}                        # day / night
+ERRAND_RAIN = {"home": 2.0, "water": 0.3}   # rain multiplies these weights (x2 home, x0.3 water)
+ERRAND_DWELL = {"home": (30.0, 90.0), "moot": (10.0, 30.0), "water": (15.0, 40.0), "visit": (10.0, 20.0), "tend": (10.0, 20.0),
+                "stroll": (1.0, 3.0), "haul": (0.4, 0.8)}                                                     # s, x tempo
+SIT_DWELL = (20.0, 90.0)                    # s a sit from an errand is sticky (x tempo); the person's own message or a round event ends it
 TEMPO = (0.75, 1.3)                         # per-name tempo scaling pause length and errand speed
+HAUNTS = ("camp", "moot", "ford", "wood", "orchard")   # per-name favourite place: shifts one weight +30 % and pulls the stroll
+HAUNT_BOOST = 1.3
+HAUNT_ERRAND = {"camp": "home", "moot": "moot", "ford": "water", "wood": "stroll", "orchard": "stroll"}
 MOOT_RING = (10.0, 24.0)                    # an errand to the Moot ends on this ring around the green's centre (never the centre)
+MOOT_STONE_CLEAR = 4.0                      # ... and this far from every waystone and its standing rows (never at a stone)
+MOOT_AWAY_CAP = 0.30                        # at most 30 % of the AWAY settlers on the Moot ring at once
+DOOR_VISITOR_CAP = 2                        # at most 2 visitors per camp door
+FIRE_SIT_CAP = 4                            # at most 4 sitting at one fire
+FIRE_SIT_CELLS = 6.0                        # a sitter within this of a fire counts toward the cap
+ROUTE_PLANS_PER_FRAME = 2                   # the idle director starts at most this many cell / block plans per frame (verbs are not capped)
+SPEAKER_CLEAR_CELLS = 3.0                   # an AWAY body's errand never aims this close to the newest speaker (AGES 1.3; honesty asserts 2.0)
+SPEAKER_TARGET_CELLS = 2.0                  # ... and a pick whose snapped cell still lands within this of the speaker is skipped (the honesty radius)
+VISIT_DOOR_OFF = (3.0, 3.0)                 # a visitor stands this far south-east of the door cell (the resident's own spot stays free)
+MEET_S = 3.0                                # visitor and resident face each other this long
+REACT_EVERY = 6                             # reactions run every 6th tick ...
+REACT_BUCKET = 16                           # ... over 16-cell spatial buckets ...
+REACT_NEIGHBOURS = 8                        # ... and look at <= 8 neighbours each (never an O(n^2) scan)
+PASS_CELLS = 6.0                            # a pair passing this close both face each other for PASS_LOOK_S
+PASS_LOOK_S = 1.0
+PASS_MEMORY_S = 30.0                        # the same pair looks once per meeting (a convoy to the pile is not a flicker)
+SITE_LOOK_CELLS = 6.0                       # passing a build site: look at it 2 s
+SITE_LOOK_S = 2.0
 WATER_MAX_CELLS = 160                       # the water errand looks this far for a bank
 GO_SPEED = 8.0                              # cells/s for `go` (OPENWORLD 3.1)
 VOTE_WALK_S = 2.0                           # a vote walk aims to arrive in ~2 s ...
@@ -397,7 +432,8 @@ class Entity(object):
                  "love_until", "joy_until", "look_key", "look_until", "minutes_tonight", "first_ever", "wake_t",
                  "bob_phase", "born_t", "credits_done", "learned_from", "carry", "carry_until", "flash_until",
                  "next_mutter_t", "progress_t", "progress_best", "stuck_n", "stuck_total", "last_cell", "los_t",
-                 "cells_walked", "walk_speed", "short", "leg_t", "present", "present_s", "tempo", "errand", "sit_until")
+                 "cells_walked", "walk_speed", "short", "leg_t", "present", "present_s", "tempo", "errand", "sit_until",
+                 "haunt", "visit_key", "errand_t", "sit_at", "look_hold_until", "react_key", "react_t", "react_seen")
 
     def __init__(self, key: str, origin: str, t: float):
         self.key = key
@@ -472,13 +508,25 @@ class Entity(object):
         self.present_s = SLEEP_AFTER_S          # the window (the Behaviour's present_s, copied each tick)
         self.tempo = TEMPO[0] + (TEMPO[1] - TEMPO[0]) * ((name_hash(key, ":tempo") % 1000) / 1000.0)   # 0.75-1.3 per name
         self.errand: Optional[str] = None       # the last errand picked (never the same twice running)
+        self.errand_t = -1e9                    # when it was picked (the camera's ROAM hold ends with the errand)
         self.sit_until = 0.0
+        self.haunt = HAUNTS[name_hash(key, ":haunt") % len(HAUNTS)]   # the favourite place (AGES 1.3 personality)
+        self.visit_key: Optional[str] = None    # the camp being visited (cap 2 per door; never the same twice running)
+        self.sit_at: Optional[Vec] = None       # the fire this sit counts toward (cap 4 per fire)
+        self.look_hold_until = 0.0              # a walker keeps facing a passer (reaction) until then
+        self.react_key: Optional[str] = None    # the passer last reacted to (one look per meeting)
+        self.react_t = -1e9
+        self.react_seen: Dict[str, float] = {}  # passer -> when (<= REACT_NEIGHBOURS entries; a meeting is one look per PASS_MEMORY_S)
 
     # -- read-only helpers ----------------------------------------------------------
     def is_on_land(self) -> bool:
         """The body is on the land (idle / walking / voting / sitting / hauling): drawn standing, moved by the land, a camera
         dead-zone point. Not a seed, not hidden."""
         return self.state in ON_LAND or self.state in _LEGACY_ON_LAND
+
+    def is_moving(self) -> bool:
+        """walking or hauling (a haul is a walk with a stone): the states `_move` advances."""
+        return self.state == "walking" or self.state == "hauling"
 
     def is_awake(self) -> bool:
         """Legacy name for is_on_land() (one release): NOT presence. Use is_present() for anything the person could claim."""
@@ -519,7 +567,7 @@ class Entity(object):
         return (int(math.floor(self.x)), int(math.floor(self.y)))
 
     def walking(self) -> bool:
-        return self.state == "walking" and math.hypot(self.vx, self.vy) > 0.5
+        return self.is_moving() and math.hypot(self.vx, self.vy) > 0.5
 
     def hop_phase(self, t: float) -> float:
         ph = (t - self.hop_t) / HOP_S
@@ -594,7 +642,7 @@ class Entity(object):
                 "text": self.text if t < self.speak_until else None, "speaking": t < self.speak_until,
                 "spoke_t": self.spoke_t, "learned_from": self.learned_from, "first_ever": self.first_ever,
                 "minutes_tonight": round(self.minutes_tonight, 2), "present": self.is_present(),
-                "on_land": self.is_on_land(), "awake": self.is_on_land(), "errand": self.errand,
+                "on_land": self.is_on_land(), "awake": self.is_on_land(), "errand": self.errand, "haunt": self.haunt,
                 "carry": self.carry, "carrying": self.carry is not None, "flash": t < self.flash_until,
                 "hidden": self.state in HIDDEN_STATES, "stuck": self.stuck_total}
 
@@ -628,9 +676,24 @@ class Behaviour(object):
         self.colony_rule = "free"          # free / huddle honoured (rounds may set follow / scatter: ignored, one release)
         self.session_id: Optional[str] = None   # set by the scene (informational: camps are the scene's / the land's)
         self.night: Union[float, Callable[[], float]] = 0.0   # nature.night_amount for the errand weights (the scene sets it)
+        self.rain: Union[float, Callable[[], float]] = 0.0    # 0..1: the weather's rain (home x2, water x0.3; the scene sets it)
+        self.build: Optional[Dict[str, Any]] = None           # an age build (AGES 2.5, row 4): {"pile": (x, y), "site": (x, y)} -> haul 100
+        self.fires: Optional[Callable[[str], Optional[Vec]]] = None   # key -> the owner's lit fire cell (the scene's _fires) or None
+        self.owned: Optional[Callable[[str], List[Tuple[float, float, str]]]] = None   # key -> [(x, y, kind)] own field / tree / flower
+        self.walk_ready: Optional[Callable[[str], bool]] = None       # the art cache has the walk frames; else standing errands only
         self.stats_routes = 0
         self.stats_stuck = 0
         self.stats_local = 0
+        self.stats_picks = 0
+        self.stats_deferred = 0                # idle picks pushed to the next frame by the 2-plans-per-frame cap
+        self.stats_reactions = 0
+        self._plans_frame = 0                  # route plans (block BFS / cell refinement) started by walks this frame
+        self.stats_speaker_skips = 0           # idle picks skipped because the snapped cell sat beside the newest speaker
+        self.stats_speaker_avoided = 0         # idle targets re-rolled / pushed away from the newest speaker
+        self._planned = False
+        self._tick_no = 0
+        self._tally_tick = -1
+        self._tally: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -648,6 +711,71 @@ class Behaviour(object):
         except Exception:
             n = 0.0
         return 0.0 if n < 0.0 else (1.0 if n > 1.0 else n)
+
+    def _rain(self) -> float:
+        try:
+            r = float(self.rain() if callable(self.rain) else self.rain)
+        except Exception:
+            r = 0.0
+        return 0.0 if r < 0.0 else (1.0 if r > 1.0 else r)
+
+    def _owned(self, key: str) -> List[Tuple[float, float, str]]:
+        """The settler's own field / tree / flower cells for the `tend` errand: the hook when the scene set one, else read
+        straight off the land's records (fields by owner, marks of type tree / flower by owner). Never invents one."""
+        if self.owned is not None:
+            try:
+                return list(self.owned(key) or [])
+            except Exception:
+                return []
+        land = self.land
+        if land is None:
+            return []
+        out: List[Tuple[float, float, str]] = []
+        try:
+            for f in land.fields():
+                if str(f.get("owner") or "").lower() == key and f.get("x") is not None:
+                    out.append((float(f["x"]), float(f["y"]), "field"))
+            for m in getattr(land, "marks", None) or []:
+                if str(m.get("owner") or "").lower() == key and m.get("type") in ("tree", "flower") and m.get("x") is not None:
+                    out.append((float(m["x"]), float(m["y"]), str(m["type"])))
+        except Exception:
+            return out
+        return out
+
+    def _fire_of(self, key: str) -> Optional[Vec]:
+        if self.fires is None:
+            return None
+        try:
+            f = self.fires(key)
+        except Exception:
+            return None
+        return (float(f[0]), float(f[1])) if f is not None else None
+
+    def _tally_now(self) -> Dict[str, Any]:
+        """The variety caps' counts, computed at most once per tick and only when a pick needs them: away settlers, away
+        settlers on a Moot errand, visitors per door, sitters per fire cell. O(n) per tick at most, never per settler."""
+        if self._tally_tick == self._tick_no:
+            return self._tally
+        away = moot = 0
+        doors: Dict[str, int] = {}
+        fires: List[Tuple[float, float]] = []
+        for o in self.entities.values():
+            if not o.is_on_land():
+                continue
+            if not o.present:
+                away += 1
+                if o.errand == "moot":
+                    moot += 1
+            if o.errand == "visit" and o.visit_key:
+                doors[o.visit_key] = doors.get(o.visit_key, 0) + 1
+            if o.state == "sitting" and o.sit_at is not None:
+                fires.append(o.sit_at)
+        self._tally = {"away": away, "moot": moot, "doors": doors, "fires": fires}
+        self._tally_tick = self._tick_no
+        return self._tally
+
+    def _sitters_at(self, fire: Vec) -> int:
+        return sum(1 for fx, fy in self._tally_now()["fires"] if math.hypot(fx - fire[0], fy - fire[1]) <= FIRE_SIT_CELLS)
 
     @property
     def moot(self) -> Vec:
@@ -741,7 +869,12 @@ class Behaviour(object):
         voters = [k for ks in pc.values() for k in ks]
         walking_to = any(e.state == "walking" and e.then == "vote" for e in self.entities.values())
         moot = {"stones": list(self.waystones), "voters": voters, "walking_to_stone": walking_to, "round_remaining": round_remaining}
-        return {"awake": awake, "seeds": seeds, "moot": moot}
+        # ROAM (AGES 1.4): the AWAY bodies on the land with the errand the land gave them; the camera follows the most
+        # watchable one at 0 here. Every row is a real entity (a len() over the same dict), never a sample.
+        roam = [{"key": e.key, "x": e.x, "y": e.y, "fx": e.fx, "fy": e.fy, "walking": e.walking(), "errand": e.errand,
+                 "errand_t": e.errand_t, "moving": e.is_moving()}
+                for e in self.entities.values() if e.is_on_land() and not e.is_present(t)]
+        return {"awake": awake, "seeds": seeds, "moot": moot, "roam": roam}
 
     # ------------------------------------------------------------------ chat-driven entry points
     def seed_drop(self, key: str, t: float, x: Optional[float] = None, y: Optional[float] = None, origin: str = "chat") -> Entity:
@@ -883,10 +1016,29 @@ class Behaviour(object):
         if e.state == "hidden" or gap > self.present_s:
             self._return(e, t, gap)
         else:
+            if e.state == "sitting":                     # the person's own message ends a sticky sit at once (hop + stand)
+                self._stand(e, t)
             e.hop_t = t
             self._ev("hop", pip=e.key)
         e.present = e.is_on_land() and (t - e.last_active_t) <= self.present_s
         return e
+
+    def _stand(self, e: Entity, t: float) -> None:
+        """A sitter stands (own message / round event): idle, a short pause, the sit's fire count released."""
+        if e.state == "sitting":
+            e.state = "idle"
+        e.sit_until, e.sit_at = 0.0, None
+        e.pause_until = t + self._u(0.5, 1.5)
+
+    def round_event(self, t: float) -> int:
+        """A round event (a card, a round opening or closing; AGES 1.3): every sticky sit ends at once. Returns how many stood.
+        Not a record: nobody becomes here, nothing is written."""
+        n = 0
+        for e in self.entities.values():
+            if e.state == "sitting":
+                self._stand(e, t)
+                n += 1
+        return n
 
     def _return(self, e: Entity, t: float, away_s: Optional[float]) -> None:
         """away -> here (AGES 1.1): drop the errand in one frame, hop, brighten, face the camera. Nothing moves: the settler
@@ -894,11 +1046,14 @@ class Behaviour(object):
         the camera's hold."""
         if e.state == "hidden":
             e.state = "idle"
-        if e.state == "walking" and (e.then is None or e.then in ("idle", "sit") or str(e.then).startswith("errand:")):
+        if e.is_moving() and (e.then is None or e.then in ("idle", "sit", "gather") or str(e.then).startswith("errand:")):
             e.route, e.target, e.then = [], None, None
+            if e.state == "hauling" or e.carry in ("stone", "tool"):
+                e.carry, e.carry_until = None, float("inf")   # the land's stone / tool is set down where the person returns
             e.state = "idle"
         elif e.state == "sitting":
             e.state = "idle"
+        e.sit_until, e.sit_at = 0.0, None
         e.speed = 0.0
         e.vx = e.vy = 0.0
         e.pause_until = t + self._u(0.6, 1.5)
@@ -931,7 +1086,7 @@ class Behaviour(object):
         e.next_mutter_t = t + self._u(*MUTTER_GAP)
         self.newest_speaker, self.newest_speaker_t = e.key, t
         for o in self.entities.values():
-            if o is not e and o.is_on_land() and o.state != "walking":
+            if o is not e and o.is_on_land() and not o.is_moving():
                 d = math.hypot(e.x - o.x, e.y - o.y)
                 if d <= LOOK_CELLS:
                     o.look_key, o.look_until = e.key, t + LOOK_S
@@ -1012,6 +1167,7 @@ class Behaviour(object):
         e.vx = e.vy = 0.0
         e.carry = None
         e.text, e.speak_until = None, 0.0
+        e.sit_until, e.sit_at = 0.0, None
         e.state = "hidden"
         e.present = False
         self._ev("burrowed", pip=e.key, reason=reason)
@@ -1043,6 +1199,7 @@ class Behaviour(object):
             e.route = [target]
             return True
         self.stats_routes += 1
+        self._planned = True
         r = g.route(e.pos(), target)
         if not r:
             return False
@@ -1076,6 +1233,7 @@ class Behaviour(object):
             return True                                            # refined this frame already: walk it, do not loop
         e.leg_t = t
         self.stats_local += 1
+        self._planned = True
         pts, reached = self.ground.local_path(e.pos(), leg, pad)
         pts = [p for p in pts if math.hypot(p[0] - e.x, p[1] - e.y) > 0.5]
         if not pts:
@@ -1101,11 +1259,15 @@ class Behaviour(object):
             e.platform, e.slot = None, None
         e.target = target
         e.short = False
-        if not self._plan(e, target, t, fresh=fresh):
+        self._planned = False
+        ok = self._plan(e, target, t, fresh=fresh)
+        if self._planned:
+            self._plans_frame += 1                                 # one route plan (block BFS and / or its cell refinement) started
+        if not ok:
             e.target, e.route = None, []
             return False
         e.then = then
-        e.state = "walking"
+        e.state = "hauling" if (e.carry == "stone" and str(then).startswith("errand:haul")) else "walking"
         e.speed = 0.0
         e.speed_max = float(speed) if speed else self._u(SPEED_MIN, SPEED_MAX)
         e.walk_speed = e.speed_max
@@ -1114,8 +1276,8 @@ class Behaviour(object):
         e.progress_best = float("inf")
         e.los_t = t
         e.emote = None
-        if e.state == "sitting":
-            e.sit_until = 0.0
+        e.sit_until, e.sit_at = 0.0, None
+        e.look_hold_until = 0.0
         # presence is the PERSON'S record (message / speak), never a derived verb: the record that carried this walk
         # already made them here, and moving last_active_t here would outrun the honesty reference (last_seen_ts)
         self._ev("walk", pip=e.key, to=(to_label if to_label is not None else [target[0], target[1]]), then=then)
@@ -1249,7 +1411,8 @@ class Behaviour(object):
         return self._start_walk(e, tgt, t, "gather", speed=spd)
 
     def release_votes(self, t: float) -> None:
-        """A new round opened: everyone standing at a waystone steps off and wanders."""
+        """A new round opened: everyone standing at a waystone steps off and wanders; every sticky sit ends (a round event)."""
+        self.round_event(t)
         for e in list(self.entities.values()):
             if e.state == "voting" or e.platform is not None:
                 had = e.platform
@@ -1284,6 +1447,8 @@ class Behaviour(object):
         if dt is None:
             dt = 1.0 / 30.0 if self._last_t is None else max(0.0, min(0.5, t - self._last_t))
         self._last_t = t
+        self._tick_no += 1
+        self._plans_frame = 0
         for e in list(self.entities.values()):
             st = LEGACY_STATES.get(e.state)
             if st is not None:
@@ -1297,10 +1462,63 @@ class Behaviour(object):
                 e.vx = e.vy = 0.0                                  # lies in the grass until a mod lets the person back
             else:
                 self._tick_body(e, t, dt)
+        if self._tick_no % REACT_EVERY == 0:
+            self._reactions(t)
         if self.credits_active:
             self._tick_credits(t)
         out, self.events = self.events, []
         return out
+
+    def _reactions(self, t: float) -> None:
+        """AGES 1.3 reactions, every 6th tick over 16-cell spatial buckets: a pair passing within 6 cells both face each
+        other 1 s (a walker keeps that facing for the second); a walker passing a build site looks at it 2 s. Each walker
+        looks at <= 8 neighbours from its own and the 8 adjoining buckets, never the whole roster (never O(n^2))."""
+        buckets: Dict[Tuple[int, int], List[Entity]] = {}
+        movers: List[Entity] = []
+        for e in self.entities.values():
+            if not e.is_on_land():
+                continue
+            buckets.setdefault((int(e.x // REACT_BUCKET), int(e.y // REACT_BUCKET)), []).append(e)
+            if e.is_moving():
+                movers.append(e)
+        site = None
+        if self.build:
+            s = self.build.get("site")
+            site = (float(s[0]), float(s[1])) if s is not None else None
+        for e in movers:
+            bx, by = int(e.x // REACT_BUCKET), int(e.y // REACT_BUCKET)
+            seen = 0
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for o in buckets.get((bx + dx, by + dy), ()):
+                        if o is e or seen >= REACT_NEIGHBOURS:
+                            continue
+                        seen += 1
+                        if t - e.react_seen.get(o.key, -1e9) < PASS_MEMORY_S:
+                            continue                               # one look per meeting
+                        if math.hypot(o.x - e.x, o.y - e.y) <= PASS_CELLS:
+                            e.react_seen[o.key] = t
+                            o.react_seen[e.key] = t
+                            if len(e.react_seen) > REACT_NEIGHBOURS:
+                                e.react_seen.pop(min(e.react_seen, key=e.react_seen.get))
+                            if len(o.react_seen) > REACT_NEIGHBOURS:
+                                o.react_seen.pop(min(o.react_seen, key=o.react_seen.get))
+                            e.react_key, e.react_t = o.key, t
+                            o.react_key, o.react_t = e.key, t
+                            self.stats_reactions += 1
+                            self._face(e, o.x - e.x, o.y - e.y)
+                            e.look_hold_until = t + PASS_LOOK_S
+                            if not o.is_moving():
+                                self._face(o, e.x - o.x, e.y - o.y)
+                                o.look_key, o.look_until = e.key, t + PASS_LOOK_S
+                            else:
+                                self._face(o, e.x - o.x, e.y - o.y)
+                                o.look_hold_until = t + PASS_LOOK_S
+            if site is not None and math.hypot(site[0] - e.x, site[1] - e.y) <= SITE_LOOK_CELLS and t - e.react_seen.get("site", -1e9) >= PASS_MEMORY_S:
+                e.react_seen["site"] = t
+                e.react_key, e.react_t = "site", t
+                self._face(e, site[0] - e.x, site[1] - e.y)
+                e.look_hold_until = t + SITE_LOOK_S
 
     def _tick_seed(self, e: Entity, t: float) -> None:
         age = t - e.seed_t
@@ -1350,7 +1568,7 @@ class Behaviour(object):
             self.first_light_pending = None
             self._ev("first_light", pip=e.key)
         for o in self.entities.values():
-            if o is not e and o.is_on_land() and o.state != "walking" and math.hypot(e.x - o.x, e.y - o.y) <= LOOK_CELLS:
+            if o is not e and o.is_on_land() and not o.is_moving() and math.hypot(e.x - o.x, e.y - o.y) <= LOOK_CELLS:
                 self._face(o, e.x - o.x, e.y - o.y)
                 o.look_key, o.look_until = e.key, t + LOOK_S
 
@@ -1377,7 +1595,7 @@ class Behaviour(object):
         if e.present and e.state in ("idle", "sitting") and t >= e.speak_until and t >= e.next_mutter_t and not self.credits_active:
             e.next_mutter_t = t + self._u(*MUTTER_GAP)
             self._ev("mutter_due", pip=e.key)            # the scene answers with one of the owner's OWN allowlisted words
-        if e.state == "walking":
+        if e.is_moving():
             self._move(e, t, dt)
         elif e.state == "voting":
             e.vx = e.vy = 0.0
@@ -1385,6 +1603,7 @@ class Behaviour(object):
             e.vx = e.vy = 0.0
             if t >= e.sit_until:
                 e.state = "idle"
+                e.sit_at = None
                 e.pause_until = t + self._u(0.5, 2.5)
         elif e.state == "idle" and t >= e.pause_until and not (self.credits_active and e.credits_done):
             self._pick_idle(e, t)
@@ -1425,19 +1644,117 @@ class Behaviour(object):
         bank = self.ground.nearest(wx - (wx - x) / d * 1.5, wy - (wy - y) / d * 1.5, 8)   # one step back toward the settler
         return bank if self.ground.ok(*bank) else None
 
-    def _pick_idle(self, e: Entity, t: float) -> None:
-        """The land moves the settler (AGES 1.3, the minimal table): once per dwell end, here or away alike, draw an errand
-        by the day / night weights (never the same twice running, +/-30 % per name), walk at 4-6 cells/s x tempo and
-        dwell on arrival (`_arrive`). The errand is the land's, not the person's: `then` is `errand:<name>` (or `sit`),
-        `last_active_t` is untouched, no wear unless the person is here. `huddle` (rounds) aims every errand at the Moot."""
-        n = self._night()
+    def _haunt_point(self, e: Entity) -> Optional[Vec]:
+        """The settler's favourite place as a cell: its camp door, the Moot edge, the Ford bank, the Wood edge, the Orchard
+        (from the real terrain's places; None when this land has no such place and the settler no camp)."""
+        h = e.haunt
         mx, my = self.ground.moot
+        if h == "camp":
+            return (float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0) if e.camp else None
+        if h == "moot":
+            ang = (name_hash(e.key, ":hm") % 3600) / 3600.0 * 2.0 * math.pi
+            return (mx + MOOT_RING[1] * math.cos(ang), my + MOOT_RING[1] * 0.7 * math.sin(ang))
+        p = self.ground.places.get(h)
+        if p is None:
+            return None
+        return (float(p["x"]), float(p["y"]))
+
+    def _moot_ring_cell(self, e: Entity) -> Vec:
+        """A cell on the Moot ring 10-24 out: never the green's centre, never within MOOT_STONE_CLEAR of a waystone or the
+        standing rows south of it (an away body never stands at a stone, AGES 1.3)."""
+        mx, my = self.ground.moot
+        for _ in range(8):
+            ang, rad = self._u(0, 2 * math.pi), self._u(MOOT_RING[0], MOOT_RING[1])
+            tx, ty = mx + rad * math.cos(ang), my + rad * math.sin(ang) * 0.7
+            clear = True
+            for sx, sy in self.waystones:
+                if math.hypot(tx - sx, ty - sy) < MOOT_STONE_CLEAR:
+                    clear = False
+                    break
+                if abs(tx - sx) < STAND_DX + MOOT_STONE_CLEAR and sy + STAND_Y0 - MOOT_STONE_CLEAR <= ty <= sy + STAND_Y0 + 3 * STAND_DY + MOOT_STONE_CLEAR:
+                    clear = False                                  # the standing rows (3 rows of slots) and their margin
+                    break
+            if clear:
+                return (tx, ty)
+        return (mx, my + MOOT_RING[1] * 0.7 + 4.0)                 # south of the green, below every slot row
+
+    def _visit_target(self, e: Entity) -> Optional[Tuple[str, Vec]]:
+        """Another settler's camp door to visit: the nearest one (no bond record exists on this land yet: AGES 1.3 says
+        `bonded first, else nearest`), never the camp visited last time, never a door with 2 visitors already."""
+        doors = self._tally_now()["doors"]
+        best: Optional[Tuple[str, Vec]] = None
+        bd = 1e18
+        for o in self.entities.values():
+            if o is e or not o.camp or o.key == e.visit_key or not o.is_on_land():
+                continue
+            if doors.get(o.key, 0) >= DOOR_VISITOR_CAP:
+                continue
+            d = (o.camp[0] - e.x) ** 2 + (o.camp[1] - e.y) ** 2
+            if d < bd:
+                bd, best = d, (o.key, (float(o.camp[0]) + 2.0 + VISIT_DOOR_OFF[0], float(o.camp[1]) + 3.0 + VISIT_DOOR_OFF[1]))
+        return best
+
+    def _speaker_spot(self, e: Entity, t: float) -> Optional[Vec]:
+        """Where the newest speaker stands, while its word is inside the here window (present_s) and it is on the land; None
+        for the speaker itself, for a stale speaker (spoke longer ago than the window) or when nobody spoke. The idle director
+        keeps an away body's errand target SPEAKER_CLEAR_CELLS from it (AGES 1.3: idle motion never targets the newest speaker)."""
+        k = self.newest_speaker
+        if not k or k == e.key or t - self.newest_speaker_t > self.present_s:
+            return None
+        s = self.entities.get(k)
+        if s is None or not s.is_on_land():
+            return None
+        return (s.x, s.y)
+
+    def _pick_idle(self, e: Entity, t: float) -> None:
+        """The land moves the settler (AGES 1.3, the full table): once per dwell end, here or away alike, draw an errand by
+        the day / night / rain weights (never the same twice running, +/-30 % per name, the haunt's errand +30 %), walk
+        at 4-6 cells/s x tempo and dwell on arrival (`_arrive`). Variety caps: <= 30 % of the away settlers on the Moot
+        ring, <= 2 visitors per door, <= 4 sitting at one fire, <= 2 route plans started per frame across everyone (a
+        pick that would need a third waits one frame). The errand is the land's, not the person's: `then` is
+        `errand:<name>` (or `sit`), `last_active_t` is untouched, no wear unless the person is here. `huddle` (rounds)
+        aims every errand at the Moot. A settler whose walk frames are not rendered yet does standing errands only."""
+        if self._plans_frame >= ROUTE_PLANS_PER_FRAME:
+            self.stats_deferred += 1
+            e.pause_until = t + 1.0 / 30.0                           # the director's frame budget: next frame
+            return
+        if self.walk_ready is not None:
+            try:
+                can_walk = bool(self.walk_ready(e.key))
+            except Exception:
+                can_walk = True
+            if not can_walk:                                         # standing errands until the nearest-first worker lands the sheet
+                e.pause_until = t + self._u(2.0, 5.0)
+                if self.rng.random() < FACE_WIND_P:
+                    wx, wy = self.wind_vector()
+                    self._face(e, -wx, -wy)
+                return
+        self.stats_picks += 1
+        n = self._night()
+        rain = self._rain()
+        mx, my = self.ground.moot
+        tally = self._tally_now()
+        build = self.build if (self.build and self.build.get("pile") is not None and self.build.get("site") is not None) else None
+        owned = self._owned(e.key) if e.errand != "tend" else []
         opts: List[Tuple[str, float]] = []
         for name in ERRANDS:
-            if name == e.errand or (name == "home" and not e.camp) or (name == "water" and self.ground.water is None):
+            if name == e.errand and name != "haul":
+                continue                                             # never the same errand twice running (a build's haul may: one stone per trip)
+            if name == "home" and not e.camp:
                 continue
+            if name == "water" and self.ground.water is None:
+                continue
+            if name == "tend" and not owned:
+                continue
+            if name == "haul" and build is None:
+                continue                                             # haul weighs 100 during an age build, else 0
+            if name == "moot" and not e.present and tally["moot"] + 1 > MOOT_AWAY_CAP * max(1, tally["away"]):
+                continue                                             # the Moot ring cap (away settlers)
             d, nt = ERRAND_WEIGHTS[name]
             w = (d * (1.0 - n) + nt * n) * (0.7 + 0.6 * (((name_hash(e.key, ":w:" + name) >> 8) % 1000) / 1000.0))
+            w *= 1.0 + (ERRAND_RAIN.get(name, 1.0) - 1.0) * rain
+            if HAUNT_ERRAND.get(e.haunt) == name:
+                w *= HAUNT_BOOST
             if w > 0:
                 opts.append((name, w))
         if not opts:
@@ -1450,39 +1767,88 @@ class Behaviour(object):
                 pick = name
                 break
         then = "errand:" + pick
+        visit_key = None
+        sit_at = None
         if self.colony_rule == "huddle":
             tx, ty = mx + self._u(-20, 20), my + self._u(-14, 14)
         elif pick == "home":
             tx, ty = float(e.camp[0]) + 2.0, float(e.camp[1]) + 3.0                          # the door, as `go home`
+            fire = self._fire_of(e.key)
+            if fire is not None and self._sitters_at(fire) < FIRE_SIT_CAP:                   # a ring exists: sit by the fire side
+                ang = (name_hash(e.key, ":fs") % 3600) / 3600.0 * 2.0 * math.pi
+                tx, ty = fire[0] + 2.5 * math.cos(ang), fire[1] + 2.0 * math.sin(ang)
+                then, sit_at = "sit", fire
         elif pick == "moot":
-            ang, rad = self._u(0, 2 * math.pi), self._u(MOOT_RING[0], MOOT_RING[1])
-            tx, ty = mx + rad * math.cos(ang), my + rad * math.sin(ang) * 0.7
-            for sx, sy in self.waystones:                                                     # never a standing slot
-                if math.hypot(tx - sx, ty - (sy + STAND_Y0 + STAND_DY)) < 6.0:
-                    ty += 8.0
+            tx, ty = self._moot_ring_cell(e)
         elif pick == "water":
             bank = self._nearest_bank(e.x, e.y)
             if bank is None:
-                e.errand = pick                                                               # not retried at once
+                e.errand, e.errand_t = pick, t                                                # not retried at once
                 e.pause_until = t + self._u(1.0, 3.0)
                 return
             tx, ty = bank
             if self.rng.random() < 0.5:
                 then = "sit"
-        else:                                                                                 # stroll: the old hop
+        elif pick == "visit":
+            v = self._visit_target(e)
+            if v is None:
+                e.errand, e.errand_t = pick, t                                                # nobody to visit right now
+                e.pause_until = t + self._u(1.0, 3.0)
+                return
+            visit_key, (tx, ty) = v
+        elif pick == "tend":
+            ox, oy, kind = owned[int(self.rng.integers(len(owned)))]
+            ang = (name_hash(e.key, ":td") % 3600) / 3600.0 * 2.0 * math.pi
+            tx, ty = ox + 2.5 * math.cos(ang), oy + 2.0 * math.sin(ang) + 1.0
+            if kind == "field":
+                e.carry, e.carry_until = "tool", float("inf")                                 # carry_tool en route
+        elif pick == "haul":
+            tx, ty = float(build["pile"][0]), float(build["pile"][1])                        # pile first; the site leg follows
+        else:                                                                                 # stroll: the old hop, haunt / Moot gravity
             if self.rng.random() < MOOT_GRAVITY:
+                hp = self._haunt_point(e) if (e.haunt != "moot" and self.rng.random() < 0.5) else None
+                gx, gy = hp if hp is not None else (mx, my)
                 f = self._u(0.2, 0.6)
-                tx, ty = e.x + (mx - e.x) * f + self._u(-8, 8), e.y + (my - e.y) * f + self._u(-6, 6)
+                tx, ty = e.x + (gx - e.x) * f + self._u(-8, 8), e.y + (gy - e.y) * f + self._u(-6, 6)
             else:
                 ang, rad = self._u(0, 2 * math.pi), self._u(8, WANDER_STEP)
                 tx, ty = e.x + rad * math.cos(ang), e.y + rad * math.sin(ang) * 0.7
+        # an AWAY body's errand never targets the newest speaker (AGES 1.3; honesty `idle` asserts it at 2 cells): the Moot ring
+        # cell is re-rolled away from the speaker, any other target is pushed SPEAKER_CLEAR_CELLS out along the speaker -> target
+        # line (the bank keeps its water edge: the push is along the shore when the speaker stands on the target cell)
+        sp = self._speaker_spot(e, t) if not e.present else None
+        if sp is not None and math.hypot(tx - sp[0], ty - sp[1]) < SPEAKER_CLEAR_CELLS:
+            self.stats_speaker_avoided += 1
+            if pick == "moot":
+                for _ in range(6):
+                    tx, ty = self._moot_ring_cell(e)
+                    if math.hypot(tx - sp[0], ty - sp[1]) >= SPEAKER_CLEAR_CELLS:
+                        break
+            else:
+                dx, dy = tx - sp[0], ty - sp[1]
+                d0 = math.hypot(dx, dy)
+                if d0 < 1e-6:
+                    ang = (name_hash(e.key, ":sp") % 3600) / 3600.0 * 2.0 * math.pi
+                    dx, dy, d0 = math.cos(ang), math.sin(ang), 1.0
+                tx, ty = sp[0] + dx / d0 * SPEAKER_CLEAR_CELLS, sp[1] + dy / d0 * SPEAKER_CLEAR_CELLS
         d = math.hypot(tx - mx, ty - my)
-        if d > IDLE_RADIUS:                                         # 4.4 gravity cap: life stays findable
+        if d > IDLE_RADIUS and pick not in ("home", "visit", "tend", "haul"):          # 4.4 gravity cap: life stays findable
             tx, ty = mx + (tx - mx) * IDLE_RADIUS / d, my + (ty - my) * IDLE_RADIUS / d
         tx, ty = LAND.clamp_cell(tx, ty)
         tgt = self.ground.nearest(tx, ty, 12)
-        e.errand = pick
+        e.errand, e.errand_t = pick, t
+        if pick == "visit":
+            e.visit_key = visit_key                                  # remembered past the visit: never the same door twice running
+        self._tally_tick = -1                                        # the caps' counts changed
+        if sp is not None and math.hypot(tgt[0] - sp[0], tgt[1] - sp[1]) <= SPEAKER_TARGET_CELLS + 0.25:
+            self.stats_speaker_skips += 1                            # the passable cell snapped back beside the speaker: no walk this pick
+            if e.carry == "tool":
+                e.carry = None
+            e.pause_until = t + self._u(1.0, 3.0) * e.tempo
+            return
         if math.hypot(tgt[0] - e.x, tgt[1] - e.y) < 2.0 or not self.ground.ok(*tgt):
+            if e.carry == "tool":
+                e.carry = None
             e.pause_until = t + self._u(1.0, 3.0) * e.tempo
             if self.rng.random() < FACE_WIND_P:
                 wx, wy = self.wind_vector()
@@ -1490,7 +1856,11 @@ class Behaviour(object):
             return
         spd = self._u(ERRAND_SPEED[0], ERRAND_SPEED[1]) * e.tempo
         if not self._start_walk(e, tgt, t, then, speed=spd):
+            if e.carry == "tool":
+                e.carry = None
             e.pause_until = t + self._u(1.0, 3.0)
+            return
+        e.sit_at = sit_at
 
     def _move(self, e: Entity, t: float, dt: float) -> None:
         if e.target is None or not e.route:
@@ -1562,7 +1932,8 @@ class Behaviour(object):
                 break                                             # blocked (partly) this frame; the stuck timer runs
         e.vx, e.vy = (x - x0) / max(dt, 1e-6), (y - y0) / max(dt, 1e-6)
         if x != x0 or y != y0:
-            self._face(e, x - x0, y - y0)
+            if t >= e.look_hold_until:
+                self._face(e, x - x0, y - y0)                          # a passer's look holds the facing for a second (reaction)
             e.x, e.y = x, y
             self._wear(e, x, y)
 
@@ -1646,8 +2017,20 @@ class Behaviour(object):
             return
         if act == "sit" and not gave_up:
             e.platform, e.slot = None, None
+            sit_at = e.sit_at
+            if sit_at is not None and self._sitters_at(sit_at) >= FIRE_SIT_CAP:
+                e.sit_at = None                                    # the ring filled while walking: stand by it instead
+                e.state = "idle"
+                e.pause_until = t + self._u(*ERRAND_DWELL["home"]) * e.tempo
+                self._face(e, sit_at[0] - e.x, sit_at[1] - e.y)
+                self._ev("arrive", pip=e.key, at="errand:home", x=e.x, y=e.y, gave_up=gave_up, short=e.short)
+                e.short = False
+                return
             e.state = "sitting"                                    # sticky 20-90 s x tempo; a message or a round event ends it
             e.sit_until = t + self._u(*SIT_DWELL) * e.tempo
+            if sit_at is not None:
+                self._face(e, sit_at[0] - e.x, sit_at[1] - e.y)    # faces the fire
+                self._tally_tick = -1                              # the fire count changed
             self._ev("arrive", pip=e.key, at=act, x=e.x, y=e.y, gave_up=gave_up, short=e.short)
             e.short = False
             return
@@ -1682,14 +2065,62 @@ class Behaviour(object):
             elif name == "moot":
                 mx, my = self.ground.moot
                 self._face(e, mx - e.x, my - e.y)                  # looks at the monument / board / beacon
+            elif name == "visit":
+                self._visit_arrived(e, t, gave_up)
+            elif name == "tend":
+                if e.carry == "tool":
+                    e.carry, e.carry_until = None, float("inf")    # the tool is set down; no growth changes (AGES 1.3)
+                own = self._owned(e.key)
+                if own:
+                    ox, oy = min(own, key=lambda o: (o[0] - e.x) ** 2 + (o[1] - e.y) ** 2)[:2]
+                    self._face(e, ox - e.x, oy - e.y)              # faces its own field / tree / flower
+            elif name == "haul" and not gave_up:
+                self._haul_arrived(e, t)
+            elif name == "haul_drop" and not gave_up:
+                if e.carry == "stone":
+                    e.carry, e.carry_until = None, float("inf")
+                    self._ev("haul", pip=e.key, x=e.x, y=e.y)      # one stone laid on the pile at the site: the build's count
+                lo, hi = ERRAND_DWELL["haul"]
+                e.pause_until = t + self._u(lo, hi) * e.tempo
         else:
             e.pause_until = t + self._u(1.0, 4.0)
+        if e.carry in ("stone", "tool") and gave_up:
+            e.carry, e.carry_until = None, float("inf")            # a walk the land could not finish: nothing is carried on
         if not act.startswith(("place:", "errand:", "gather")) and self.newest_speaker and self.newest_speaker in self.entities and self.newest_speaker != e.key:
             s = self.entities[self.newest_speaker]
             if math.hypot(s.x - e.x, s.y - e.y) <= LOOK_CELLS:
                 self._face(e, s.x - e.x, s.y - e.y)                # a look (reaction), never a walk target
         self._ev("arrive", pip=e.key, at=act, x=e.x, y=e.y, gave_up=gave_up, short=e.short)
         e.short = False
+
+    def _visit_arrived(self, e: Entity, t: float, gave_up: bool) -> None:
+        """At another camp's door: face the door 10-20 s; if the resident is at home (within 6 cells of its door) both face
+        each other for MEET_S (a look is a reaction the land allows, never a word)."""
+        host = self.entities.get(e.visit_key or "")
+        if host is None or not host.camp:
+            return
+        dx, dy = float(host.camp[0]) + 2.0, float(host.camp[1]) + 3.0
+        self._face(e, dx - e.x, dy - e.y)
+        if not gave_up and host.is_on_land() and not host.is_moving() and math.hypot(host.x - dx, host.y - dy) <= 6.0:
+            self._face(e, host.x - e.x, host.y - e.y)
+            self._face(host, e.x - host.x, e.y - host.y)
+            e.look_key, e.look_until = host.key, t + MEET_S
+            host.look_key, host.look_until = e.key, t + MEET_S
+
+    def _haul_arrived(self, e: Entity, t: float) -> None:
+        """At the pile: take one stone (carry_stone, state `hauling`) and walk it to the build site (then errand:haul_drop). Not a
+        record: no pickup / place event, nothing about the person; the site leg's arrival emits `haul` for the build's count."""
+        build = self.build
+        if not build or build.get("site") is None:
+            return
+        e.carry, e.carry_until = "stone", float("inf")
+        sx, sy = float(build["site"][0]), float(build["site"][1])
+        ang = (name_hash(e.key, ":hl") % 3600) / 3600.0 * 2.0 * math.pi
+        tgt = self.ground.nearest(sx + 3.0 * math.cos(ang), sy + 2.0 * math.sin(ang), 8)
+        spd = self._u(ERRAND_SPEED[0], ERRAND_SPEED[1]) * e.tempo
+        e.pause_until = t + 0.4
+        if not self._start_walk(e, tgt, t, "errand:haul_drop", speed=spd):
+            e.carry, e.carry_until = None, float("inf")
 
     def _tick_credits(self, t: float) -> None:
         if t < self._credits_next_t:
@@ -1714,7 +2145,17 @@ class Behaviour(object):
         return {"entities": len(self.entities), "present": self.present_count(), "on_land": len(self.on_land()),
                 "awake": self.present_count(),
                 "seeds": len(self.seeds()), "routes": self.stats_routes, "local_paths": self.stats_local, "stuck": self.stats_stuck,
-                "in_water": self.in_water_count(), "voting": sum(len(v) for v in self.platform_counts().values())}
+                "in_water": self.in_water_count(), "voting": sum(len(v) for v in self.platform_counts().values()),
+                "picks": self.stats_picks, "deferred": self.stats_deferred, "reactions": self.stats_reactions,
+                "speaker_skips": self.stats_speaker_skips, "errands": self.errand_counts()}
+
+    def errand_counts(self) -> Dict[str, int]:
+        """How many settlers on the land are on each errand right now (a len() per name; the ROAM log and the C5 gate)."""
+        out: Dict[str, int] = {}
+        for e in self.entities.values():
+            if e.is_on_land() and e.errand:
+                out[e.errand] = out.get(e.errand, 0) + 1
+        return out
 
 
 # ---------------------------------------------------------------------------- self-test
@@ -1916,8 +2357,11 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
     check("credits: one `credits` event per settler, all still standing on the land, credits_end, no sleep event",
           len(creds) == n_land >= 4 and ended and not b.credits_active and all(e.is_on_land() and e.frame_name(t) != "sleep" for e in b.hatched()),
           "%d credits of %d on the land" % (len(creds), n_land))
-    check("the settler with a camp stands at its door", ec.camp is not None and math.hypot(ec.x - (ec.camp[0] + 2), ec.y - (ec.camp[1] + 3)) <= 3.0,
-          "at %r, camp %r" % ((round(ec.x), round(ec.y)), ec.camp))
+    cred_c = next((c for c in creds if c.get("pip") == "voter_c"), None)
+    check("the settler with a camp stood at its door when its credits landed (the land moves it again once the credits end)",
+          ec.camp is not None and cred_c is not None and cred_c.get("camp") == list(ec.camp)
+          and math.hypot(cred_c["x"] - (ec.camp[0] + 2), cred_c["y"] - (ec.camp[1] + 3)) <= 3.0,
+          "credits at %r, camp %r, now at %r" % ((round(cred_c["x"]), round(cred_c["y"])) if cred_c else None, ec.camp, (round(ec.x), round(ec.y))))
 
     # ---- 7. wear honesty with a real schema-2 WorldState in RUN_DIR: only chat pips write wear, 8 per step + spill
     from stream.world.state import WorldState
@@ -2086,6 +2530,164 @@ def _selftest(run_dir: str) -> int:   # pragma: no cover (exercised by `$PYTHON 
     gv.last_active_t = tg
     bg.walk_to(gv.key, "A", tg)
     check("gather_to refuses a voter on its way to / standing at a stone (a vote is the person's)", not bg.gather_to(gv.key, moot, tg) and gv.then == "vote", "then=%s" % gv.then)
+
+    # ---- 9. the idle life (AGES 1.3, the full table): 60 settlers, 0 here, 5 min; camps on the Steading ring, a lit fire at
+    #         every fourth camp, a field / flower for every third, one age build; every variety cap asserted every frame
+    bi = Behaviour(seed=13, hold_s=3.0, terrain=T, moot=moot)
+    ti = now
+    taken: List[Tuple[int, int]] = []
+    fires: Dict[str, Vec] = {}
+    owned: Dict[str, List[Tuple[float, float, str]]] = {}
+    for i in range(60):
+        k = "test-pip-%02d" % i
+        cx_, cy_ = LAND.hashed_camp_spot(k, moot, taken, T.passable, T.water)
+        taken.append((cx_, cy_))
+        bi.place_settler(k, i % 4, 0.6, 0, (cx_, cy_), "t%d" % i, origin="test", t=ti, last_seen=None)
+        if i % 4 == 0:
+            fires[k] = (float(cx_) + 4.0, float(cy_) + 2.0)
+        if i % 3 == 0:
+            owned[k] = [(float(cx_) - 6.0, float(cy_) + 6.0, "field" if i % 2 == 0 else "flower")]
+    bi.fires = lambda key: fires.get(key)
+    bi.owned = lambda key: owned.get(key, [])
+    bi.build = {"pile": (moot[0] + 40.0, moot[1] + 20.0), "site": (moot[0] - 30.0, moot[1] + 26.0)}
+    bi.build["pile"] = bi.ground.nearest(*bi.build["pile"], 12)
+    bi.build["site"] = bi.ground.nearest(*bi.build["site"], 12)
+    bi.night = 0.3
+    bi.rain = 0.5
+    # one HERE speaker parked on the Moot ring (where the moot errands aim): its person just spoke, so no away errand may target
+    # it (AGES 1.3; honesty `idle` asserts 2 cells). It never picks an errand itself (pause_until inf keeps it parked)
+    sp_cell = bi._moot_ring_cell(bi.get("test-pip-00"))
+    bi.place_settler("test-speaker", 1, 0.6, 0, sp_cell, "speaker", origin="test", t=ti, last_seen=ti)
+    bi.speak("test-speaker", ti, "hello")
+    speaker = bi.get("test-speaker")
+    speaker.pause_until = float("inf")
+    sp_xy0 = (speaker.x, speaker.y)
+    last_errand: Dict[str, str] = {}
+    twice_same = 0
+    moot_over = door_over = fire_over = plans_over = 0
+    walk_thens_bad = 0
+    hauls = 0
+    picks_by: Dict[str, int] = {}
+    verb_events = 0
+    ms_i: List[float] = []
+    max_plans = 0
+    in_water_i = 0
+    speaker_targets = 0
+    stones_at = 0
+    n_frames = int(300 * FPS)
+    for i in range(n_frames):
+        ti += DT
+        t0 = _time.perf_counter()
+        evs = bi.tick(ti, DT)
+        ms_i.append((_time.perf_counter() - t0) * 1000.0)
+        max_plans = max(max_plans, bi._plans_frame)
+        tally = bi._tally_now()
+        if tally["moot"] > math.ceil(MOOT_AWAY_CAP * tally["away"]) + 1:
+            moot_over += 1
+        if any(v > DOOR_VISITOR_CAP for v in tally["doors"].values()):
+            door_over += 1
+        for f in fires.values():
+            if bi._sitters_at(f) > FIRE_SIT_CAP:
+                fire_over += 1
+                break
+        for ev in evs:
+            if ev["type"] == "walk":
+                th = str(ev.get("then") or "")
+                if th.startswith("errand:"):
+                    name = th.split(":", 1)[1]
+                    if name not in ("haul_drop",):
+                        picks_by[name] = picks_by.get(name, 0) + 1
+                        if last_errand.get(ev["pip"]) == name and name != "haul":
+                            twice_same += 1
+                        last_errand[ev["pip"]] = name
+                        to_ = ev.get("to")
+                        if ev["pip"] != "test-speaker" and isinstance(to_, (list, tuple)) and math.hypot(float(to_[0]) - speaker.x, float(to_[1]) - speaker.y) <= 2.0:
+                            speaker_targets += 1
+                elif th == "sit":
+                    picks_by["sit"] = picks_by.get("sit", 0) + 1
+                    last_errand[ev["pip"]] = bi.get(ev["pip"]).errand
+                else:
+                    walk_thens_bad += 1
+            elif ev["type"] == "haul":
+                hauls += 1
+            elif ev["type"] in ("hop", "speak", "emote", "pickup", "place", "mutter_due", "stone", "wear") and ev.get("pip") != "test-speaker":
+                verb_events += 1                                     # (the parked HERE speaker may mutter: its person is here)
+        if i % 30 == 0:
+            in_water_i = max(in_water_i, bi.in_water_count())
+            for e in bi.entities.values():
+                if e.state in ("idle", "sitting") and any(math.hypot(e.x - sx, e.y - sy) < 2.5 for sx, sy in bi.waystones):
+                    stones_at += 1
+    arr_i = np.array(ms_i)
+    twice_i = [e for e in bi.entities.values() if e.stuck_total >= 2]
+    print("[idle] 60 away settlers x 300 s: picks %r, hauls %d, deferred %d, reactions %d, routes %d, local %d, stuck %d (twice %d), in_water max %d" % (
+        dict(sorted(picks_by.items())), hauls, bi.stats_deferred, bi.stats_reactions, bi.stats_routes, bi.stats_local, bi.stats_stuck, len(twice_i), in_water_i))
+    print("[idle] errands now %r; haunts %r" % (bi.errand_counts(), dict(sorted(((h, sum(1 for e in bi.entities.values() if e.haunt == h)) for h in HAUNTS)))))
+    print("[timing] behaviour.tick 60 erranding settlers: avg %.3f ms · p95 %.3f · max %.3f (n=%d)" % (arr_i.mean(), np.percentile(arr_i, 95), arr_i.max(), len(arr_i)))
+    check("idle: every table errand was picked (home moot water visit tend stroll haul) and a sit", all(k in picks_by for k in ("home", "moot", "water", "visit", "tend", "stroll", "haul", "sit")), "%r" % sorted(picks_by))
+    check("idle: never the same errand twice running (0 repeats over %d picks)" % sum(picks_by.values()), twice_same == 0, "%d repeats" % twice_same)
+    check("idle: <= 30 %% of away settlers on the Moot ring in every frame", moot_over == 0, "%d frames over" % moot_over)
+    check("idle: <= 2 visitors per door in every frame", door_over == 0, "%d frames over" % door_over)
+    check("idle: <= 4 sitting at one fire in every frame", fire_over == 0, "%d frames over" % fire_over)
+    check("idle: <= 2 route plans started per frame (max %d; %d picks deferred)" % (max_plans, bi.stats_deferred), max_plans <= ROUTE_PLANS_PER_FRAME)
+    check("idle: hauls carried one stone per trip to the site (%d haul events)" % hauls, hauls >= 5)
+    check("idle: every walk was the land's (then errand:* / sit), no verb event from an away body", walk_thens_bad == 0 and verb_events == 0, "%d bad thens, %d verb events" % (walk_thens_bad, verb_events))
+    check("idle: 0 stuck twice, 0 in water, present_count 1 (the parked speaker only), no away body dwelling at a waystone",
+          len(twice_i) == 0 and in_water_i == 0 and bi.present_count() == 1 and stones_at == 0,
+          "twice %d in_water %d present %d at_stone %d" % (len(twice_i), in_water_i, bi.present_count(), stones_at))
+    check("idle: no away errand aimed within 2 cells of the parked here speaker (%d walks checked, %d targets steered off it, %d picks skipped beside it, speaker moved %.1f cells)" % (
+          sum(v for k_, v in picks_by.items() if k_ != "sit"), bi.stats_speaker_avoided, bi.stats_speaker_skips, math.hypot(speaker.x - sp_xy0[0], speaker.y - sp_xy0[1])),
+          speaker_targets == 0 and math.hypot(speaker.x - sp_xy0[0], speaker.y - sp_xy0[1]) < 1.0, "%d targeted" % speaker_targets)
+    # the avoidance itself, deterministically: the Moot ring cell and the nearest bank are forced ONTO the speaker's cell, so
+    # every moot / water pick would target the speaker; the director must steer the target > 2 cells off or skip the pick
+    orig_ring, orig_bank = bi._moot_ring_cell, bi._nearest_bank
+    sp_now = (speaker.x, speaker.y)
+    bi._moot_ring_cell = lambda e_: sp_now
+    bi._nearest_bank = lambda x_, y_: sp_now
+    forced = {"moot": [0, 0, 0], "water": [0, 0, 0]}          # per errand: [skipped, steered off (> 2 cells), hit (<= 2 cells)]
+    try:
+        for e_ in list(bi.entities.values()):
+            if e_.key == "test-speaker":
+                continue
+            for _ in range(12):
+                e_.errand, e_.pause_until, e_.state, e_.route, e_.target, e_.then = None, 0.0, "idle", [], None, None
+                bi._plans_frame = 0
+                bi._pick_idle(e_, ti)
+                if e_.errand in forced:
+                    if e_.target is None:
+                        forced[e_.errand][0] += 1
+                    elif math.hypot(e_.target[0] - sp_now[0], e_.target[1] - sp_now[1]) > 2.0:
+                        forced[e_.errand][1] += 1
+                    else:
+                        forced[e_.errand][2] += 1
+    finally:
+        bi._moot_ring_cell, bi._nearest_bank = orig_ring, orig_bank
+    n_forced = sum(sum(v) for v in forced.values())
+    check("idle: with the ring cell and the bank forced onto the speaker, every moot / water pick steered off or skipped (%d picks: moot skip/steer/hit %r, water %r)" % (
+          n_forced, forced["moot"], forced["water"]), n_forced >= 20 and forced["moot"][2] == 0 and forced["water"][2] == 0 and bi.stats_speaker_avoided >= 20)
+    check("idle: reactions fired over the buckets (pairs passing within 6 cells)", bi.stats_reactions > 0, "%d" % bi.stats_reactions)
+    check("timing: tick avg < 0.5 ms at 60 erranding settlers", arr_i.mean() < 0.5, "%.3f ms" % arr_i.mean())
+    # a sticky sit ends at once on the person's own message (hop + stand) and on a round event
+    sitter = next((e for e in bi.entities.values() if e.state == "sitting"), None)
+    if sitter is None:
+        bi.walk_to("test-pip-01", (bi.get("test-pip-01").x + 3, bi.get("test-pip-01").y), ti, then="sit")
+        for _ in range(int(6 * FPS)):
+            ti += DT
+            bi.tick(ti, DT)
+        sitter = bi.get("test-pip-01") if bi.get("test-pip-01").state == "sitting" else None
+    if sitter is not None:
+        bi.message(sitter.key, ti)
+        evs = bi.tick(ti + DT, DT)
+        check("sticky sit: the person's own message stands the sitter (hop, state idle)", sitter.state != "sitting" and sitter.hop_phase(ti + DT) >= 0, "state %s" % sitter.state)
+    else:
+        check("sticky sit: a sitter existed to test", False)
+    n_forced = 0
+    for e in bi.entities.values():
+        if e.state == "idle" and n_forced < 3:
+            e.state, e.sit_until, e.sit_at = "sitting", ti + 60.0, None
+            n_forced += 1
+    n_sit = sum(1 for e in bi.entities.values() if e.state == "sitting")
+    stood = bi.round_event(ti)
+    check("sticky sit: a round event (release_votes / a card) stands every sitter", stood == n_sit and not any(e.state == "sitting" for e in bi.entities.values()), "%d stood" % stood)
     print("RESULT:", "PASS" if ok_all else "FAIL")
     return 0 if ok_all else 1
 

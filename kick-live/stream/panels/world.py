@@ -108,6 +108,7 @@ PLANK_XY = getattr(L, "WORLD_PLANK_XY", (16, 16))
 PLANK_ROW2_DY = 40                    # the CAVE's second plank row (rollback path only; the land has one row)
 BUBBLE_MAX_W = getattr(L, "WORLD_BUBBLE_MAX_W", 408)
 DENSITY_FALLBACK = getattr(L, "WORLD_DENSITY_FALLBACK", 40)
+AWAY_LABEL_MAX_IN_VIEW = 24           # above this many settlers in view, away settlers lose the floating label (AGES 1.5)
 LABEL_FONT, LABEL_SIZE, LABEL_H = "Menlo", 20, 24
 BUBBLE_FONT, BUBBLE_SIZE, BUBBLE_LINE_H, BUBBLE_PAD = "Menlo", 22, 26, 10
 PLANK_FONT, PLANK_SIZE = "HN Medium", 22
@@ -1041,6 +1042,8 @@ class WorldPanel(Panel):
         self.last_beacon_in_view = False
         self.last_marks_in_view = 0                  # real marks / camps whose anchor was inside the frame
         self.last_sleepers_in_view = 0
+        self.last_in_view = 0                        # settlers in view (the label density rule's count)
+        self.last_away_labels_dropped = 0            # away labels withheld this frame by the density rule
         self.last_tile_px = 0.0                      # tallest creature + name chip on the frame, in px at 284 wide
         self.last_copy: List[str] = []               # every string this panel wrote itself this frame (copy check)
         self._board_img: Optional[Image.Image] = None
@@ -1975,6 +1978,12 @@ class WorldPanel(Panel):
         tile_px = 0.0
         away_in_view = 0                                   # away settlers in view: life in the 0-present tile (the compositor's gate)
         ents = sorted(ents, key=lambda e: (e.get("y") or 0, e.get("key") or ""))
+        # label density (AGES 1.5 / IDLEWORLD 3.1): above AWAY_LABEL_MAX_IN_VIEW settlers in view the AWAY settlers lose their
+        # floating label (here settlers, speakers, plates and bubbles keep theirs) so the text layer stays under its 24 ms
+        n_in_view = sum(1 for e in ents if e.get("in_view") and e.get("on_land") and e.get("display_name") is not None and not e.get("hidden"))
+        dense_away = n_in_view > AWAY_LABEL_MAX_IN_VIEW
+        self.last_in_view = n_in_view
+        self.last_away_labels_dropped = 0
         for e in ents:
             key = e.get("key")
             if not key or e.get("display_name") is None or e.get("hidden") or e.get("state") in ("burrowed", "hidden", "seed", "hatching"):
@@ -1999,6 +2008,10 @@ class WorldPanel(Panel):
                     continue                               # its name is in the waystone row (else, letters culled: its own label)
                 if labels_on_speak and not e.get("speaking") and key not in self._label_override and key not in self._hatch_tag:
                     continue
+                if dense_away and not e.get("present") and not e.get("speaking") and key not in self._label_override and key not in self._hatch_tag:
+                    self.last_away_labels_dropped += 1
+                    label_pos[key] = (cx, top - 4)
+                    continue                               # crowded view: an away settler's label waits for its person's word
                 if not e.get("speaking") and any(abs(cx - px) <= PLATFORM_CLUSTER_PX and abs(top - py) <= 80 for px, py in cluster_px):
                     label_pos[key] = (cx, top - 4)
                     continue

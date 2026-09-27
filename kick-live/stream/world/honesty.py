@@ -43,6 +43,11 @@ Every rule is a `len()` over real records, never a sample string. The rules:
               mark record that appeared on the land since the last frame names a here settler (the first frame takes
               the baseline). This is the net under rounds' expedition / bonfire / harvest cards: a round can only act
               through here settlers (AGES 9).
+  idle        (AGES 1.3, what idle motion may never do) the land's errands keep their rules: never the same errand twice
+              running per settler (walk events then errand:<name>; a build's haul may repeat), an AWAY body's errand never
+              aims within 2 cells of the newest speaker, an away body never dwells within 2.5 cells of a waystone, the
+              Moot ring holds <= 30 % of the away settlers (+1 for a here -> away flip mid-errand), <= 2 visitors per
+              door, <= 4 sitting at one fire. Asserted from this frame's walk / arrive events and the entities' state.
   scene       the scene's own _honesty_check removed something (stats()["honesty_violations"] grew)
   wear        (the land, OPENWORLD.md 12 / AGES 4.2) land.take_wear_added() per frame: added == 8 x (present settlers
               that entered a new cell) + the 4-neighbour spill (<= 2 per neighbour, so <= 16 x steps), and zero wear
@@ -72,10 +77,26 @@ if _ROOT not in sys.path:
 
 from stream.state_store import normalise_chat, run_path  # noqa: E402
 
-RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "roster", "here", "agency", "scene", "wear", "marks")
+RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "roster", "here", "agency", "idle", "scene", "wear", "marks")
 SEED_STATES = ("seed", "hatching")
 HIDDEN_STATES = ("hidden", "burrowed")           # the one lying pose (mod !hide); `burrowed` is the cave's name for it
+MOVING_STATES = ("walking", "hauling")           # the states the land advances (a haul is a walk with a stone)
 AWAY_THEN_OK = ("idle", "sit", "gather", "credits")   # a walking.then the land may give an away body (plus errand:<name>)
+IDLE_CAP_DEFAULTS = {"MOOT_AWAY_CAP": 0.30, "DOOR_VISITOR_CAP": 2, "FIRE_SIT_CAP": 4, "FIRE_SIT_CELLS": 6.0}   # AGES 1.3
+
+
+def _idle_caps() -> Tuple[float, int, int, float]:
+    """The idle director's caps, read from the behaviour module LOADED RIGHT NOW (never bound at import: the compositor's
+    world-batch hot-reload re-executes honesty before behaviour, WORLD_ORDER, so an import-time binding would see the
+    previous behaviour and a failed import would switch the rule off for the whole deploy). A behaviour without the
+    names (the cave's tree) gives the spec's defaults; the rule is never skipped."""
+    m = sys.modules.get("stream.world.behaviour")
+    g = (lambda n: getattr(m, n, IDLE_CAP_DEFAULTS[n])) if m is not None else (lambda n: IDLE_CAP_DEFAULTS[n])
+    return float(g("MOOT_AWAY_CAP")), int(g("DOOR_VISITOR_CAP")), int(g("FIRE_SIT_CAP")), float(g("FIRE_SIT_CELLS"))
+
+
+STONE_STAND_CELLS = 2.5                          # an away body dwelling this close to a waystone cell "stands at a waystone"
+SPEAKER_TARGET_CELLS = 2.0                       # an errand aimed this close to the newest speaker "targets the newest speaker"
 RECORD_EVENTS_PIP = ("stack", "stone", "place", "plant", "sow", "harvest", "camp", "fire", "go", "speak", "hop", "emote", "pickup")
 RECORD_EVENTS_BY = ("feed", "pet", "gift", "hearth")    # the actor is `by` (the recipient `pip` may be away, AGES 1.5)
 RECORD_LISTS = (("stones", "by", "stone"), ("marks", "owner", "mark"))   # land lists diffed per frame: (attr, owner key, word)
@@ -165,6 +186,8 @@ class HonestyMonitor(object):
         self._roster_since: Optional[float] = None
         self._logged = 0
         self._missing_since: Dict[str, float] = {}
+        self._last_pick: Dict[str, Tuple[Any, Any]] = {}      # idle rule: each settler's last (errand, errand_t) pick
+        self.idle_events_checked = 0
         self.quarantined = 0
         self._marks_t = -1e18
         self.wear_steps_total = 0
@@ -322,8 +345,13 @@ class HonestyMonitor(object):
                             and float(getattr(e, "emote_until", 0.0)) - 2.0 - la > ps + CLAIM_SLACK_S:
                         claims.append("wave")
                     then = getattr(e, "then", None)
-                    if e.state == "walking" and then is not None and then not in AWAY_THEN_OK and not str(then).startswith("errand:"):
+                    if e.state in MOVING_STATES and then is not None and then not in AWAY_THEN_OK and not str(then).startswith("errand:"):
                         claims.append("walking.then=%s" % then)
+                    if e.state in ("idle", "sitting"):
+                        for sx, sy in (getattr(b, "waystones", None) or ()):
+                            if ((e.x - sx) ** 2 + (e.y - sy) ** 2) ** 0.5 <= STONE_STAND_CELLS:
+                                rep.add("idle", "away %s dwells at a waystone (%.1f, %.1f)" % (key, e.x, e.y))
+                                break
                     if claims:
                         rep.add("agency", "away %s claims %s" % (key, ", ".join(claims)))
                         if self.enforce:
@@ -485,6 +513,15 @@ class HonestyMonitor(object):
                 ev_bad.append("%s by away %s%s" % (typ, ak, (" then=%s to=%r" % (ev.get("then"), ev.get("to"))) if typ == "walk" else ""))
         if ev_bad:
             rep.add("agency", "record event(s) naming no here actor: " + "; ".join(ev_bad[:4]))
+        # -- idle (AGES 1.3): the errand table's own rules, read off this frame's walk / arrive events (never skipped: the caps
+        #    resolve against the behaviour loaded now, _idle_caps; a failure is reported, not swallowed)
+        try:
+            self._idle_rule(rep, evs, live, b, t)
+        except Exception as ex:
+            rep.unverified.append("idle: %r" % (ex,))
+            self._logged += 1
+            if self._logged <= 5:
+                self.log("honesty idle rule skipped this frame: %r" % (ex,))
         # -- here: present real == distinct chatters in the present window of this session
         try:
             ref = int(scene.distinct_recent_chatters(ctx, t))
@@ -561,6 +598,71 @@ class HonestyMonitor(object):
                 self.log("frame %d: %s" % (rep.frame, "; ".join("%s: %s" % v for v in rep.violations[:4])))
         self.last = rep
         return rep
+
+    def _idle_rule(self, rep: Report, evs: List[Dict[str, Any]], live: Dict[str, Any], b, t: float) -> None:
+        """The idle director's rules (AGES 1.3) checked at the events that could break them: a `walk` with then errand:<name>
+        (never the same twice running; an away body's target never the newest speaker; the Moot cap; the door cap) and an
+        `arrive` at a sit (the fire cap)."""
+        _MOOT_CAP, _DOOR_CAP, _FIRE_CAP, _FIRE_CELLS = _idle_caps()
+        away_n = None
+        speaker = None
+        sk = getattr(b, "newest_speaker", None)
+        # the newest speaker counts while its word is inside the here window (present_s): a person who spoke hours ago and is
+        # parked somewhere is not "the newest speaker" the errands must avoid (AGES 1.3 is about the person talking now)
+        if sk and t - float(getattr(b, "newest_speaker_t", -1e9)) <= float(getattr(b, "present_s", 1200.0)):
+            speaker = live.get(str(sk).lower())
+        # never the same errand twice running: read off the director's own pick memory (errand, errand_t): a new pick time
+        # with the same name is a repeat (a walk event alone would miss picks that ended where the settler stood)
+        for key, e in live.items():
+            if getattr(e, "origin", None) == "test" or not e.is_awake():
+                continue
+            cur = (getattr(e, "errand", None), getattr(e, "errand_t", None))
+            prev = self._last_pick.get(key)
+            if prev is not None and cur[0] is not None and cur[1] != prev[1] and cur[0] == prev[0] and cur[0] != "haul":
+                rep.add("idle", "%s picked errand %s twice running" % (key, cur[0]))
+            self._last_pick[key] = cur
+        for ev in evs:
+            if not isinstance(ev, dict):
+                continue
+            typ = ev.get("type")
+            key = str(ev.get("pip") or ev.get("key") or "").lower()
+            e = live.get(key)
+            if e is None or getattr(e, "origin", None) == "test":
+                continue
+            here = e.is_present(t) if hasattr(e, "is_present") else e.is_awake()
+            if typ == "walk":
+                then = str(ev.get("then") or "")
+                if not then.startswith("errand:"):
+                    continue
+                name = then.split(":", 1)[1]
+                if name in ("haul_drop",):
+                    continue
+                self.idle_events_checked += 1
+                to = ev.get("to")
+                if not here and speaker is not None and speaker is not e and isinstance(to, (list, tuple)) and len(to) >= 2:
+                    if ((float(to[0]) - speaker.x) ** 2 + (float(to[1]) - speaker.y) ** 2) ** 0.5 <= SPEAKER_TARGET_CELLS:
+                        rep.add("idle", "away %s's errand %s targets the newest speaker %s" % (key, name, speaker.key))
+                if name == "moot" and not here:
+                    if away_n is None:
+                        away_n = sum(1 for o in live.values() if o.is_awake() and not (o.is_present(t) if hasattr(o, "is_present") else True))
+                    on_moot = sum(1 for o in live.values() if o.is_awake() and getattr(o, "errand", None) == "moot"
+                                  and not (o.is_present(t) if hasattr(o, "is_present") else True))
+                    import math as _m
+                    if on_moot > _m.ceil(_MOOT_CAP * away_n) + 1:
+                        rep.add("idle", "Moot ring holds %d of %d away settlers (cap %.0f %%)" % (on_moot, away_n, _MOOT_CAP * 100))
+                if name == "visit":
+                    vk = getattr(e, "visit_key", None)
+                    if vk:
+                        n_v = sum(1 for o in live.values() if o.is_awake() and getattr(o, "errand", None) == "visit" and getattr(o, "visit_key", None) == vk)
+                        if n_v > _DOOR_CAP:
+                            rep.add("idle", "%d visitors at %s's door (cap %d)" % (n_v, vk, _DOOR_CAP))
+            elif typ == "arrive" and ev.get("at") == "sit":
+                fire = getattr(e, "sit_at", None)
+                if fire is not None:
+                    n_s = sum(1 for o in live.values() if o.state == "sitting" and getattr(o, "sit_at", None) is not None
+                              and ((o.sit_at[0] - fire[0]) ** 2 + (o.sit_at[1] - fire[1]) ** 2) ** 0.5 <= _FIRE_CELLS)
+                    if n_s > _FIRE_CAP:
+                        rep.add("idle", "%d sitting at the fire (%.0f, %.0f) (cap %d)" % (n_s, fire[0], fire[1], _FIRE_CAP))
 
     # ------------------------------------------------------------------ readouts
     def summary(self) -> Dict[str, Any]:
@@ -980,6 +1082,55 @@ def _selftest(run_dir: str) -> int:
         rep = run_frames(1)
         caught["scene (away go / stack refused by scene.command, no record)"] = (not ok16) and (not okS) and "away" in why16 and scene.land.stock == stock_c and rep.ok
         print("[fake 16c] scene.command('go' / 'stack', away b) -> %r / %r; stock %d; next frame %r" % ((ok16, why16), (okS, whyS), scene.land.stock, rep.violations))
+
+    # 17. idle (AGES 1.3): the errand table's own rules. 17a the same errand twice running (two walk events then errand:moot for
+    #     away b); 17b an away body dwelling at a waystone; 17c an away body's errand aimed at the newest speaker; 17d a clean
+    #     errand walk (then errand:stroll, a cell pair away from everyone) passes
+    bb = scene.behaviour.get(names[1])
+    assert bb is not None and not bb.is_present(now), "b should be away"
+    err0, errt0 = bb.errand, bb.errand_t
+    bb.errand, bb.errand_t = "moot", now
+    rep_a1 = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    bb.errand, bb.errand_t = "moot", now + 1.0                    # a NEW pick (errand_t moved) of the SAME errand
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["idle (the same errand twice running)"] = "idle" not in rep_a1.rules() and "idle" in rep.rules() and "twice running" in str(rep.violations)
+    print("[fake 17a] two picks of errand moot running for b -> first %r, second %r" % (rep_a1.violations, rep.violations))
+    bb.errand, bb.errand_t = err0, errt0
+    run_frames(1)
+    sx_, sy_ = scene.behaviour.waystones[1]
+    bx0, by0, bst = bb.x, bb.y, bb.state
+    bb.x, bb.y, bb.state, bb.route, bb.target, bb.then = float(sx_) + 1.0, float(sy_) + 1.0, "idle", [], None, None
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["idle (away body dwelling at a waystone)"] = "idle" in rep.rules() and "dwells at a waystone" in str(rep.violations)
+    print("[fake 17b] away b idle 1.4 cells from waystone B -> %r" % (rep.violations,))
+    bb.x, bb.y, bb.state = bx0, by0, bst
+    run_frames(1)
+    aa = scene.behaviour.get(names[0])
+    scene.behaviour.newest_speaker, scene.behaviour.newest_speaker_t = names[0], now     # spoke just now (inside the here window)
+    scene.events = list(scene.events) + [{"type": "walk", "pip": names[1], "to": [aa.x, aa.y], "then": "errand:stroll"}]
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["idle (away errand targets the newest speaker)"] = "idle" in rep.rules() and "targets the newest speaker" in str(rep.violations)
+    print("[fake 17c] away b's errand walk aimed at the newest speaker a -> %r" % (rep.violations,))
+    scene.events = [ev for ev in scene.events if ev.get("pip") != names[1]]
+    run_frames(1)
+    scene.events = list(scene.events) + [{"type": "walk", "pip": names[1], "to": [aa.x + 40.0, aa.y + 30.0], "then": "errand:water"}]
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["idle (a clean errand walk passes)"] = "idle" not in rep.rules()
+    print("[fake 17d] a clean errand walk (then errand:water, away from the speaker) -> %r" % (rep.violations,))
+    scene.events = [ev for ev in scene.events if ev.get("pip") != names[1]]
+    run_frames(1)
+    # 17e: the newest speaker's word is OUTSIDE the here window (spoke present_s + 1 s ago): the settler is not "the newest
+    #      speaker" any more, so an errand aimed where it stands is not a violation (AGES 1.3 is about the person talking now)
+    scene.behaviour.newest_speaker, scene.behaviour.newest_speaker_t = names[0], now - scene.behaviour.present_s - 1.0
+    scene.events = list(scene.events) + [{"type": "walk", "pip": names[1], "to": [aa.x, aa.y], "then": "errand:stroll"}]
+    rep = mon.check(mkctx(now, 0, raw[-20:], clear[-10:]), now)
+    caught["idle (a stale newest speaker is not a target)"] = "idle" not in rep.rules()
+    print("[fake 17e] an errand aimed at a speaker whose word is outside the here window -> %r" % (rep.violations,))
+    scene.events = [ev for ev in scene.events if ev.get("pip") != names[1]]
+    caps_now = _idle_caps()
+    caught["idle (caps resolve from the loaded behaviour, never bound at import)"] = caps_now == (0.30, 2, 4, 6.0) and "_MOOT_CAP" not in globals()
+    print("[fake 17f] _idle_caps() from sys.modules -> %r (no import-time binding)" % (caps_now,))
+    run_frames(1)
 
     # 8. after cleanup: violation-free again (the monitor does not get stuck)
     rep = run_frames(3)
