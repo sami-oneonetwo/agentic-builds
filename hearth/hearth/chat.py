@@ -8,17 +8,36 @@ from .sim import parse_chat_line
 
 
 class ChatTail:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, cursor: Optional[Dict] = None) -> None:
         self.path = path
         self._fh: Optional[TextIO] = None
         self._inode: Optional[int] = None
         self._pos = 0
+        self._device: Optional[int] = None
+        if cursor and cursor.get("path") == os.path.realpath(path):
+            try:
+                st = os.stat(path)
+                offset = int(cursor["offset"])
+                if (st.st_ino == cursor["inode"] and st.st_dev == cursor["device"]
+                        and 0 <= offset <= st.st_size):
+                    self._pos = offset
+                    self._inode = st.st_ino
+                    self._device = st.st_dev
+            except (OSError, KeyError, TypeError, ValueError):
+                pass
+
+    def checkpoint(self) -> Dict:
+        return {"path": os.path.realpath(self.path), "offset": self._pos,
+                "inode": self._inode, "device": self._device}
 
     def _open(self) -> None:
         fh = open(self.path, "r", encoding="utf-8")
         st = os.fstat(fh.fileno())
+        if self._inode is not None and (self._inode != st.st_ino or self._device != st.st_dev):
+            self._pos = 0
         self._fh = fh
         self._inode = st.st_ino
+        self._device = st.st_dev
         if self._pos > st.st_size:
             self._pos = 0
         fh.seek(self._pos)
@@ -43,6 +62,9 @@ class ChatTail:
             except OSError:
                 return out
         assert self._fh is not None
+        if st.st_size < self._pos:
+            self._fh.seek(0)
+            self._pos = 0
         while True:
             pos = self._fh.tell()
             line = self._fh.readline()

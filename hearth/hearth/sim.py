@@ -211,7 +211,7 @@ class Hearth:
             return
         with open(path, "r", encoding="utf-8") as fh:
             d = json.load(fh)
-        self.heat = float(d.get("heat") or self.heat)
+        self.heat = float(d.get("heat", self.heat))
         self.shown_heat = self.heat
         self.mood = mood_of(self.heat)
         self.coal_name = d.get("coal_name") or ""

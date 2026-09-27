@@ -72,7 +72,11 @@ class Compositor:
         self.world.load(self.state_path)
         chat_path = chat_file or os.environ.get("CHAT_FILE") or os.path.join(run_dir, "chat.jsonl")
         self.chat_path = chat_path
-        self.tail = ChatTail(chat_path)
+        cursor = None
+        if os.path.isfile(self.state_path):
+            with open(self.state_path, "r", encoding="utf-8") as fh:
+                cursor = json.load(fh).get("chat_cursor")
+        self.tail = ChatTail(chat_path, cursor=cursor)
         self.replay = replay
         self.demo_script = None
         self.demo_t0 = None
@@ -112,7 +116,13 @@ class Compositor:
         if not force and now - self.saved_at < 2.5:
             return
         try:
-            self.world.save(self.state_path)
+            # State and consumed chat position are one atomic checkpoint.
+            state = self.world.to_dict()
+            state["chat_cursor"] = self.tail.checkpoint()
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(state, fh, separators=(",", ":"))
+            os.replace(tmp, self.state_path)
             self.saved_at = now
         except OSError as e:
             log("save failed: %r" % (e,))
