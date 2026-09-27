@@ -1303,3 +1303,17 @@ something`, honestly nothing to pin). No new idea; the answer to `So boring lol`
 tree in review (errand life, the ROAM camera, camps by days, the return line) and the two lanes behind it (ages with
 the 90 s build, the wish post), plus the pixel-art settlers the owner asked for at 12:05 (three studios rendering).
 Nothing deployed this tick.
+
+Tick 12:35 (probe): 10/10 processes, honesty 0/0 at frame 164700, 3 viewers, rank #1, arrivals 31 in the hour (day
+high), stones 23 (Wood expedition), forward to the Steading 1 person / 7 stones / 1 day. Chat since the last tick:
+four verbs from the owner's account (camp, go west, camp), performed. Ledger 11 rows, nothing pinnable. No new idea.
+**The integrated tree's review (W2 + W3 + W5) returned FAIL on three real blockers**, all now in a fix pass: (1) the
+hot-reload order: `state.py` imports `land` at module level and the HotReloader re-executes state BEFORE land, so a
+one-cp world-batch reload would bind the fresh state to the stale land module (verified by simulating the reload
+order on a snapshot copy); (2) the new honesty `idle` rule fires 72 violations on boot because an away body is
+restored exactly where world.json left it, which on the live file is a waystone cell, and it stands there 2.4 s until
+its first errand pick; (3) the steading self-test read the plate key `night` that W3 renamed to `days` (a one-token
+harness fix, already in the tree). Migration on the live copy: 25/25 gates, people 4 · stones 21 · days 4 -> the
+Camp. W4 (ages, branch idle-w4 6355a33, 65 self-test checks ok, 90 s raising played with 24 of 24 stones hauled) and
+W6 (the wish post, patch 0002 + wishes.py, 12 planted fakes refused) wait for the fix to land before their merge.
+Pixel-art settlers: studios A and B returned, C rendering. Nothing deployed this tick.
