@@ -1294,3 +1294,12 @@ committed there as eef4675 (`stream/world/schema3.py` + hook-only edits; migrati
 passed, people 4 · stones 18 · days 4 -> the Camp); W5 finished in idle-w5 with `ledger.py` and a hooks patch it could
 not commit (guard); W4 and W6 still building. The serial chain was stopped before its own W3 could collide. Next: an
 integrator applies W2 + W5 on top of W3 in the main worktree, then W4/W6 when they land, full gates once, one review.
+
+Tick 12:15 (probe): 10/10 processes, honesty 0/0, 1 viewer, rank #6, followers 4, arrivals 28 in the hour. The
+owner's account typed `Do something` at 12:00 and voted `b` at 12:04 (bonfire, hearth lit: the third voted ship since
+the relaunch; voted share 6 %). Stones 22 (+3, all expedition arrivals); forward to the Steading 1 person, 8 stones,
+1 day: the stone key is now the fastest-moving of the three. Ledger 7 rows, all silent class (no wish noun in `Do
+something`, honestly nothing to pin). No new idea; the answer to `So boring lol` / `Do something` is the integrated
+tree in review (errand life, the ROAM camera, camps by days, the return line) and the two lanes behind it (ages with
+the 90 s build, the wish post), plus the pixel-art settlers the owner asked for at 12:05 (three studios rendering).
+Nothing deployed this tick.
