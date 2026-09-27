@@ -1282,3 +1282,15 @@ Compositor render avg 18.3 ms p95 22.4, +65 repeated frames this tick: the four 
 the box (Chrome is off the top of the CPU list); under the 25 ms gate but close, so the integration gates will run
 niced and serially. No new idea; board top p-0002. W2 fix still running; W3/W4/W5/W6 building in parallel. Nothing
 deployed this tick.
+
+Tick 11:55 (probe): 10/10 processes, honesty 0/0, 4 viewers (the morning's peak), rank #5, arrivals 29 in the hour
+(the day's highest). Chat: six lines from the owner's account 11:47-11:48 (`go west`, `go far west` -> the S1 hint
+`try: go west`, a vote that lit the hearth at 11:49 as the second voted ship since relaunch, and **`So boring lol`**).
+The ledger took its first five rows (all class silent: no head, no recipe noun); stone 19 came from the Shore
+expedition at 11:40. The owner's verdict is the probe's Q8 answer: the on-air world has not changed visibly since
+11:02 while the four slices that change it are in the build. Build state: W2's fix has returned (5 files, uncommitted
+in the main worktree); W3 finished and, because the harness's worktree guard pinned every agent to the main worktree,
+committed there as eef4675 (`stream/world/schema3.py` + hook-only edits; migration on the live copy: 25 gates, 25
+passed, people 4 · stones 18 · days 4 -> the Camp); W5 finished in idle-w5 with `ledger.py` and a hooks patch it could
+not commit (guard); W4 and W6 still building. The serial chain was stopped before its own W3 could collide. Next: an
+integrator applies W2 + W5 on top of W3 in the main worktree, then W4/W6 when they land, full gates once, one review.
