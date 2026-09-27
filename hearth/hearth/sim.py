@@ -175,6 +175,7 @@ class Hearth:
     def __init__(self) -> None:
         self.people: Dict[str, Person] = {}
         self.heat: float = 0.10          # dying embers on an empty hill. no fake faces.
+        self.shown_heat: float = 0.10    # eases toward heat so a log catching doesn't snap
         self.mood: str = "embers"
         self.coal_name: str = ""
         self.last_feed_ts: float = 0.0
@@ -211,6 +212,7 @@ class Hearth:
         with open(path, "r", encoding="utf-8") as fh:
             d = json.load(fh)
         self.heat = float(d.get("heat") or self.heat)
+        self.shown_heat = self.heat
         self.mood = mood_of(self.heat)
         self.coal_name = d.get("coal_name") or ""
         self.last_feed_ts = float(d.get("last_feed_ts") or 0)
@@ -372,6 +374,14 @@ class Hearth:
         else:
             self.ash_since = 0.0
         self.mood = mood_of(self.heat)
+        # picture/audio chase heat. rise is slow (a log catching); fall tracks the cool.
+        if self.heat > self.shown_heat:
+            k = 1.0 - math.exp(-dt / 1.15)
+        else:
+            k = 1.0 - math.exp(-dt / 0.40)
+        self.shown_heat += (self.heat - self.shown_heat) * k
+        if self.shown_heat < 0:
+            self.shown_heat = 0.0
         self.shake *= max(0.0, 1.0 - dt * 2.4)
         self.last_tick = now
 
@@ -382,19 +392,30 @@ class Hearth:
         return list(self.people.values())
 
     def camera(self, now: float) -> Dict[str, float]:
-        """Zoom and aim. Close when the room is small. Pull back when it roars."""
-        n = len(self.voices(now))
-        if self.mood == "ash":
-            zoom, shake = 1.55, 0.0
-        elif self.mood == "embers":
-            zoom, shake = 1.42, 0.0
-        elif self.mood == "campfire":
-            zoom, shake = 1.12 if n <= 4 else 1.0, 0.0
-        elif self.mood == "bonfire":
-            zoom, shake = 0.92, 0.08
-        else:
-            zoom, shake = 0.82, 0.22 + 0.25 * min(1.0, self.shake)
-        return {"zoom": zoom, "shake": shake, "heat": self.heat}
+        """Zoom and aim. Follows shown_heat so the room breathes instead of jumping."""
+        h = self.shown_heat
+        # 0 ash close → 1.15 wildfire pulled back
+        stops = (
+            (0.00, 1.55),
+            (ASH_MAX, 1.52),
+            (EMBERS_MAX, 1.38),
+            (CAMP_MAX, 1.08),
+            (BONFIRE_MAX, 0.92),
+            (MAX_HEAT, 0.82),
+        )
+        zoom = stops[-1][1]
+        for i in range(len(stops) - 1):
+            h0, z0 = stops[i]
+            h1, z1 = stops[i + 1]
+            if h <= h1:
+                t = 0.0 if h1 <= h0 else (h - h0) / (h1 - h0)
+                zoom = z0 + (z1 - z0) * t
+                break
+        shake = 0.0
+        if h > 0.70:
+            shake = (h - 0.70) / 0.45 * 0.28
+        shake = min(0.55, max(0.0, shake) + 0.25 * self.shake)
+        return {"zoom": zoom, "shake": shake, "heat": h}
 
 
 def parse_chat_line(line: str) -> Optional[Dict[str, Any]]:

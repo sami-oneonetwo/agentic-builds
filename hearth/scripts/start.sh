@@ -47,9 +47,11 @@ for n in run ffmpeg compositor; do
 done
 if [ "$BUSY" = 1 ]; then echo "start.sh: refusing to start twice. Run scripts/stop.sh first." >&2; exit 1; fi
 
+FIFO="$RUN_DIR/a.pcm"
+
 ENC=(
   -f rawvideo -pix_fmt rgb24 -s "${STREAM_WIDTH}x${STREAM_HEIGHT}" -r "$STREAM_FPS" -i pipe:0
-  -f lavfi -i "anoisesrc=color=brown:sample_rate=48000:amplitude=0.03,volume=-22dB,aformat=channel_layouts=stereo"
+  -f s16le -ar 48000 -ac 2 -i "$FIFO"
   -map 0:v:0 -map 1:a:0
   -c:v libx264 -preset veryfast -tune zerolatency -profile:v high -pix_fmt yuv420p
   -b:v "$VIDEO_BITRATE" -maxrate "$VIDEO_BITRATE" -g $((STREAM_FPS * 2))
@@ -71,7 +73,7 @@ esac
 
 echo "start.sh: MODE=$MODE out=$DESC run_dir=$RUN_DIR chat=$CHAT_FILE"
 if [ "$DRY" = 1 ]; then
-  echo "$PYTHON -m hearth.compositor --run-dir $RUN_DIR --no-audio |"
+  echo "$PYTHON -m hearth.compositor --run-dir $RUN_DIR --audio-fifo $FIFO |"
   echo "$FFMPEG ... $DESC"
   exit 0
 fi
@@ -81,11 +83,13 @@ export PYTHONPATH="$HEARTH_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 touch "$CHAT_FILE"
 : > "$LOG_DIR/compositor.log"
 : > "$LOG_DIR/ffmpeg.log"
+rm -f "$FIFO"
+mkfifo "$FIFO"
 
 # pipeline in its own process group so stop.sh can kill the tree
 set +e
 nohup env -u STREAM_KEY -u SRT_PASSPHRASE -u KICK_CLIENT_SECRET -u KICK_TOKEN \
-  "$PYTHON" -m hearth.compositor --run-dir "$RUN_DIR" --no-audio \
+  "$PYTHON" -m hearth.compositor --run-dir "$RUN_DIR" --audio-fifo "$FIFO" \
   2>>"$LOG_DIR/compositor.log" | \
 "$FFMPEG" -hide_banner -nostdin -loglevel info "${ENC[@]}" "${OUT[@]}" \
   2>>"$LOG_DIR/ffmpeg.log" &

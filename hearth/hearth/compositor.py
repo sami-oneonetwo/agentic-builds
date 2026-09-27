@@ -25,7 +25,7 @@ if ROOT not in sys.path:
 from hearth.audio import FireAudio  # noqa: E402
 from hearth.chat import ChatTail  # noqa: E402
 from hearth.draw import H, W, render  # noqa: E402
-from hearth.sim import Hearth  # noqa: E402
+from hearth.sim import Hearth, mood_of  # noqa: E402
 
 LIVE_KICK = (
     os.path.join(os.path.expanduser("~"), ".local", "share", "kick-live", "run"),
@@ -78,7 +78,7 @@ class Compositor:
         self.demo_t0 = None
         self.audio = None if no_audio else FireAudio(block=self.block, fps=self.fps)
         self.vq: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=8)
-        self.aq: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=8)
+        self.aq: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=24)
         self.stop = False
         self.writer_error: Optional[str] = None
         self.dropped = 0
@@ -160,9 +160,15 @@ class Compositor:
         ).start()
         if self.audio_fifo:
             path = self.audio_fifo
+
+            def _open_fifo():
+                # O_RDWR so we don't block waiting for ffmpeg to open the other end
+                fd = os.open(path, os.O_RDWR)
+                return os.fdopen(fd, "wb", buffering=0)
+
             threading.Thread(
                 target=self._writer,
-                args=(lambda: open(path, "wb", buffering=0), self.aq, "audio"),
+                args=(_open_fifo, self.aq, "audio"),
                 daemon=True,
             ).start()
 
@@ -170,7 +176,8 @@ class Compositor:
         self._ingest(now)
         self.world.tick(now, self.dt)
         img = render(self.world, now, frame)
-        pcm = None if self.audio is None else self.audio.block_pcm(self.world.heat, self.world.mood)
+        shown = getattr(self.world, "shown_heat", self.world.heat)
+        pcm = None if self.audio is None else self.audio.block_pcm(shown, mood_of(shown))
         if frame % (int(self.fps) * 2) == 0:
             log("frame=%d heat=%.3f mood=%s people=%d voices=%d dropped=%d" % (
                 frame, self.world.heat, self.world.mood, len(self.world.people),
@@ -182,6 +189,10 @@ class Compositor:
         self._start_writers()
         # hill/glow cache once, before the clock starts, so frame 0 is not 177ms
         try:
+            from hearth.draw import _GLOW_STOPS, _glow_at, _night
+            _night()
+            for hv in _GLOW_STOPS:
+                _glow_at(hv)
             render(self.world, self._now(), 0)
         except Exception:
             pass
@@ -194,11 +205,13 @@ class Compositor:
             if now_wall < target:
                 time.sleep(target - now_wall)
             elif now_wall - target > self.dt:
-                # duplicate last picture rather than drift
+                # duplicate last picture rather than drift; keep crackle moving
                 if last is not None:
-                    img, pcm = last
+                    img, _old = last
                     self._put(self.vq, img.tobytes())
-                    if pcm is not None and self.audio_fifo:
+                    if self.audio is not None and self.audio_fifo:
+                        shown = getattr(self.world, "shown_heat", self.world.heat)
+                        pcm = self.audio.block_pcm(shown, mood_of(shown))
                         self._put(self.aq, pcm.tobytes())
                     self.dropped += 1
                     frame += 1

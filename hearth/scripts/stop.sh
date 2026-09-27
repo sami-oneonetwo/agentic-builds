@@ -19,4 +19,5 @@ done
 # leftovers
 pkill -f "hearth.compositor" 2>/dev/null || true
 sleep 0.4
+rm -f "$RUN_DIR/a.pcm"
 echo "stop.sh: done"

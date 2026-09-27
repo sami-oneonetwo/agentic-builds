@@ -51,6 +51,16 @@ class SimTest(unittest.TestCase):
             h.tick(10.0 + i * 0.25, 0.25)
         self.assertLess(h.heat, 0.1)
 
+    def test_shown_heat_eases_up(self):
+        h = Hearth()
+        h.heat = 0.12
+        h.shown_heat = 0.12
+        h.ingest(msg("jo", "wood"), 1.0)
+        self.assertGreater(h.heat, h.shown_heat)
+        for i in range(120):
+            h.tick(1.0 + i / 30.0, 1.0 / 30.0)
+        self.assertAlmostEqual(h.shown_heat, h.heat, delta=0.03)
+
     def test_duplicate_id_ignored(self):
         h = Hearth()
         rec = msg("jo", "hey", 1)

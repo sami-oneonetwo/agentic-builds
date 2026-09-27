@@ -17,8 +17,9 @@ _FONT: Dict[Tuple[str, int], object] = {}
 _STARFIELD: Optional[Image.Image] = None
 _HILL: Optional[Image.Image] = None
 _HILL_MASK: Optional[Image.Image] = None
-_GLOW: Dict[str, Image.Image] = {}
-_BASE: Dict[str, Image.Image] = {}
+_NIGHT: Optional[Image.Image] = None
+_GLOW: Dict[int, Image.Image] = {}  # heat*1000 key
+_GLOW_STOPS = (0.0, 0.10, 0.30, 0.55, 0.85, 1.15)
 
 
 def _font(size: int, bold: bool = False) -> object:
@@ -63,7 +64,6 @@ def _starfield() -> Image.Image:
         px[x, y] = (b, b, min(255, b + 20))
         if (i * 17) % 11 == 0 and 0 < x < W - 1 and 0 < y < H - 1:
             px[x + 1, y] = (b // 2, b // 2, b // 2)
-    # a faint milky smear
     smear = Image.new("RGB", (W, H), (0, 0, 0))
     sd = ImageDraw.Draw(smear)
     for k in range(18):
@@ -72,6 +72,12 @@ def _starfield() -> Image.Image:
         sd.ellipse((80, y, 1180, y + 90), fill=(a, a, a + 6))
     smear = smear.filter(ImageFilter.GaussianBlur(18))
     img = Image.blend(img, smear, 0.35)
+    # a quiet moon, left of the bowl
+    d = ImageDraw.Draw(img)
+    mx, my, mr = 210, 118, 28
+    d.ellipse((mx - mr - 10, my - mr - 10, mx + mr + 10, my + mr + 10), fill=(18, 20, 32))
+    d.ellipse((mx - mr, my - mr, mx + mr, my + mr), fill=(210, 214, 228))
+    d.ellipse((mx - mr + 11, my - mr - 4, mx + mr + 11, my + mr - 4), fill=(8, 10, 20))
     _STARFIELD = img
     return img
 
@@ -100,8 +106,15 @@ def _hill() -> Image.Image:
             pts.append((x, y))
         pts.append((W, H))
         d.polygon(pts, fill=col)
-    # a darker foreground bowl so the ring sits in a hollow
     d.ellipse((CX - 420, CY + 40, CX + 420, H + 180), fill=(10, 16, 22))
+    # pine silhouettes on the far ridge. hashed, never jitter.
+    for i in range(11):
+        tx = 40 + i * 118 + (i * 19) % 37
+        ty = int(H * 0.46 + math.sin(i * 1.7) * 18)
+        hgt = 38 + (i * 13) % 28
+        d.polygon([(tx, ty + hgt), (tx - 16, ty + hgt), (tx, ty), (tx + 16, ty + hgt)], fill=(6, 8, 16))
+        d.polygon([(tx, ty + hgt - 12), (tx - 11, ty + hgt - 12), (tx, ty + 8), (tx + 11, ty + hgt - 12)], fill=(8, 10, 18))
+        d.rectangle((tx - 2, ty + hgt - 4, tx + 2, ty + hgt + 8), fill=(8, 6, 12))
     _HILL = img
     return img
 
@@ -164,42 +177,60 @@ def _flame_blob(draw: ImageDraw.ImageDraw, cx: float, cy: float, w: float, h: fl
 def _draw_fire(layer: Image.Image, heat: float, mood: str, t: float) -> None:
     """Paint the flame onto layer in place. No full-frame blur."""
     d = ImageDraw.Draw(layer)
-    if heat <= 0.001 and mood == "ash":
-        d.ellipse((CX - 10, CY - 6, CX + 10, CY + 8), fill=(40, 16, 8))
-        d.ellipse((CX - 5, CY - 3, CX + 4, CY + 3), fill=(90, 28, 10))
+    h = max(0.0, min(1.2, heat))
+    if h <= 0.012:
+        pulse = 0.45 + 0.55 * math.sin(t * 1.35)
+        r = 8 + 4 * pulse
+        d.ellipse((CX - r * 1.4, CY - r * 0.5, CX + r * 1.4, CY + r * 0.9), fill=(28, 12, 6))
+        d.ellipse((CX - 6, CY - 3, CX + 5, CY + 4), fill=(int(90 * pulse + 30), int(24 * pulse), 6))
         return
 
-    scale = 0.55 + 1.35 * min(1.0, heat)
-    if mood == "wildfire":
-        scale *= 1.25
-    lean = 0.35 * math.sin(t * 1.7) + 0.15 * math.sin(t * 4.1)
-    if mood == "wildfire":
-        lean += 0.6 * math.sin(t * 9.0)
+    scale = 0.50 + 1.55 * min(1.0, h)
+    if h > 0.78:
+        scale *= 1.0 + 0.28 * min(1.0, (h - 0.78) / 0.37)
+    lean = 0.32 * math.sin(t * 1.7) + 0.14 * math.sin(t * 4.1) + 0.08 * math.sin(t * 0.6)
+    if h > 0.78:
+        lean += 0.55 * math.sin(t * 9.0) * min(1.0, (h - 0.78) / 0.3)
 
-    d.polygon([(CX - 38 * scale, CY + 10), (CX - 8, CY + 18), (CX + 6, CY + 8), (CX - 22 * scale, CY + 2)], fill=(42, 26, 16))
-    d.polygon([(CX + 36 * scale, CY + 10), (CX + 6, CY + 18), (CX - 4, CY + 8), (CX + 20 * scale, CY + 2)], fill=(36, 22, 14))
+    # stone ring
+    for i in range(9):
+        a = (i / 9.0) * math.pi + 0.18
+        rx = CX + math.cos(a) * (46 + 8 * scale) * 1.05
+        ry = CY + 16 + math.sin(a) * 14
+        rr = 7 + (i % 3)
+        d.ellipse((rx - rr, ry - rr * 0.7, rx + rr, ry + rr * 0.85), fill=(28 + i, 22, 18))
 
-    flicker = 0.08 * math.sin(t * 11.0) + 0.05 * math.sin(t * 17.3)
-    h0 = 70 * scale * (1.0 + flicker)
-    w0 = 54 * scale
-    _flame_blob(d, CX, CY + 4, w0 * 1.25, h0 * 0.7, (120, 30, 8), lean * 0.4)
-    _flame_blob(d, CX - 8 * scale, CY + 2, w0 * 0.7, h0 * 0.85, (180, 50, 10), lean * 0.7)
-    _flame_blob(d, CX + 10 * scale, CY + 2, w0 * 0.65, h0 * 0.8, (190, 60, 12), -lean * 0.5)
-    _flame_blob(d, CX, CY, w0 * 0.85, h0, (230, 110, 24), lean)
-    _flame_blob(d, CX - 4, CY - 4, w0 * 0.45, h0 * 0.75, (255, 190, 70), lean * 0.3)
-    _flame_blob(d, CX + 3, CY - 8, w0 * 0.28, h0 * 0.55, (255, 230, 160), lean * 0.2)
+    # logs, crossed
+    d.polygon([(CX - 44 * scale, CY + 12), (CX - 6, CY + 20), (CX + 8, CY + 10), (CX - 28 * scale, CY + 2)], fill=(48, 28, 16))
+    d.polygon([(CX + 42 * scale, CY + 12), (CX + 8, CY + 20), (CX - 6, CY + 10), (CX + 24 * scale, CY + 2)], fill=(38, 22, 12))
+    d.polygon([(CX - 18, CY + 6), (CX + 22, CY + 14), (CX + 18, CY + 4), (CX - 14, CY - 2)], fill=(56, 32, 16))
 
-    n_sparks = int(4 + 18 * min(1.0, heat))
+    flicker = 0.07 * math.sin(t * 11.0) + 0.05 * math.sin(t * 17.3) + 0.03 * math.sin(t * 6.1)
+    h0 = 78 * scale * (1.0 + flicker)
+    w0 = 58 * scale
+    _flame_blob(d, CX, CY + 6, w0 * 1.35, h0 * 0.62, (90, 22, 6), lean * 0.35)
+    _flame_blob(d, CX - 10 * scale, CY + 3, w0 * 0.78, h0 * 0.92, (170, 42, 8), lean * 0.75)
+    _flame_blob(d, CX + 12 * scale, CY + 3, w0 * 0.72, h0 * 0.86, (185, 55, 10), -lean * 0.55)
+    _flame_blob(d, CX - 2, CY + 1, w0 * 0.95, h0 * 1.02, (220, 90, 18), lean * 0.2)
+    _flame_blob(d, CX, CY - 2, w0 * 0.72, h0, (240, 130, 28), lean)
+    _flame_blob(d, CX - 5, CY - 8, w0 * 0.42, h0 * 0.78, (255, 196, 72), lean * 0.28)
+    _flame_blob(d, CX + 4, CY - 12, w0 * 0.26, h0 * 0.58, (255, 236, 168), lean * 0.18)
+    if h > 0.45:
+        _flame_blob(d, CX + 1, CY - 18, w0 * 0.14, h0 * 0.38, (255, 252, 230), lean * 0.1)
+
+    n_sparks = int(5 + 26 * min(1.0, h))
     for i in range(n_sparks):
         seed = (i * 17 + int(t * 8) * 3) % 997
-        ang = (seed * 0.31) % (math.pi)
+        ang = (seed * 0.31) % math.pi
         dist = (12 + (seed % 80)) * scale
         life = ((t * (1.4 + (i % 5) * 0.2) + i) % 1.6) / 1.6
-        x = CX + math.cos(ang) * dist * 0.25 + lean * 10 * life
-        y = CY - 10 - life * (40 + (seed % 70)) * scale
+        x = CX + math.cos(ang) * dist * 0.25 + lean * 12 * life
+        y = CY - 12 - life * (48 + (seed % 90)) * scale
         s = 1 + (seed % 3)
-        col = (255, 180 + seed % 50, 40 + seed % 40)
+        col = (255, 170 + seed % 70, 36 + seed % 50)
         d.ellipse((x - s, y - s, x + s, y + s), fill=col)
+        if life < 0.5 and s > 1:
+            d.ellipse((x - 1, y + 3, x + 1, y + 6), fill=(180, 70, 20))
 
 
 def _seat(n_people: int, heat: float) -> float:
@@ -241,10 +272,17 @@ def _draw_person(d: ImageDraw.ImageDraw, p: Person, x: float, y: float, now: flo
     # torso
     d.ellipse((x - bw * 1.15, y + bh - 4, x + bw * 1.15, y + bh + 6), fill=(8, 10, 12))
     d.ellipse((x - bw, y - 4, x + bw, y + bh), fill=col)
+    # firelight on the chest
+    if heat > 0.08:
+        lit = _blend(col, (255, 160, 60), 0.18 + 0.22 * min(1.0, heat))
+        d.ellipse((x - bw * 0.45 + lean_x, y + 1, x + bw * 0.35 + lean_x, y + bh * 0.55), fill=lit)
     # head
     hx, hy = x + lean_x * 0.4, y - 16 * scale
     hr = 8.0 * scale
     d.ellipse((hx - hr, hy - hr, hx + hr, hy + hr), fill=skin)
+    if heat > 0.08:
+        cheek = _blend(skin, (255, 150, 70), 0.22 * min(1.0, heat))
+        d.ellipse((hx - 2 + lean_x, hy + 1, hx + 5 + lean_x, hy + hr * 0.55), fill=cheek)
     # hair cap from name hue
     hair = hsl_to_rgb((hash(p.slug) % 360), 0.35, 0.18 * dim + 0.08)
     d.pieslice((hx - hr - 1, hy - hr - 2, hx + hr + 1, hy + 2), 200, 340, fill=hair)
@@ -304,15 +342,6 @@ def _draw_scar(d: ImageDraw.ImageDraw, p: Person, ring: float) -> None:
     d.ellipse((x - 4, y - 2, x + 3, y + 2), fill=(28, 16, 8))
 
 
-_MOOD_LOOK = {
-    "ash":      ((4, 5, 10), (20, 8, 4), 40, 0.15, 0.50),
-    "embers":   ((8, 8, 16), (90, 28, 8), 160, 0.35, 0.45),
-    "campfire": ((12, 10, 18), (180, 70, 18), 280, 0.45, 0.45),
-    "bonfire":  ((18, 10, 12), (220, 90, 20), 420, 0.55, 0.55),
-    "wildfire": ((28, 8, 4), (255, 80, 10), 560, 0.70, 0.70),
-}
-
-
 def _hill_mask() -> Image.Image:
     global _HILL_MASK
     if _HILL_MASK is None:
@@ -320,32 +349,69 @@ def _hill_mask() -> Image.Image:
     return _HILL_MASK
 
 
-def _base(mood: str) -> Image.Image:
-    cached = _BASE.get(mood)
-    if cached is not None:
-        return cached
-    sky_col, glow_col, glow_r, glow_amt, tint_amt = _MOOD_LOOK[mood]
-    stars = _starfield()
-    hill = _hill()
+def _night() -> Image.Image:
+    global _NIGHT
+    if _NIGHT is None:
+        _NIGHT = Image.composite(_hill(), _starfield(), _hill_mask())
+    return _NIGHT
+
+
+def _look(heat: float) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], float, float, float]:
+    """Sky, glow colour, radius, glow amount, sky tint. Continuous in heat."""
+    h = max(0.0, min(1.15, heat))
+    sky = _blend((4, 5, 12), (32, 8, 4), min(1.0, h / 0.95))
+    glow = _blend((24, 8, 4), (255, 92, 14), min(1.0, h / 0.90))
+    glow_r = 50 + 510 * min(1.0, h / 1.05)
+    glow_amt = 0.16 + 0.58 * min(1.0, h / 0.95)
+    tint = 0.38 + 0.32 * min(1.0, h / 0.90)
+    return sky, glow, glow_r, glow_amt, tint
+
+
+def _glow_at(heat: float) -> Image.Image:
+    """Cached glow at discrete heat stops, blended so the bowl never jumps."""
+    h = max(0.0, min(1.15, heat))
+    stops = _GLOW_STOPS
+    hi = 1
+    while hi < len(stops) - 1 and h > stops[hi]:
+        hi += 1
+    lo = hi - 1
+    h0, h1 = stops[lo], stops[hi]
+    t = 0.0 if h1 <= h0 else (h - h0) / (h1 - h0)
+
+    def one(hv: float) -> Image.Image:
+        key = int(round(hv * 1000))
+        g = _GLOW.get(key)
+        if g is None:
+            _, col, rad, _, _ = _look(hv)
+            g = _screen_glow(W, H, CX, CY + 10, rad, col, power=1.8)
+            _GLOW[key] = g
+        return g
+
+    a, b = one(h0), one(h1)
+    if t <= 0.02:
+        return a
+    if t >= 0.98:
+        return b
+    return Image.blend(a, b, t)
+
+
+def _plate(heat: float) -> Image.Image:
+    sky_col, _, _, glow_amt, tint_amt = _look(heat)
+    night = _night()
     sky_tint = Image.new("RGB", (W, H), sky_col)
-    img = Image.blend(stars, sky_tint, tint_amt)
-    img = Image.composite(hill, img, _hill_mask())
-    glow = _GLOW.get(mood)
-    if glow is None:
-        glow = _screen_glow(W, H, CX, CY + 10, glow_r, glow_col, power=1.8)
-        _GLOW[mood] = glow
+    img = Image.blend(night, sky_tint, tint_amt * 0.55)
+    glow = _glow_at(heat)
     img = Image.blend(img, ImageChops_screen(img, glow), glow_amt * 0.85)
-    _BASE[mood] = img
     return img
 
 
 def render(world: Hearth, now: float, frame: int) -> Image.Image:
-    heat = world.heat
-    mood = world.mood
+    heat = getattr(world, "shown_heat", world.heat)
+    mood = mood_of(heat)
     cam = world.camera(now)
     t = now
 
-    img = _base(mood).copy()
+    img = _plate(heat)
     people = world.ring()
     ring = _seat(len(world.people), heat)
     close = cam["zoom"] >= 1.3
@@ -372,12 +438,6 @@ def render(world: Hearth, now: float, frame: int) -> Image.Image:
     for p in people:
         x, y, _ = _person_pos(p, ring, t)
         _draw_bubble(img, p, x, y, now)
-
-    if mood == "ash":
-        pulse = 0.5 + 0.5 * math.sin(t * 1.3)
-        r = 7 + 3 * pulse
-        d = ImageDraw.Draw(img)
-        d.ellipse((CX - r, CY - r * 0.6, CX + r, CY + r * 0.7), fill=(int(70 * pulse + 20), int(18 * pulse), 4))
 
     zoom = cam["zoom"]
     shake = cam["shake"]
