@@ -180,6 +180,11 @@ class Compositor:
 
     def run(self) -> int:
         self._start_writers()
+        # hill/glow cache once, before the clock starts, so frame 0 is not 177ms
+        try:
+            render(self.world, self._now(), 0)
+        except Exception:
+            pass
         frame = 0
         t0 = time.perf_counter()
         last = None

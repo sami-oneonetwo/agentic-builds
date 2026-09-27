@@ -16,6 +16,9 @@ BASE_RING = 210.0
 _FONT: Dict[Tuple[str, int], object] = {}
 _STARFIELD: Optional[Image.Image] = None
 _HILL: Optional[Image.Image] = None
+_HILL_MASK: Optional[Image.Image] = None
+_GLOW: Dict[str, Image.Image] = {}
+_BASE: Dict[str, Image.Image] = {}
 
 
 def _font(size: int, bold: bool = False) -> object:
@@ -122,17 +125,18 @@ def _add(base: Image.Image, overlay: Image.Image, amount: float) -> Image.Image:
 
 def _screen_glow(w: int, h: int, cx: float, cy: float, radius: float, color: Tuple[int, int, int], power: float = 1.6) -> Image.Image:
     import numpy as np
-    yy, xx = np.mgrid[0:h, 0:w]
+    yy, xx = np.ogrid[0:h, 0:w]
     d2 = (xx - cx) ** 2 + (yy - cy) ** 2
     r2 = max(1.0, radius * radius)
-    t = 1.0 - np.power(np.clip(d2 / r2, 0, 1), 1.0 / power)
-    t = np.clip(t, 0, 1)
-    arr = np.zeros((h, w, 3), dtype=np.float32)
-    arr[..., 0] = color[0] * t
-    arr[..., 1] = color[1] * t
-    arr[..., 2] = color[2] * t
-    img = Image.fromarray(arr.astype(np.uint8), "RGB")
-    return img.filter(ImageFilter.GaussianBlur(max(1, int(radius * 0.08))))
+    tt = 1.0 - np.power(np.clip(d2 / r2, 0, 1), 1.0 / power)
+    tt = np.clip(tt, 0, 1).astype(np.float32)
+    arr = np.zeros((h, w, 3), dtype=np.uint8)
+    arr[..., 0] = (color[0] * tt).astype(np.uint8)
+    arr[..., 1] = (color[1] * tt).astype(np.uint8)
+    arr[..., 2] = (color[2] * tt).astype(np.uint8)
+    img = Image.fromarray(arr, "RGB")
+    blur = max(1, min(12, int(radius * 0.04)))
+    return img.filter(ImageFilter.GaussianBlur(blur))
 
 
 def _flame_blob(draw: ImageDraw.ImageDraw, cx: float, cy: float, w: float, h: float, color: Tuple[int, int, int], lean: float = 0.0) -> None:
@@ -157,15 +161,13 @@ def _flame_blob(draw: ImageDraw.ImageDraw, cx: float, cy: float, w: float, h: fl
         draw.polygon(pts, fill=color)
 
 
-def _draw_fire(layer: Image.Image, heat: float, mood: str, t: float) -> Image.Image:
-    """Return an additive fire layer the size of the frame."""
-    fire = Image.new("RGB", (W, H), (0, 0, 0))
-    d = ImageDraw.Draw(fire)
+def _draw_fire(layer: Image.Image, heat: float, mood: str, t: float) -> None:
+    """Paint the flame onto layer in place. No full-frame blur."""
+    d = ImageDraw.Draw(layer)
     if heat <= 0.001 and mood == "ash":
-        # a coal
         d.ellipse((CX - 10, CY - 6, CX + 10, CY + 8), fill=(40, 16, 8))
         d.ellipse((CX - 5, CY - 3, CX + 4, CY + 3), fill=(90, 28, 10))
-        return fire
+        return
 
     scale = 0.55 + 1.35 * min(1.0, heat)
     if mood == "wildfire":
@@ -174,11 +176,9 @@ def _draw_fire(layer: Image.Image, heat: float, mood: str, t: float) -> Image.Im
     if mood == "wildfire":
         lean += 0.6 * math.sin(t * 9.0)
 
-    # logs
     d.polygon([(CX - 38 * scale, CY + 10), (CX - 8, CY + 18), (CX + 6, CY + 8), (CX - 22 * scale, CY + 2)], fill=(42, 26, 16))
     d.polygon([(CX + 36 * scale, CY + 10), (CX + 6, CY + 18), (CX - 4, CY + 8), (CX + 20 * scale, CY + 2)], fill=(36, 22, 14))
 
-    # stacked flame blobs, back to front
     flicker = 0.08 * math.sin(t * 11.0) + 0.05 * math.sin(t * 17.3)
     h0 = 70 * scale * (1.0 + flicker)
     w0 = 54 * scale
@@ -189,8 +189,7 @@ def _draw_fire(layer: Image.Image, heat: float, mood: str, t: float) -> Image.Im
     _flame_blob(d, CX - 4, CY - 4, w0 * 0.45, h0 * 0.75, (255, 190, 70), lean * 0.3)
     _flame_blob(d, CX + 3, CY - 8, w0 * 0.28, h0 * 0.55, (255, 230, 160), lean * 0.2)
 
-    # sparks
-    n_sparks = int(6 + 40 * min(1.0, heat))
+    n_sparks = int(4 + 18 * min(1.0, heat))
     for i in range(n_sparks):
         seed = (i * 17 + int(t * 8) * 3) % 997
         ang = (seed * 0.31) % (math.pi)
@@ -201,9 +200,6 @@ def _draw_fire(layer: Image.Image, heat: float, mood: str, t: float) -> Image.Im
         s = 1 + (seed % 3)
         col = (255, 180 + seed % 50, 40 + seed % 40)
         d.ellipse((x - s, y - s, x + s, y + s), fill=col)
-
-    fire = fire.filter(ImageFilter.GaussianBlur(0.6 if mood != "ash" else 1.2))
-    return fire
 
 
 def _seat(n_people: int, heat: float) -> float:
@@ -308,64 +304,57 @@ def _draw_scar(d: ImageDraw.ImageDraw, p: Person, ring: float) -> None:
     d.ellipse((x - 4, y - 2, x + 3, y + 2), fill=(28, 16, 8))
 
 
+_MOOD_LOOK = {
+    "ash":      ((4, 5, 10), (20, 8, 4), 40, 0.15, 0.50),
+    "embers":   ((8, 8, 16), (90, 28, 8), 160, 0.35, 0.45),
+    "campfire": ((12, 10, 18), (180, 70, 18), 280, 0.45, 0.45),
+    "bonfire":  ((18, 10, 12), (220, 90, 20), 420, 0.55, 0.55),
+    "wildfire": ((28, 8, 4), (255, 80, 10), 560, 0.70, 0.70),
+}
+
+
+def _hill_mask() -> Image.Image:
+    global _HILL_MASK
+    if _HILL_MASK is None:
+        _HILL_MASK = _hill().convert("L").point(lambda v: 255 if v > 8 else 0)
+    return _HILL_MASK
+
+
+def _base(mood: str) -> Image.Image:
+    cached = _BASE.get(mood)
+    if cached is not None:
+        return cached
+    sky_col, glow_col, glow_r, glow_amt, tint_amt = _MOOD_LOOK[mood]
+    stars = _starfield()
+    hill = _hill()
+    sky_tint = Image.new("RGB", (W, H), sky_col)
+    img = Image.blend(stars, sky_tint, tint_amt)
+    img = Image.composite(hill, img, _hill_mask())
+    glow = _GLOW.get(mood)
+    if glow is None:
+        glow = _screen_glow(W, H, CX, CY + 10, glow_r, glow_col, power=1.8)
+        _GLOW[mood] = glow
+    img = Image.blend(img, ImageChops_screen(img, glow), glow_amt * 0.85)
+    _BASE[mood] = img
+    return img
+
+
 def render(world: Hearth, now: float, frame: int) -> Image.Image:
     heat = world.heat
     mood = world.mood
     cam = world.camera(now)
-    t = now  # seconds
+    t = now
 
-    stars = _starfield().copy()
-    hill = _hill()
-
-    if mood == "ash":
-        sky_col = (4, 5, 10)
-        glow_col = (20, 8, 4)
-        glow_r = 40
-        glow_amt = 0.15
-        tint_amt = 0.5
-    elif mood == "embers":
-        sky_col = (8, 8, 16)
-        glow_col = (90, 28, 8)
-        glow_r = 160
-        glow_amt = 0.35
-        tint_amt = 0.45
-    elif mood == "campfire":
-        sky_col = (12, 10, 18)
-        glow_col = (180, 70, 18)
-        glow_r = 280
-        glow_amt = 0.45
-        tint_amt = 0.45
-    elif mood == "bonfire":
-        sky_col = (18, 10, 12)
-        glow_col = (220, 90, 20)
-        glow_r = 420
-        glow_amt = 0.55
-        tint_amt = 0.55
-    else:
-        sky_col = (28, 8, 4)
-        glow_col = (255, 80, 10)
-        glow_r = 560
-        glow_amt = 0.7
-        tint_amt = 0.7
-
-    sky_tint = Image.new("RGB", (W, H), sky_col)
-    img = Image.blend(stars, sky_tint, tint_amt)
-    mask = hill.convert("L").point(lambda v: 255 if v > 8 else 0)
-    img = Image.composite(hill, img, mask)
-
-    # ground bowl lit by the fire
-    glow = _screen_glow(W, H, CX, CY + 10, glow_r, glow_col, power=1.8)
-    img = Image.blend(img, ImageChops_screen(img, glow), glow_amt * 0.85)
-
-    people = sorted(world.ring(), key=lambda p: _person_pos(p, _seat(len(world.people), heat), t)[1])
+    img = _base(mood).copy()
+    people = world.ring()
     ring = _seat(len(world.people), heat)
-    d = ImageDraw.Draw(img)
     close = cam["zoom"] >= 1.3
+    people = sorted(people, key=lambda p: _person_pos(p, ring, t)[1])
 
+    d = ImageDraw.Draw(img)
     for p in people:
         _draw_scar(d, p, ring)
 
-    # fire under people who sit behind it, over people in front — split by y
     behind = [p for p in people if _person_pos(p, ring, t)[1] < CY + 8]
     front = [p for p in people if p not in behind]
 
@@ -373,32 +362,26 @@ def render(world: Hearth, now: float, frame: int) -> Image.Image:
         x, y, _ = _person_pos(p, ring, t)
         _draw_person(d, p, x, y, now, heat, close)
 
-    fire = _draw_fire(img, heat, mood, t)
-    img = ImageChops_screen(img, fire)
+    _draw_fire(img, heat, mood, t)
 
     d = ImageDraw.Draw(img)
     for p in front:
         x, y, _ = _person_pos(p, ring, t)
         _draw_person(d, p, x, y, now, heat, close)
 
-    # bubbles last so they sit on top
     for p in people:
         x, y, _ = _person_pos(p, ring, t)
         _draw_bubble(img, p, x, y, now)
 
-    # ash: a coal pulse, no words
     if mood == "ash":
         pulse = 0.5 + 0.5 * math.sin(t * 1.3)
-        coal = Image.new("RGB", (W, H), (0, 0, 0))
-        cd = ImageDraw.Draw(coal)
         r = 7 + 3 * pulse
-        cd.ellipse((CX - r, CY - r * 0.6, CX + r, CY + r * 0.7), fill=(int(70 * pulse + 20), int(18 * pulse), 4))
-        img = ImageChops_screen(img, coal)
+        d = ImageDraw.Draw(img)
+        d.ellipse((CX - r, CY - r * 0.6, CX + r, CY + r * 0.7), fill=(int(70 * pulse + 20), int(18 * pulse), 4))
 
-    # camera zoom / shake
     zoom = cam["zoom"]
     shake = cam["shake"]
-    if zoom != 1.0 or shake > 0:
+    if abs(zoom - 1.0) > 0.08 or shake > 0.05:
         cw = int(W / zoom)
         ch = int(H / zoom)
         ox = CX - cw // 2
@@ -409,7 +392,7 @@ def render(world: Hearth, now: float, frame: int) -> Image.Image:
         ox = max(0, min(W - cw, ox))
         oy = max(0, min(H - ch, oy))
         crop = img.crop((ox, oy, ox + cw, oy + ch))
-        img = crop.resize((W, H), Image.Resampling.LANCZOS)
+        img = crop.resize((W, H), Image.Resampling.BILINEAR)
 
     return img.convert("RGB")
 
