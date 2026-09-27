@@ -1149,3 +1149,63 @@ relay-held child restart: 2 frames held (0.07 s), ffmpeg 32378 unchanged, scene 
 Kick HLS probe PASS. Left by the fix agent: `@builder #N` fallback name (a world-voice alternative needs a coordinated
 change), no torch/sun-dial timer yet, no creature guaranteed in the 0-awake tile (sleep removal fixes that), stale
 COMPOSITOR_API/WORLD_API mentions. i-0007 (grey area) is delivered. Next: AGES.md row 1, "nobody lies down".
+
+## 038 — 2026-09-27 10:05 — The idle world: spec adopted, nobody lies down on air, the stream relaunched, sami on the switch
+
+Owner (terminal, ~08:00): "We need it built like a generative world that is similar to an idle game. The world should
+progress through stages and chat can build and shape that as it goes ... dynamically generate what the chat is asking
+for ... infinite in its possibility ... create a general structure and flow. Every time someone chats they then exist in
+the world forever. Create an agent that is on a loop that continuously probes and questions how the world is going ...
+feed back ideas to you so you can generate them." Follow-ups: at 100 concurrent chatters, should each chatter have an
+agent of their own ("jo feeds to an agent for jo") rather than one slow queue; and every chatter should see on screen
+that their message was ingested, at least sometimes. Memory: owner-brief-idle-generative-world.md.
+
+Found first: the stream had been OFF since 20:13 on 26 Sep (the owner's `nuke` one minute after the full-bleed deploy;
+stop.sh at 20:15 took the monitors down). Three facts from the six-reader code map changed the design brief: AGES.md's
+STONES key depends on `stack`, which `chat_bridge.LATER_VERBS` refuses (all 16 live stones came from expedition
+arrivals); only 6 of 10 `!idea` messages ever reached the board; and on the full-bleed build an idea's only visible
+trace is a 5 s plank line. The unparsed lines chat actually typed (dig x8, build a hut, build a castle, cut some trees,
+go fishing, techno beat) are the wishes the pipeline has to catch.
+
+**docs/IDLEWORLD.md** (975 lines; four lenses: idle-game designer, generative content architect, feedback + probe
+designer, honesty + ops auditor; three judges; synthesis) builds ON AGES.md: the same three keys, ladder and 90 s
+build, plus accrual and the return beat, a wish pipeline (every moderated message is an append-only ledger row in
+`wishes.jsonl`; any request pins ONE paper per person on a wish post the same frame with a closed-table noun:
+`@kai's wish is pinned · a castle · 4 pinned`), four fulfilment tiers (same-frame acks; kit recipes placed by the
+owner's camp from a data registry; mechanics through `ideas[]`; castles / bridges / halls as age contents), a
+count-bounded feedback ladder at 1 / 10 / 100 chatters, a propose-only probe with eight questions, write-time copy
+validation and the keeper gate. Per-chatter agents are answered with numbers: intake costs ~0.2 ms a record while
+generation cannot parallelise per person (one world writer, one raise per 90 s, one age build at a time), so "jo's
+agent" is jo's row plus fair scheduling, with builds sharded by wish cluster. 15 v1 rows, 56.5 agent-hours, the world
+batch a 36.5 h serial path. Commit e6df6f8 on branch worktree-idle-world.
+
+**AGES row 1, nobody lies down**, built in the worktree with two adversarial reviewers and a fix pass (commit 6ac862f).
+Both reviewers failed the first build for the same real thing: rounds.py still used `awake()` as the presence set,
+which after the sleep removal means every settler on the land, so the expedition and feast cards would have walked
+away people to the Ford and credited them stones. Fixed: rounds / audio / scene gated on `present()`; honesty gains
+the rule that every record-writing event names a present actor; `steading.command` refuses record verbs for an away
+actor (`@x is away · a settler acts only on its own person's words`). Gates: behaviour 60 x 5 min 0 stuck, honesty clean
++ every planted fake caught, steading A2 rewritten (2 min quiet: both stay on the land, present 0, wear 0), C2 < 19 ms,
+rounds --land-test (away bodies never sent / stoned / fed), compositor 300 frames on live copies honesty 0.
+
+**Lane P** (commit b06d1b7): `stream/world/registry.py` (wish classifier, seven recipes, caps, refusal copy),
+`scripts/keeper_gate.sh`, `agents/probe.py` + `prompts/probe.md` + `probe.sh` + `workflows/wish-build.js`,
+`scripts/rotate_chat.py`; stop/status/report know `probe` and `duty`. One real headless probe tick cost $1.40, so the
+probe runs as a session cron here (7, 27, 47) and the headless loop stays the documented fallback.
+
+**Relaunched** (owner, ~09:50: "launch the screen so I can keep watching the build as it progresses"): start.sh from
+live-current at 09:55:22 (new supervisor 16187, ffmpeg 16398), duty heartbeat (pid file), category sampler, chatter
+report, then **row 1 deployed on air at 09:57:22** as one relay-held child restart: 13 stream files copied together
+into live-snapshot-v3 (spine files included, so no hot-reload), 23 frames held (0.77 s), ffmpeg unchanged, scene booted
+in 12 ms with 3 pips / 3 camps, honesty 0, Kick HLS probe PASS (720p30, 2.3 Mbps, 3.4 s). Backups
+live-snapshot-v3-fullbleed-v0d + world.json.bak-pre-row1. On air now: three settlers standing and erranding, nobody lies
+down.
+
+**Kill switch** (owner: "add the user sami to the list of people who can say nuke ... That's my other user"):
+`ops_chat_switch.py` gains an OPERATORS table; sami proves itself by Kick sender_id 28683256 (that account has no
+broadcaster badge); nine new self-test cases; running from the snapshot copy (pid ops_switch.pid). Commit 9d2fea4.
+
+In flight: lane W (W2 idle life + ROAM, W3 schema 3, W4 ages core, W5 return beat, W6 wish post, W7 density + C6, W8
+scale) serial in the worktree, S1 (stack un-refused, wish ledger, props.post) in parallel; each slice deploys to the
+snapshot only after its two reviews pass, by the recipe above, and the journal records each. Harness cleanup freed
+4 GB of stale frame dumps first (40 GB free).
