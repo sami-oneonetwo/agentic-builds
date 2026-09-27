@@ -1004,6 +1004,11 @@ class Land(object):
             for k in (h or {}).get("raised_by") or []:
                 if self.real_pip(k) is None and k not in banished:
                     out.append("age %r raised_by %r has no pip" % ((h or {}).get("idx"), k))
+        try:                                                        # W6 hook: placed owners / askers and paper keys are pip rows
+            from stream.world import wishes as _W
+            out.extend(_W.provenance_rows(self.world, self.real_pip, set(self.ws.data.get("banished") or {})))
+        except Exception as e:
+            out.append("placed / wish_post rows unverified: %r" % (e,))
         return out
 
     def purge_owner(self, key: str) -> Dict[str, Any]:
@@ -1019,6 +1024,11 @@ class Land(object):
             p["camp"], p["field"], p["home"] = None, None, None
         if self.hearth.get("by") == k:
             self.hearth["lit_ts"], self.hearth["by"] = None, None
+        try:                                                        # W6 hook: placed rows hide (credit is forever), the paper leaves
+            from stream.world import wishes as _W
+            rec["placed"] = _W.hide_owner(self.world, k)
+        except Exception:
+            pass
         self._reindex_fields()
         self.bump_bake("banish")
         self._dirty()
@@ -1039,6 +1049,11 @@ class Land(object):
             p["home"] = [rec["camp"].get("x"), rec["camp"].get("y")]
         if isinstance(rec.get("field"), dict):
             p["field"] = rec["field"]
+        try:                                                        # W6 hook: hidden placed rows stand again, the paper returns
+            from stream.world import wishes as _W
+            _W.restore_owner_rows(self.world, k, rec.get("placed"))
+        except Exception:
+            pass
         self._reindex_fields()
         self.bump_bake("unbanish")
         self._dirty()

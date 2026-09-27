@@ -72,7 +72,10 @@ EVENT_HOLD_S = 4.0
 HATCH_CLOSE_S = 3.0
 HATCH_CLOSE_MAX_AWAKE = 2     # a hatch is a 1.5x close-up while at most this many are awake (the first-minute case is 1-2 people)
 EVENT_TYPES = ("seed_land", "seed", "hatch", "wake", "return", "camp", "camp_raised", "raising", "raising_ship", "land_open", "cairn_named",
-               "age", "age_cam")          # W4 hook: an age raising frames the Moot at 0.75x for its ~90 s (ev["zoom"], ev["hold_s"])
+               "age", "age_cam",          # W4 hook: an age raising frames the Moot at 0.75x for its ~90 s (ev["zoom"], ev["hold_s"])
+               "placed", "placed_ship", "age_built")   # W6 hook (IDLEWORLD 3.3): the scene gates `placed` (wishes.camera_filter)
+EVENT_MIN_GAP_S = 8.0         # W6 hook: between EVENT glides (a beat still fires plank + plate + bell without the glide)
+PLACED_EVENT_GAP_S = 60.0     # W6 hook: `placed` glides at most this often, and only while <= 2 are here or the owner is here
 # ROAM (AGES 1.4): at 0 here with settlers on the land the camera follows the most watchable errand (haul > visit > water >
 # moot > tend > home > stroll) for 40-90 s or until that errand ends (never under ROAM_MIN_S: an ease takes seconds), eases
 # to the next at <= PAN_CAP, never the same settler twice running; every third hold is the Moot dwell (30 s at 1.5x)

@@ -1297,6 +1297,11 @@ class WorldPanel(Panel):
                     self._notice(now, str(ev["plank"]), accent, dur=8.0, named=False, prio=PRIO_EVENT)
                 elif typ == "cairn_named":
                     self._notice(now, "the cairn is named", accent, dur=8.0, named=False)
+                elif typ in ("wish", "placed", "placed_ship", "wish_refused", "wish_have") and land_mode:   # W6 hook
+                    from stream.world import wishes as _W
+                    wl = _W.plank_line(sc, ev, lambda k: self._shown(sc, k)) if names_on_ev else None      # validated copy or None
+                    if wl is not None:
+                        self._notice(now, wl[0], accent, dur=wl[2], prio=wl[1], key=str(ev.get("pip") or ""), tie=wl[3])
                 elif typ in ("raising", "raising_ship", "land_open"):
                     name = L.strip_non_bmp(str(ev.get("name") or ""))
                     # a raising (started / landed) is the plate at its site (pinned while raising, 10 min after) and the
@@ -1877,6 +1882,11 @@ class WorldPanel(Panel):
         # 0b. the SAY ANYTHING sign at the spawn (world-anchored, screen-scale): a fixed object, reserved before anything
         #     else is placed so no name row or plate lands under it
         self._sign(img, placer, sc, cam, size, awake)
+        try:                                                        # W6 hook: the wish post's box is reserved like the sign's
+            from stream.world import wishes as _W
+            _W.reserve_post(placer, sc, cam, size)
+        except Exception:
+            pass
 
         # 1. waystone letters, counts, standing names (culled; their boxes are reserved so nothing covers a letter)
         counts = sc.platform_counts()
@@ -2194,6 +2204,12 @@ class WorldPanel(Panel):
         txt = pt[0] if pt is not None else None
         if _PLANK_LOG and txt != self.last_plank:
             _log("plank: %r" % (txt,))                              # TEST HOOK (KL_PLANK_LOG=1): the copy as evidence
+        if txt != self.last_plank:                                  # W6 hook: plank_log.jsonl, one row per text change
+            try:
+                from stream.world import wishes as _W
+                _W.plank_log(getattr(sc, "run_dir", None), now, txt, max([n["prio"] for n in self._notices if n["text"] == txt] or [None]))
+            except Exception:
+                pass
         self.last_plank = txt
         self.last_plank_row2 = None
         if pt is None:
@@ -2577,6 +2593,11 @@ class WorldPanel(Panel):
             if ag.plate_pinned(now) and ag.plate_id(now) not in pin_ids:
                 pin_ids.insert(0, ag.plate_id(now))
         pin_ids += [m[0] for m in in_view if m[1] in ("raising", "board")]     # W5 hook: the nightly board rides pinned (ledger)
+        try:                                                        # W6 hook: the post pins 10 s after a wish, a placed thing 20 s
+            from stream.world import wishes as _W
+            pin_ids += _W.plate_pins(sc, now, _present_count(sc))
+        except Exception:
+            pass
         for pid in pin_ids:
             if pid in picked_ids:
                 continue
@@ -2670,6 +2691,11 @@ class WorldPanel(Panel):
         kp = getattr(sc, "keepers", None)
         raising = getattr(kp, "raising", None) if kp is not None else None
         n_now = len(self._camps) + len(self._fields) + len(ld.marks) + ld.stock + (1000 if raising else 0) + int(sc.hatched_ever())
+        try:                                                        # W6 hook: papers / placed rows change the plate set
+            from stream.world import wishes as _W
+            n_now += _W.plate_sig(sc)
+        except Exception:
+            _W = None
         if cached is not None and now - built_t < 1.0 and n_now == n_prev:
             return cached
         marks: List[Tuple[str, str, float, float, Optional[str], str]] = []    # (id, kind, x, y, owner, text)
@@ -2754,6 +2780,11 @@ class WorldPanel(Panel):
                 marks.append(("raised:" + str(lr["name"]), "raised", float(lr.get("x") or ld.moot[0]), float(lr.get("y") or ld.moot[1]), None, text))
         except Exception:
             pass
+        if _W is not None:                                          # W6 hook: `wished: ...` on the post, one plaque per placed row
+            try:
+                marks.extend(_W.plate_rows(sc, now, lambda k: self._shown(sc, k)))
+            except Exception:
+                pass
         self._marks_cache = (now, n_now, marks)
         return marks
 

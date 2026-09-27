@@ -69,7 +69,7 @@ import collections
 import json
 import os
 import sys
-from typing import Any, Deque, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Set, Tuple
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
@@ -78,8 +78,208 @@ if _ROOT not in sys.path:
 from stream.state_store import normalise_chat, run_path  # noqa: E402
 
 RULES = ("origin", "record", "chat_jsonl", "hold", "name", "counts", "text", "roster", "here", "agency", "idle", "scene", "wear", "marks",
-         "age")                                # W4 hook: `age` (AGES 4.2)
+         "age",                                # W4 hook: `age` (AGES 4.2)
+         "placed")                             # W6 hook: every standing placed row carries a validated recipe (validate_registry)
 SEED_STATES = ("seed", "hatching")
+# ---- W6 hook (IDLEWORLD 5.2): the gate copy of the registry allowlist and the write-time validators. honesty.py is in the
+# keeper gate's DENY set, so this copy is what makes "chat is data" true: a probe-drafted parts list is checked HERE.
+FN_ALLOWLIST: Dict[str, Dict[str, Tuple[int, int]]] = {           # fn -> {int arg: (lo, hi)}
+    "buildings.garden": {}, "buildings.banner": {}, "buildings.lantern": {},
+    "props.tree": {"age": (0, 2)}, "props.bush": {}, "props.flowers": {}, "props.stone": {}, "props.cairn": {"n": (1, 5)},
+}
+FN_DENIED = ("buildings.hut", "buildings.well", "buildings.fence_h", "buildings.fence_v", "props.beacon", "props.campfire", "props.waystone")
+FN_DENIED_PREFIXES = ("creatures.",)               # nothing in a recipe is a figure
+LIT_RULES = ("owner_here", "anyone_here", "never")
+FORBIDDEN_PART_FIELDS = ("moves", "speed", "path", "frames", "rate")
+PLACED_STATUSES = ("rising", "stands", "hidden")
+PLACED_GAP, CAMP_GAP = 6, 12
+LIFETIME_BASE, LIFETIME_PER_CAMP_TIER = 2, 1      # registry.CAPS by value (the validator never trusts the row's own numbers)
+
+
+def _palette_keys() -> Set[str]:
+    try:
+        from stream.world.art.tiles import FLAT
+        return set(FLAT.keys())
+    except Exception:
+        return set()
+
+
+def validate_copy(text: Any) -> bool:
+    """Every string a panel composes from a wish (a plate noun, a plank noun, a board title, a plaque) passes the
+    compositor's banned-copy list, the day / version / clock patterns and the username blocklist. False = draw nothing."""
+    s = str(text or "")
+    if not s.strip():
+        return False
+    try:
+        from stream import compositor as C
+        if C.Compositor.banned_copy_hits([s]):
+            return False
+    except Exception:
+        import re as _re
+        if _re.search(r"(?<![a-z0-9_])(?:ai|keeper|keepers|build|builds|show|live|version|viewer|viewers|camera|fake|honest)(?![a-z0-9_])", s.lower()) \
+                or _re.search(r"(?<![a-z0-9_])v\d+\.\d+", s.lower()) or _re.search(r"(?<![a-z0-9_])day \d+", s.lower()):
+            return False
+    try:
+        from stream.chat_bridge import word_lists
+        if word_lists().blocked(s) is not None:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def validate_registry(row: Any, land=None, terrain=None, ledger_ids: Optional[Set[str]] = None, banished: Optional[Set[str]] = None,
+                      placed_rows: Optional[Sequence[Dict[str, Any]]] = None, pips: Optional[Dict[str, Dict]] = None,
+                      caps: Optional[Dict[str, int]] = None) -> Tuple[bool, str]:
+    """(ok, reason) for one placed[] row (IDLEWORLD 5.2, 6.1): every part fn in FN_ALLOWLIST with int args in range; no
+    moves / speed / path / frames / rate field on the row or a part; colour `owner` or an ART.md palette key (an RGB
+    triple is refused); lit_rule closed (`always` refused); footprint >= 1x1; owner a real, unbanished pip who is an
+    asker (a banished owner's row must be `hidden`); every asker a pip row or a banished record; every wish_id in the
+    ledger id set (when one is given); the cell passable, dry, off the Moot green, off a trail, PLACED_GAP from other
+    placed rows, CAMP_GAP from other camps; the lifetime cap (2 + camp tier) from the placed records themselves and
+    the session / age caps when `caps` counts are given. Pure: no writes, no imports of the locked modules."""
+    import math as _m
+    if not isinstance(row, dict):
+        return False, "row is not a dict"
+    for k in FORBIDDEN_PART_FIELDS:
+        if k in row:
+            return False, "row carries %r" % k
+    rid = row.get("id")
+    if not isinstance(rid, str) or not rid.startswith("p-"):
+        return False, "id %r is not p-NNNN" % (rid,)
+    status = row.get("status")
+    if status not in PLACED_STATUSES:
+        return False, "status %r" % (status,)
+    try:
+        from stream.world import registry as R
+    except Exception:
+        R = None
+    recipe = row.get("recipe")
+    parts = row.get("parts")
+    if parts is None:
+        spec = ((getattr(R, "RECIPES", None) or {}).get(recipe)) if R is not None else None
+        if not isinstance(spec, dict):
+            return False, "unknown recipe %r" % (recipe,)
+        parts = spec.get("parts") or []
+        lit_rule = row.get("lit_rule", spec.get("lit_rule"))
+        footprint = spec.get("footprint", (1, 1))
+    else:
+        lit_rule = row.get("lit_rule")
+        footprint = row.get("footprint", (1, 1))
+    if not isinstance(parts, (list, tuple)) or not parts:
+        return False, "no parts"
+    palette = None
+    for part in parts:
+        try:
+            fn, args, dx, dy = part
+        except Exception:
+            return False, "malformed part %r" % (part,)
+        fn = str(fn)
+        if any(fn.startswith(p) for p in FN_DENIED_PREFIXES) or fn in FN_DENIED or fn not in FN_ALLOWLIST:
+            return False, "part %r is not in the allowlist" % fn
+        args = dict(args or {})
+        for k in FORBIDDEN_PART_FIELDS:
+            if k in args:
+                return False, "part %s carries %r" % (fn, k)
+        for k, (lo, hi) in FN_ALLOWLIST[fn].items():
+            v = args.get(k)
+            if isinstance(v, bool) or not isinstance(v, int) or v < lo or v > hi:
+                return False, "%s.%s=%r outside %d..%d" % (fn, k, v, lo, hi)
+        col = args.get("colour")
+        if col is not None:
+            if palette is None:
+                palette = _palette_keys()
+            if not isinstance(col, str) or (col != "owner" and col not in palette):
+                return False, "colour %r is not `owner` or a palette key" % (col,)
+        if isinstance(dx, bool) or isinstance(dy, bool) or not isinstance(dx, (int, float)) or not isinstance(dy, (int, float)):
+            return False, "part %s offset %r" % (fn, (dx, dy))
+    if lit_rule not in LIT_RULES:
+        return False, "lit_rule %r" % (lit_rule,)
+    try:
+        fw, fh = footprint
+        if int(fw) < 1 or int(fh) < 1:
+            return False, "footprint %r" % (footprint,)
+    except Exception:
+        return False, "footprint %r" % (footprint,)
+    owner = str(row.get("owner") or "").lower()
+    ban = set(str(k).lower() for k in (banished or ()))
+    askers = [str(a).lower() for a in (row.get("askers") or [])]
+    if not owner:
+        return False, "no owner"
+    if owner in ban and status != "hidden":
+        return False, "owner %r is banished: the row must be hidden" % owner
+    if owner not in askers:
+        return False, "owner %r is not an asker" % owner
+    if pips is not None:
+        p = pips.get(owner)
+        if (p is None or p.get("_test")) and not (owner in ban and status == "hidden"):
+            return False, "owner %r is not a real pip" % owner
+        for a in askers:
+            q = pips.get(a)
+            if (q is None or q.get("_test")) and a not in ban:
+                return False, "asker %r is not a real pip" % a
+    if ledger_ids is not None:
+        wids = [str(w) for w in (row.get("wish_ids") or [])]
+        if not wids:
+            return False, "no wish_ids"
+        for w in wids:
+            if w not in ledger_ids:
+                return False, "wish_id %r is not in the ledger" % w
+    x, y = row.get("x"), row.get("y")
+    if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        return False, "no cell"
+    xi, yi = int(round(x)), int(round(y))
+    pas = getattr(land, "passable", None) if land is not None else getattr(terrain, "passable", None)
+    wat = getattr(land, "water", None) if land is not None else getattr(terrain, "water", None)
+    try:
+        if pas is not None and (yi < 0 or xi < 0 or not bool(pas[yi, xi])):
+            return False, "cell (%d, %d) is not passable" % (xi, yi)
+        if wat is not None and bool(wat[yi, xi]):
+            return False, "cell (%d, %d) is water" % (xi, yi)
+    except IndexError:
+        return False, "cell (%d, %d) is off the map" % (xi, yi)
+    if land is not None:
+        try:
+            if land.on_green(xi, yi):
+                return False, "cell (%d, %d) is on the Moot green" % (xi, yi)
+            if land.is_trail(xi, yi):
+                return False, "cell (%d, %d) is on a trail" % (xi, yi)
+        except Exception as ex:
+            return False, "land rules unverifiable: %r" % (ex,)
+        try:
+            for c in land.camps():
+                if c.get("key") == owner or c.get("x") is None:
+                    continue
+                if _m.hypot(float(c["x"]) - xi, float(c["y"]) - yi) < CAMP_GAP:
+                    return False, "within CAMP_GAP of another camp"
+        except Exception:
+            pass
+    tier = 0
+    if pips is not None:
+        camp = (pips.get(owner) or {}).get("camp")
+        tier = int(camp.get("tier") or 0) if isinstance(camp, dict) else 0
+    mine = 1
+    for other in placed_rows or ():
+        if not isinstance(other, dict) or other.get("id") == rid or other.get("status") == "hidden":
+            continue
+        try:
+            if _m.hypot(float(other.get("x")) - xi, float(other.get("y")) - yi) < PLACED_GAP:
+                return False, "within PLACED_GAP of %s" % other.get("id")
+        except Exception:
+            continue
+        if str(other.get("owner") or "").lower() == owner:
+            mine += 1
+    if status != "hidden" and mine > LIFETIME_BASE + LIFETIME_PER_CAMP_TIER * tier:
+        return False, "over the lifetime cap (%d placed, cap %d)" % (mine, LIFETIME_BASE + LIFETIME_PER_CAMP_TIER * tier)
+    if caps is not None and R is not None:
+        try:
+            ok, why = R.cap_check(int(caps.get("person_placed", 0)), int(caps.get("person_session", 0)), int(caps.get("age_placed", 0)),
+                                  int(caps.get("age", 0)), int(caps.get("camp_tier", tier)))
+        except Exception as ex:
+            return False, "cap check unverifiable: %r" % (ex,)
+        if not ok:
+            return False, "over cap: %s" % why
+    return True, "ok"
 HIDDEN_STATES = ("hidden", "burrowed")           # the one lying pose (mod !hide); `burrowed` is the cave's name for it
 MOVING_STATES = ("walking", "hauling")           # the states the land advances (a haul is a walk with a stone)
 AWAY_THEN_OK = ("idle", "sit", "gather", "credits")   # a walking.then the land may give an away body (plus errand:<name>)
@@ -196,6 +396,8 @@ class HonestyMonitor(object):
         self.wear_added_total = 0
         self._records_seen: Dict[str, int] = {}                # len(land.stones / marks) at the last frame (agency: new records)
         self.record_events_checked = 0
+        self._placed_ok: Set[str] = set()                      # W6 hook: standing placed rows validated once per id
+        self._placed_bad: Dict[str, Tuple[float, str]] = {}
 
     # ------------------------------------------------------------------ helpers
     def _name_filter(self):
@@ -583,6 +785,10 @@ class HonestyMonitor(object):
                     rep.unverified.append("provenance_violations: %r" % (ex,))
                 if bad:
                     rep.add("marks", "%d mark(s) whose owner is not a pip row: %s" % (len(bad), "; ".join(str(b) for b in bad[:3])))
+            try:                                              # W6 hook: no `stands` row without a validated recipe (cached per id)
+                self._check_placed(scene, rep, t)
+            except Exception as ex:
+                rep.unverified.append("placed: %r" % (ex,))
         # -- age (AGES 4.2; W4 hook): age <= age_gate(people, stones, days), monotonic across frames, age_built <= age,
         #    stones_placed <= len(stones); the assertions live in ages.age_violations (schema 2 with no director: nothing)
         try:
@@ -673,6 +879,38 @@ class HonestyMonitor(object):
                               and ((o.sit_at[0] - fire[0]) ** 2 + (o.sit_at[1] - fire[1]) ** 2) ** 0.5 <= _FIRE_CELLS)
                     if n_s > _FIRE_CAP:
                         rep.add("idle", "%d sitting at the fire (%.0f, %.0f) (cap %d)" % (n_s, fire[0], fire[1], _FIRE_CAP))
+
+    def _check_placed(self, scene, rep: Report, t: float) -> None:
+        """W6 hook (IDLEWORLD 5.2): every `stands` placed row passes validate_registry against the land, the pips, the
+        banished set and the ledger id set the scene's wish post holds (skipped when no post is attached); a row that
+        fails is reported every frame and re-validated every MARKS_EVERY_S."""
+        w = scene.world.data.get("world") or {}
+        rows = w.get("placed") or []
+        if not rows:
+            return
+        post = getattr(scene, "wishes", None)
+        fn = getattr(post, "ledger_ids", None)
+        ledger = set(fn()) if callable(fn) else None
+        pips = scene.world.data.get("pips") or {}
+        banished = set(str(k).lower() for k in (scene.world.data.get("banished") or {}))
+        for row in rows:
+            if not isinstance(row, dict) or row.get("status") != "stands":
+                continue
+            rid = str(row.get("id"))
+            if rid in self._placed_ok:
+                continue
+            last = self._placed_bad.get(rid)
+            if last is not None and t - last[0] < MARKS_EVERY_S:
+                rep.add("placed", "%s: %s" % (rid, last[1]))
+                continue
+            ok, why = validate_registry(row, land=getattr(scene, "land", None), terrain=getattr(scene, "terrain", None), ledger_ids=ledger,
+                                        banished=banished, placed_rows=[r for r in rows if r is not row], pips=pips)
+            if ok:
+                self._placed_ok.add(rid)
+                self._placed_bad.pop(rid, None)
+            else:
+                self._placed_bad[rid] = (t, why)
+                rep.add("placed", "%s: %s" % (rid, why))
 
     # ------------------------------------------------------------------ readouts
     def summary(self) -> Dict[str, Any]:
@@ -1162,6 +1400,82 @@ def _selftest(run_dir: str) -> int:
         print("[fake 18c] age_built %d > age %d -> %r" % (gate0 + 1, gate0, rep.violations))
         blk["age_built"] = min(int(blk.get("age_built") or 0), gate0)
         run_frames(1)
+
+    # 19. W6 hook (IDLEWORLD 5.2 / 8 row 9): 12 planted bad placed rows, all refused by validate_registry and none drawn
+    if land_scene:
+        import numpy as np
+        from stream.world import registry as _R
+        post = getattr(scene, "wishes", None)
+        ledger = {"h-0001", "h-0002"}
+        if post is not None:
+            post.ledger_ids().update(ledger)
+        owner = names[0]
+        camp = (scene.world.pips.get(owner) or {}).get("camp")
+        camp_xy = (float(camp["x"]), float(camp["y"])) if isinstance(camp, dict) else (float(scene.terrain.site[0]) + 30.0, float(scene.terrain.site[1]))
+        gx, gy = _R.place("lantern", camp_xy, scene.land, scene.terrain, seed=1) or (int(camp_xy[0]) + 6, int(camp_xy[1]) + 3)
+        base = {"id": "p-0901", "ts": epoch_to_iso(now), "recipe": "lantern", "owner": owner, "askers": [owner], "wish_ids": ["h-0001"],
+                "merge_key": "lantern", "x": int(gx), "y": int(gy), "age_idx": 0, "lit_rule": "owner_here", "status": "stands",
+                "reveal_t0": now, "plaque": None}
+        args = dict(land=scene.land, terrain=scene.terrain, ledger_ids=ledger, banished=set(), placed_rows=[], pips=scene.world.pips)
+        ok0, why0 = validate_registry(base, **args)
+        print("[fake 19] the honest base row validates: %s (%s) at (%d, %d)" % (ok0, why0, gx, gy))
+        if not ok0:
+            ok = False
+        wy, wx = [int(v) for v in np.argwhere(scene.terrain.water)[0]] if bool(scene.terrain.water.any()) else (gy, gx)
+        far = {"id": "p-0977", "x": int(gx) + 40, "y": int(gy), "owner": owner, "status": "stands"}
+        far2 = {"id": "p-0978", "x": int(gx) + 60, "y": int(gy), "owner": owner, "status": "stands"}
+        scene.land.wear[int(gy) + 12, int(gx) + 12] = 255                                  # one trail cell for fake 8
+        scene.world.data["banished"]["banished-nobody"] = {"ts": epoch_to_iso(now), "by": "selftest"}
+        fakes = [
+            ("a creatures.* part", dict(base, id="p-0911", parts=[("creatures.render", {}, 0, 0)])),
+            ("lit_rule always", dict(base, id="p-0912", lit_rule="always")),
+            ("an RGB colour", dict(base, id="p-0913", recipe="banner", parts=[("buildings.banner", {"colour": (255, 0, 0)}, 0, 0)])),
+            ("a banished owner", dict(base, id="p-0914", owner="banished-nobody", askers=["banished-nobody"])),
+            ("a wish_id not in the ledger", dict(base, id="p-0915", wish_ids=["nope-0000"])),
+            ("a water cell", dict(base, id="p-0916", x=wx, y=wy)),
+            ("the Moot green", dict(base, id="p-0917", x=int(scene.land.moot[0]), y=int(scene.land.moot[1]))),
+            ("a trail", dict(base, id="p-0918", x=int(gx) + 12, y=int(gy) + 12)),
+            ("over cap (3rd item, lifetime 2 + tier 0)", dict(base, id="p-0919")),
+            ("an unknown fn", dict(base, id="p-0920", parts=[("props.dragon", {}, 0, 0)])),
+            ("a rate field", dict(base, id="p-0921", parts=[("props.stone", {"variant": 0, "rate": 2}, 0, 0)])),
+            ("a fence", dict(base, id="p-0922", parts=[("buildings.fence_h", {}, 0, 0)])),
+        ]
+        refused = 0
+        for label, row in fakes:
+            a = dict(args)
+            if label.startswith("over cap"):
+                a["placed_rows"] = [far, far2]
+            if label.startswith("a banished"):
+                a["banished"] = {"banished-nobody"}
+            okf, whyf = validate_registry(row, **a)
+            print("[fake 19] %-42s -> %s (%s)" % (label, "REFUSED" if not okf else "ACCEPTED", whyf))
+            refused += 0 if okf else 1
+        caught["placed (12 planted bad rows refused by validate_registry)"] = refused == len(fakes)
+        # none drawn: planted as `stands` rows, the scene's post lists none of them among its structures / live sprites, and the
+        # monitor's `placed` rule names them
+        planted = [dict(r) for _l, r in fakes if not _l.startswith("over cap")] + [dict(base, id="p-0919"), dict(far), dict(far2)]
+        wblk = scene.world.data["world"]
+        saved_rows = list(wblk.get("placed") or [])
+        wblk["placed"] = saved_rows + planted
+        drawn = []
+        if post is not None:
+            post._valid_cache.clear()
+            ids = {p["id"] for p in planted}
+            drawn = [s["id"] for s in post.structures() if s["id"] in ids] + [d[3].get("id") for d in post.live_sprites(now, lambda x, y: True, 0) if d[3].get("id") in ids]
+        rep19 = run_frames(1)
+        caught["placed (none of the planted rows drawn; the monitor names them)"] = not drawn and "placed" in rep19.rules()
+        print("[fake 19] planted %d stands rows -> drawn %r, monitor rules %r" % (len(planted), drawn, sorted(rep19.rules())))
+        wblk["placed"] = saved_rows
+        scene.land.wear[int(gy) + 12, int(gx) + 12] = 0
+        scene.world.data["banished"].pop("banished-nobody", None)
+        if post is not None:
+            post._valid_cache.clear()
+        run_frames(1)
+        # validate_copy: a template passes, a banned word / a version tag / `day N` do not
+        caught["copy (validate_copy refuses banned copy)"] = validate_copy("wished: a castle · @kai +3") and validate_copy("lantern · @kai @jo · since 3 Oct") \
+            and not validate_copy("the keepers build a castle") and not validate_copy("raised · v1.2") and not validate_copy("day 3 · a lantern")
+        print("[fake 19] validate_copy: template ok, `build` / `v1.2` / `day 3` refused -> %s" % caught["copy (validate_copy refuses banned copy)"])
+
     # 8. after cleanup: violation-free again (the monitor does not get stuck)
     rep = run_frames(3)
     print("[after] clean again: ok=%s violations=%r counts=%r" % (rep.ok, rep.violations, rep.counts))

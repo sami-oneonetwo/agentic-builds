@@ -96,7 +96,8 @@ SCREEN = (1280, 720)          # the world region = the whole frame (full-bleed l
 PPC = 4                                   # bake px per cell at 1x
 SAVE_S = 5.0
 FORCE_SAVE_EVENTS = ("camp", "camp_new", "camp_raised", "plant", "sow", "harvest", "stone", "place", "hatch", "cairn_named",
-                     "day_turn")                                         # W3 hook: a new local date reaches world.json at once
+                     "day_turn",                                        # W3 hook: a new local date reaches world.json at once
+                     "wish", "placed", "placed_ship")                  # W6 hook: a paper / a placed row reaches world.json the same frame
 HISTORY_S = 60.0                          # a record older than this when first seen is boot/deploy history (ChatBridge.HISTORY_S)
 SEED_SINK_S = HOLD_S + 4.0
 HEARTBEAT_FRESH_S = 120.0
@@ -115,15 +116,18 @@ TUFT_W, TUFT_H = 20, 16
 MOOT_LAYOUT = {                           # cell offsets from the Moot centre; the waystones come from the behaviour
     "beacon": (6, -10),                       # = keepers.beacon_state(): lit on a fresh keeper heartbeat, dark otherwise
     "hearth": (-16, 10), "cairn": (16, 10),
-    "sign": (0, 46),                          # the SAY ANYTHING sign's post cell (the text layer draws it): south of the hearth /
+    "post": (34, 10),                         # W6 hook: the wish post (stream/world/wishes.py draws it, culled with the cairn)
+    "sign": (0, 46),                         # the SAY ANYTHING sign's post cell (the text layer draws it): south of the hearth /
                                               # cairn row with room for the cairn's plate at 1x, outside the SEED_RING so a tuft
                                               # never lands under it (journal 034: 38 put the plate inside the sign's body)
 }
 HOP_BODY_FRAMES = ("hop0", "hop1")            # drawn body-only over creatures.shadow() so the shadow stays on the ground
-# Settlers are drawn slightly larger than the atlas's 1x sizes (owner fix pass, journal 023 handoff: 26/30/34/42 px read
-# small on the 440 px land). The atlas renders every frame at 2x (its working resolution is the same, so a sheet costs
-# the same ~0.75 s) and the scene BOX-downsamples to SETTLER_SCALE x the camera zoom: crisp outlines, no bilinear blur.
-SETTLER_SCALE = 1.2
+# Settlers are chunky pixel art on a hard grid (owner brief 2026-09-27 12:05; ART.md 2): one art pixel = 2 screen px at 1x.
+# The atlas renders every frame at 2x (4 screen px per art px; the art grid is shared, so a sheet costs ~9 ms) and the
+# scene scales it to SETTLER_SCALE x the camera zoom / 2: at 1.0 an art pixel is exactly 2 px at 1x and 3 px at 1.5x
+# (NEAREST, every art pixel a uniform block) and 1.5 px at 0.75x (BOX, the wide view). The old 1.2 gave 2.4 px per art
+# px and softened every edge through the BOX prescale; 1.5 would give 3 px at 1x if the owner wants them bigger.
+SETTLER_SCALE = 1.0
 SETTLER_RENDER_ZOOM = 2
 LETTERS = ("A", "B", "C")
 SPRITE_PRIO_HATCH, SPRITE_PRIO_AWAKE, SPRITE_PRIO_REST = 0, 1, 3
@@ -489,11 +493,26 @@ class _Sprites(object):
 
     @staticmethod
     def factor(zoom: float) -> float:
-        """Screen px per atlas px: the 2x render scaled to SETTLER_SCALE x the camera zoom (0.6 at 1x)."""
+        """Screen px per atlas px: the 2x render scaled to SETTLER_SCALE x the camera zoom (0.5 at 1x = 2 px per art px)."""
         return float(zoom) * SETTLER_SCALE / float(SETTLER_RENDER_ZOOM)
 
     @staticmethod
     def _scaled(base: np.ndarray, k: float) -> np.ndarray:
+        """The atlas frame (a 2x NEAREST pixel-art render: one art px = creatures.ART_PX x SETTLER_RENDER_ZOOM = 4 screen px)
+        scaled to k screen px per atlas px. When an art pixel lands on a whole number of screen px (k 0.5 -> 2 px at 1x,
+        0.75 -> 3 px at 1.5x) the copy is NEAREST on a canvas padded to a multiple of the art pixel, so every art pixel
+        stays one crisp uniform block whatever the frame's parity; a fractional art pixel (0.375 -> 1.5 px at 0.75x) is
+        BOX-averaged (the wide view). The top-left corner never moves, so anchors and blits are unchanged."""
+        apx = getattr(creatures, "ART_PX", 2) * SETTLER_RENDER_ZOOM
+        m = apx * k
+        if abs(m - round(m)) < 1e-6 and round(m) >= 1:
+            H, W = base.shape[:2]
+            Wp, Hp = -(-W // apx) * apx, -(-H // apx) * apx
+            if (Wp, Hp) != (W, H):
+                pad = np.zeros((Hp, Wp) + base.shape[2:], base.dtype)
+                pad[:H, :W] = base
+                base = pad
+            return np.asarray(Image.fromarray(base).resize((int(round(Wp * k)), int(round(Hp * k))), Image.Resampling.NEAREST))
         w, h = max(1, int(round(base.shape[1] * k))), max(1, int(round(base.shape[0] * k)))
         method = Image.Resampling.BOX if k < 1 else Image.Resampling.BILINEAR
         return np.asarray(Image.fromarray(base).resize((w, h), method))
@@ -760,6 +779,11 @@ class SteadingScene(object):
         if found is not None and found != self.land.bake_ver:
             self._bake_marks_ver[id(B)] = -1                        # ... and every mark region is repainted, then renamed
         self.worker.submit(SPRITE_PRIO_HATCH, self._job_warm_props, self._octant, float(season_idx))
+        try:                                                        # W6 hook: the wish post (lazy import: hot-reload order)
+            from stream.world import wishes as _W
+            _W.WishPost(self)
+        except Exception as e:
+            self.log("wish post not attached: %r" % (e,))
         try:                                                        # W4 hook: the age director (gate at round close, the 90 s raising)
             self.ages = _AG.AgeDirector(self)
         except Exception as ex:
@@ -1040,6 +1064,8 @@ class SteadingScene(object):
                     b.speak(key, now, text if m.get("kind") != "vote" else text.upper())
                 elif ent is not None:
                     ent.text, ent.speak_until = text, now + 6.0   # speaks as it hatches
+            if m.get("wish") and getattr(self, "wishes", None) is not None:     # W6 hook: classify the frame it clears the hold
+                self.wishes.on_record(m, key, t, now)
             self._chat_ids_seen += 1
         # 3. votes: walk to the waystone within one frame of the tally changing
         for name, letter, t in (ctx.recent_votes or []):
@@ -1325,7 +1351,8 @@ class SteadingScene(object):
         sig = (land.bake_ver, tuple(sorted((c["key"], c["x"], c["y"], c["tier"]) for c in camps)),
                tuple((m["id"], m["x"], m["y"], blooms.get(m["id"], 1)) for m in flowers),
                tuple((f["owner"], f["x"], f["y"], land.field_stage(self.world.pip(f["owner"]).get("field") or {}, now)[0]) for f in fields
-                     if self.world.pip(f["owner"]) is not None))
+                     if self.world.pip(f["owner"]) is not None),
+               self.wishes.structures_sig() if getattr(self, "wishes", None) is not None else ())   # W6 hook
         if sig == self._marks_sig and self._marks:
             return False
         huts = []
@@ -1341,7 +1368,8 @@ class SteadingScene(object):
                      [f for f in fields if self.world.pip(f["owner"]) is not None])],
                  "flowers": [{"x": m["x"], "y": m["y"], "owner": m["owner"], "variant": LAND.name_hash(m["owner"], "flower") % 5,
                               "blooms": blooms.get(m["id"], 1)} for m in flowers],      # W5 hook: blooms -> bake drift clumps
-                 "stones": []}
+                 "stones": [],
+                 "structures": self.wishes.structures() if getattr(self, "wishes", None) is not None else []}   # W6 hook: placed parts
         self._marks, self._marks_sig = marks, sig
         self._marks_ver += 1
         self._tier_base = None
@@ -1429,6 +1457,8 @@ class SteadingScene(object):
             regs.append((f["x"] - 1, f["y"] - 1, f["x"] + 5, f["y"] + 4))
         for m in self._marks.get("flowers", ()):
             regs.append((m["x"] - 5, m["y"] - 5, m["x"] + 6, m["y"] + 2))      # W5 hook: room for a 5-clump drift (ledger.drift_clumps)
+        for s_ in self._marks.get("structures", ()):                # W6 hook: placed parts repaint like flowers
+            regs.append((s_["x"] - 6, s_["y"] - 8, s_["x"] + 7, s_["y"] + 4))
         return regs
 
     # worker jobs (never on the frame thread)
@@ -1577,6 +1607,8 @@ class SteadingScene(object):
             except Exception as ex:
                 self.log("ledger frame: %r" % (ex,))
             self._idle_life(ev, now)
+            if getattr(self, "wishes", None) is not None:           # W6 hook: the place queue / reveal events ride this frame
+                ev.extend(self.wishes.tick(now, ctx, ev))
             self._layout(now)
             self._persist(ctx, now, ev, dt)
             self.events.extend(ev)
@@ -1660,8 +1692,11 @@ class SteadingScene(object):
         for r in inp["roam"]:                                   # the away bodies (ROAM, AGES 1.4): head heights for the dead zone
             ent = b.get(r.get("key"))
             r["top"] = self._head_cells(int(ent.tier) if ent is not None else 3)
-        cam.update(now, dt, awake=inp["awake"], seeds=inp["seeds"], events=ev, moot=inp["moot"], stops=stops, lead_key=b.newest_speaker,
-                   roam=inp["roam"])                            # `return` is in the camera's EVENT_TYPES (the wake shim is gone)
+        cam_ev = ev                                             # `return` is in the camera's EVENT_TYPES (the wake shim is gone)
+        if getattr(self, "wishes", None) is not None:               # W6 hook: `placed` glides only under the 3.3 rule
+            cam_ev = self.wishes.camera_filter(ev, now)
+        cam.update(now, dt, awake=inp["awake"], seeds=inp["seeds"], events=cam_ev, moot=inp["moot"], stops=stops, lead_key=b.newest_speaker,
+                   roam=inp["roam"])
         if self.force_zoom in CAM.ZOOMS and self.test_pips:
             cam.zoom = cam.zoom_prev = cam.target_zoom = self.force_zoom
             cam._clamp_pos()
@@ -1797,6 +1832,8 @@ class SteadingScene(object):
                 x, y = self._pos[k]
                 col = creatures.palette(k)["main"]
                 out.append((x, y - 3, 18, tuple(int(v) for v in col), 0.16 + 0.10 * e.energy))
+        if getattr(self, "wishes", None) is not None:               # W6 hook: lit lanterns, gated on the owner's presence
+            out.extend(self.wishes.glow_sources(now))
         return out
 
     def _here_tonight(self, key: str, ctx) -> bool:
@@ -1873,6 +1910,8 @@ class SteadingScene(object):
             fx, fy = self._fire_xy(c)
             if visible(fx, fy):
                 live.append((fy, n, "fire", (fx, fy, e is not None and e.is_present(now)))); n += 1
+        if getattr(self, "wishes", None) is not None:               # W6 hook: the post, rising rows, lanterns, banners
+            live.extend(self.wishes.live_sprites(now, visible, n, self.degrade_level)); n = len(live)
         for k, e in b.entities.items():
             x, y = self._pos[k]
             if visible(x, y):
@@ -1892,6 +1931,9 @@ class SteadingScene(object):
         for _, _, kind, data in live:
             if kind == "pip":
                 self._blit_pip(rgb, data, now, zoom, s)
+                continue
+            if kind == "wish":                                      # W6 hook: the module blits (reveal mask, building anchors)
+                self.wishes.draw(rgb, data, now, sun, wind_phase, season, zoom, self.degrade_level, self.to_screen, self._zoomed_prop)
                 continue
             if kind == "waystone":
                 x, y, letter = data

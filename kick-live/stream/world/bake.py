@@ -232,6 +232,9 @@ def casters_for_marks(T: "_terrain.Terrain", marks: Optional[Dict], trees: Seque
         x, y = int(tr["x"]), int(tr["y"])
         r = 1 + int(tr.get("stage", tr.get("age", 0)))
         caster[max(0, y - 1):y + 1, max(0, x - r // 2):x + r // 2 + 1] = np.maximum(caster[max(0, y - 1):y + 1, max(0, x - r // 2):x + r // 2 + 1], 2 + r)
+    if (marks or {}).get("structures"):                             # W6 hook: placed parts cast caster_h
+        from stream.world import wishes as _W
+        _W.caster_paint(caster, marks)
     return caster
 
 
@@ -395,6 +398,9 @@ class GroundBake:
             fx, fy = int(f["x"]), int(f["y"])
             if x0 - m <= fx < x1 + m and y0 - m <= fy < y1 + m:
                 objs.append((fy, "flower", (fx, fy, int(f.get("variant", 0)), f.get("owner") or "", int(f.get("blooms") or 1))))   # W5 hook: blooms
+        for s_ in self.marks.get("structures", ()):                 # W6 hook: placed parts (a dict per part, y-sorted with the rest)
+            if x0 - m <= int(s_["x"]) < x1 + m and y0 - m <= int(s_["y"]) < y1 + m:
+                objs.append((int(s_["y"]), "structure", s_))
         objs.sort(key=lambda o: o[0])
         return objs
 
@@ -442,6 +448,10 @@ class GroundBake:
                 fx, fy, var, owner = data[:4]
                 for dx, dy, v in _drift_clumps(fx, fy, var, int(data[4]) if len(data) > 4 else 1):   # W5 hook: 1 / 3 / 5-clump drift (ledger)
                     put(dst, self._sprite(props.flowers(v, BAKE_WIND_PHASE)), int(round((fx + dx) * px)) + px // 2 - px0, int(round((fy + dy) * px)) + px - 1 - py0)
+            elif kind == "structure":                               # W6 hook: the module resolves the part's sprite and anchor
+                from stream.world import wishes as _W
+                spr, dx, dy = _W.part_sprite(data, sun, season)
+                blit(dst, self._sprite(spr), int(data["x"]) * px - dx * px // CELL - px0, int(data["y"]) * px - dy * px // CELL - py0)
             n += 1
         return n
 
