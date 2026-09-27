@@ -109,6 +109,28 @@ class DrawTest(unittest.TestCase):
             draw.render(scene(.4, 8), 1000., 0)
             self.assertEqual(person.call_count, 8)
 
+    def test_chat_sign_is_cached_and_uses_approved_prompt(self):
+        self.assertEqual(' '.join(draw._CHAT_SIGN_LINES), 'Chat to add wood to the fire')
+        self.assertIs(draw._chat_sign(), draw._chat_sign())
+        self.assertEqual(draw._chat_sign.cache_info().maxsize, 1)
+        self.assertEqual(draw._chat_sign().mode, 'RGBA')
+
+    def test_chat_sign_stays_visible_clear_of_fire(self):
+        for count in (0, 1, 8, 32):
+            for heat in (0., .12, .4, .7, 1.15):
+                world = scene(heat, count)
+                world.shake = 1.
+                box = draw._camera_box(world, 1000.)
+                x, y = draw._chat_sign_position(box)
+                width, height = draw._chat_sign().size
+                self.assertGreaterEqual(x, 8)
+                self.assertGreaterEqual(y, 8)
+                self.assertLessEqual(x+width, draw.W-8)
+                self.assertLessEqual(y+height, draw.H-8)
+                factor = draw.W/(box[2]-box[0])
+                fire_right = (draw.CX+95-box[0])*factor
+                self.assertGreater(x, fire_right+20)
+
     def test_animation_changes_without_large_frame_pops(self):
         world = scene(.7, 8)
         a = np.asarray(draw.render(world, 1000., 0)).astype(float)

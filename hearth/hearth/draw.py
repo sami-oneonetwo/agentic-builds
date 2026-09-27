@@ -391,6 +391,47 @@ def _bubble(text, name):
     return out
 
 
+_CHAT_SIGN_LINES = ("Chat to add wood", "to the fire")
+
+
+@lru_cache(maxsize=1)
+def _chat_sign():
+    """One small painted plank. Cached, with no per-frame text rasterization."""
+    sign = Image.new('RGBA', (264, 116))
+    d = ImageDraw.Draw(sign)
+    d.ellipse((42, 100, 240, 113), fill=(7, 14, 16, 120))
+    # Two stakes keep the sign planted in the clearing, not floating like a HUD.
+    for x in (49, 208):
+        d.polygon([(x, 46), (x+10, 46), (x+8, 108), (x+2, 110)], fill=(51, 37, 26))
+        d.line((x+2, 70, x+3, 103), fill=(99, 69, 41), width=2)
+    d.polygon([(8, 9), (253, 6), (259, 19), (256, 76), (12, 79), (5, 66)],
+              fill=(24, 23, 20))
+    d.polygon([(12, 12), (250, 9), (255, 21), (252, 72), (15, 75), (9, 64)],
+              fill=(76, 52, 32))
+    d.line((13, 13, 248, 10), fill=(133, 98, 57), width=2)
+    d.line((15, 71, 248, 68), fill=(48, 34, 24), width=2)
+    for x, y, length in ((18, 20, 28), (219, 20, 22), (22, 63, 29), (215, 61, 26)):
+        d.line((x, y, x+length, y-1), fill=(99, 68, 39), width=1)
+    for x in (20, 244):
+        for y in (20, 65):
+            d.ellipse((x-2, y-2, x+1, y+1), fill=(28, 29, 27))
+            d.point((x-1, y-1), fill=(144, 133, 104))
+    font = _font(23, bold=True)
+    for text, y in zip(_CHAT_SIGN_LINES, (22, 48)):
+        box = d.textbbox((0, 0), text, font=font)
+        x = (264 - (box[2]-box[0])) / 2 - box[0]
+        d.text((x+1, y-box[1]+1), text, font=font, fill=(35, 25, 19))
+        d.text((x, y-box[1]), text, font=font, fill=(242, 218, 165))
+    return sign
+
+
+def _chat_sign_position(box):
+    # World-anchored but constant text size, like the existing chat bubbles.
+    factor = W/(box[2]-box[0])
+    return (int((CX+365-box[0])*factor - 132),
+            int((CY+38-box[1])*factor - 116))
+
+
 def _camera_box(world, now):
     cam = world.camera(now)
     zoom = .82 + (max(.82, min(1.55, cam['zoom'])) - .82) * (.38 / .73)
@@ -441,6 +482,8 @@ def render(world: Hearth, now: float, frame: int) -> Image.Image:
     # Render human words after the camera transform so they stay legible.
     box = _camera_box(world, now)
     result = img.transform((W, H), Image.Transform.EXTENT, box, Image.Resampling.BILINEAR)
+    sign = _chat_sign()
+    result.paste(sign, _chat_sign_position(box), sign)
     factor = W/(box[2]-box[0])
     for p, x, y in positions:
         age = now-p.last_text_ts
