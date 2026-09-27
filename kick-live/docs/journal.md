@@ -1245,3 +1245,21 @@ behaviour, so the W2 hot-reload would bind against the old behaviour and fall ba
 avoids the newest speaker although the new honesty `idle` rule asserts it (the build would flag itself). S1's
 pre-deploy fix is in its verify pass. Nothing deployed this tick. Note for every timing gate from now on: the stream
 is ON, so harness timings on this box are noisier than yesterday's.
+
+**11:02 — S1 on air.** The spine slice (commit 23d6fe8; two reviews pass_with_fixes, a pre-deploy fix pass for the
+reviewers' suggestions and the dead cards, verified) was staged against the SNAPSHOT's own world files, not the
+worktree's lane-W work in progress: py_compile, `--check-titles` (34 titles fit), compositor 300 frames on live copies
+(honesty 0/0, copy check 0, tile gate PASS, frame budget p95 20.3 ms with the live compositor sharing the CPU). Deployed
+11:01:47 as ONE relay-held child restart: six files (chat_bridge, rounds, audio, state_store, art/props, chatter_log)
+copied together into live-snapshot-v3, 1 frame held (0.03 s), ffmpeg 16398 unchanged, scene booted in 16 ms with 4 pips
+/ 4 camps (the boot history path pitched the newcomer's missing camp), honesty 0. What changed on air: `stack` is a
+real verb (45 s cooldown, three a day, `three stones a day · the cairn has yours`), `stone / rock / cairn` hint to it and
+`build a hut` hints `camp`; every moderated plain / `!idea` line is a row in `run-live/wishes.jsonl` (chat ids, never
+truncated) and every accepted record an `acks.jsonl` row (no typed name in a reason); the board's `follow the newest
+voice` / `scatter across the land` / huddle cards are gone, replaced by `gathering at the Moot` (every body walks to
+the ring, `N gathered`, no record written); `raising day: stones x2` became `hauling day · the Steading's stones`
+(cooldown 20 s, cap 6, one record per act); the menu can draw a wished card ` · N ask` and promote mechanic wishes to
+`ideas[]` once the scene exposes `menu_wishes` / `take_promotions` (W6); audio hears `return` (one bell, three after 7
+days), `wish`, `placed_step`, `placed_ship`, `age`; `props.post` exists for the wish post (drawn by W6). Backups:
+state.json.bak-pre-s1. Known: the rounds self-tests append to `docs/CHANGELOG.md` in whatever tree they run from (a
+harness pollution to fix in the test hooks; the file was deleted from the worktree).
