@@ -102,12 +102,53 @@ def _genes(name: str) -> Dict[str, int]:
             "elder_hat": h[7] % 2, "hat": (0, 0, 0, 1, 1, 2, 0, 1)[h[8] % 8]}
 
 
+# Natural tones (owner, 2026-09-27 12:40: "less pink and purple, more natural tones"). The tunic colour is still a pure
+# function of the username: name_hash picks a row. Every row is an earth / plant / mineral tone at modest saturation, none
+# reads as the grass (98,152,82) at stream scale (moss and pine sit well below it in value), and each carries the accent
+# that goes with it on a hat, scarf or roof trim. Labels, roofs, banners, fields and plates take the same "main".
+NATURAL_TONES = (
+    # name         main (tunic)      accent
+    ("ochre",      (196, 148, 60),   (92, 108, 120)),
+    ("rust",       (168, 84, 52),    (214, 186, 132)),
+    ("terracotta", (190, 110, 80),   (84, 106, 66)),
+    ("sand",       (214, 186, 132),  (150, 58, 52)),
+    ("olive",      (128, 124, 62),   (222, 208, 178)),
+    ("moss",       (84, 106, 66),    (196, 148, 60)),
+    ("teal",       (62, 120, 116),   (214, 186, 132)),
+    ("slate",      (92, 110, 136),   (196, 148, 60)),
+    ("plum-brown", (120, 72, 84),    (214, 186, 132)),
+    ("brick",      (150, 58, 52),    (222, 208, 178)),
+    ("cream",      (222, 208, 178),  (120, 72, 84)),
+    ("charcoal",   (70, 70, 74),     (196, 148, 60)),
+    ("mustard",    (184, 160, 72),   (62, 120, 116)),
+    ("pine",       (60, 90, 78),     (214, 186, 132)),
+    ("clay",       (176, 128, 96),   (92, 110, 136)),
+    ("indigo",     (76, 84, 124),    (222, 208, 178)),
+    ("walnut",     (104, 74, 52),    (214, 186, 132)),
+    ("fern",       (96, 128, 88),    (222, 208, 178)),
+    ("storm",      (72, 96, 108),    (196, 148, 60)),
+    ("wine",       (128, 56, 64),    (214, 186, 132)),
+    ("honey",      (210, 168, 92),   (84, 106, 66)),
+    ("ash",        (140, 140, 132),  (150, 58, 52)),
+    ("copper",     (172, 104, 64),   (62, 120, 116)),
+    ("heather",    (132, 108, 132),  (222, 208, 178)),
+)
+TONE_NAMES = tuple(t[0] for t in NATURAL_TONES)
+
+
+def tone_index(name: str) -> int:
+    return (name_hash(name) % 1000) % len(NATURAL_TONES)
+
+
+def tone(name: str) -> Dict:
+    t = NATURAL_TONES[tone_index(name)]
+    return {"name": t[0], "main": t[1], "accent": t[2]}
+
+
 def hue(name: str) -> float:
-    frac = (name_hash(name) % 1000) / 1000.0
-    h = frac * 270.0
-    if h >= 70.0:
-        h += 90.0          # skip the grass band 70-160 (lime to teal-green)
-    return h % 360.0
+    """The tunic's hue in degrees (kept for readers that compare hues); derived from the natural tone, never from a wheel."""
+    r, g, b = tone(name)["main"]
+    return colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)[0] * 360.0
 
 
 def _hsv(h: float, s: float, v: float) -> Tuple[int, int, int]:
@@ -125,18 +166,22 @@ def _hex(c) -> str:
 
 def palette(name: str) -> Dict:
     g = _genes(name)
+    t = tone(name)
     h = hue(name)
-    main = _hsv(h, 0.64, 0.90)
-    ah = (h + 150 + 40 * g["accent_shift"]) % 360
-    if 70 <= ah <= 160:
-        ah = (ah + 90) % 360
-    accent = _hsv(ah, 0.60, 0.92)
-    outline = _mix(_hsv(h, 0.60, 0.30), INK, 0.50)
+    main = t["main"]
+    # the accent gene shifts the paired accent to one of its two neighbours in the table, so two names sharing a
+    # tunic tone can still differ on the hat / scarf / roof trim
+    idx = tone_index(name)
+    accent = (t["accent"], NATURAL_TONES[(idx + 5) % len(NATURAL_TONES)][1],
+              NATURAL_TONES[(idx + 11) % len(NATURAL_TONES)][1])[g["accent_shift"] % 3]
+    if accent == main:
+        accent = t["accent"]
+    outline = _mix(_mix(main, INK, 0.55), INK, 0.35)          # the tunic darkened toward ink, never pure black
     yarn = YARN[g["yarn"]] or accent
-    return {"main": main, "accent": accent, "outline": outline, "hue": h,
+    return {"main": main, "accent": accent, "outline": outline, "hue": h, "tone": t["name"],
             "tunic_dark": _mix(main, outline, 0.22),
             "belt": _mix(main, outline, 0.45),
-            "legs": _mix(_hsv(h, 0.45, 0.42), (90, 70, 60), 0.5),
+            "legs": _mix(_mix(main, (90, 70, 60), 0.5), (70, 60, 52), 0.35),
             "shoes": _mix(outline, (70, 48, 40), 0.5),
             "face": _mix(CREAM, main, 0.06),
             "hair": yarn, "hair_outline": _mix(yarn, INK, 0.55),
