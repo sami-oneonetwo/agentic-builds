@@ -1221,3 +1221,15 @@ deploy: since row 1 the `follow the newest voice` / `pips spread across the land
 name an effect behaviour no longer performs (only huddle survives), and the board drew and shipped `follow` at 10:13
 with 0 votes; AGES 3's `gathering at the Moot` card replaces them in rounds.py before the S1 child restart. Nothing
 deployed this tick; S1 and W2 still implementing.
+
+Tick 10:35 (probe): health green (10/10, honesty 0/0 at frame 64800 with 4 entities, fps p95 14.8 ms, 38.9 GB, rank
+#2, followers 4 = +2 in 24 h). **A fourth chatter**: `kolutyrtqw425` (external, no badges) at 10:29, two lines two
+seconds apart that read as a drive-by solicitation (a discord handle); a real Kick account, so its settler hatched and
+at 10:32 walked on the expedition to the Fell (`2 set off`). Its words appeared only in its own bubble; `discord` is
+not in the moderation word list, and that list is the owner's / mods' call, not the probe's. Keys people 4 / stones 18
+/ days 4; forward to the Steading 1 person, 12 stones, 1 day. Finding: the newcomer's pip has `camp: None`: the scene
+pitches a camp only for boot-history records (`_ingest_history`), never on a live hatch, and row 1 retired the path
+that used to pitch one later, so a first-time chatter owns no plot until W3 (camp at hatch) ships; proposed as
+p-0004 (tier 1; W3 is the next slice in lane W). p-0002 stays top. S1 finished (two reviews pass_with_fixes, 0
+blockers); a pre-deploy fix pass is running for the reviewers' suggestions and the dead colony_rule cards; S1 deploys
+after it as ONE relay-held child restart. Nothing deployed this tick.
